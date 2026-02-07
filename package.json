@@ -3,22 +3,21 @@
   "version": "3.0.0",
   "description": "Web proxy, websockets to telnet",
   "type": "module",
-  "keywords": [
-    "mud",
-    "proxy",
-    "websockets",
-    "telnet"
-  ],
+  "keywords": ["mud", "proxy", "websockets", "telnet"],
   "author": "plamzi <plamzi@gmail.com>",
   "contributors": [
     "plamzi <plamzi@gmail.com>",
     "neverbot <ivan@neverbot.com>"
   ],
-  "main": "wsproxy.js",
+  "main": "dist/wsproxy.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "lint": "npx eslint .",
-    "lint:fix": "npx eslint . --fix"
+    "build": "tsc",
+    "dev": "bun wsproxy.ts",
+    "start": "bun dist/wsproxy.js",
+    "test": "bun test --coverage",
+    "lint": "bunx eslint .",
+    "lint:fix": "bunx eslint . --fix",
+    "typecheck": "tsc --noEmit"
   },
   "repository": {
     "type": "git",
@@ -30,19 +29,26 @@
   },
   "homepage": "https://github.com/maldorne/mud-web-proxy#readme",
   "devDependencies": {
-    "@babel/eslint-parser": "^7.27.0",
-    "@eslint/js": "^9.23.0",
-    "eslint": "^9.23.0",
-    "eslint-config-prettier": "^10.1.1",
-    "eslint-plugin-jsonc": "^2.20.0",
-    "eslint-plugin-prettier": "^5.2.5",
-    "globals": "^16.0.0",
-    "jsonc-eslint-parser": "^2.4.0",
-    "prettier": "^3.5.3"
+    "@babel/eslint-parser": "^7.28.6",
+    "@eslint/js": "^9.39.2",
+    "@types/node": "^25.2.1",
+    "@types/uglify-js": "^3.17.5",
+    "@types/ws": "^8.18.1",
+    "@typescript-eslint/eslint-plugin": "^8.54.0",
+    "@typescript-eslint/parser": "^8.54.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-jsonc": "^2.21.0",
+    "eslint-plugin-prettier": "^5.5.5",
+    "globals": "^16.5.0",
+    "jsonc-eslint-parser": "^2.4.2",
+    "prettier": "^3.8.1",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.54.0"
   },
   "dependencies": {
     "iconv-lite": "^0.6.3",
     "uglify-js": "^3.19.3",
-    "ws": "^8.18.1"
+    "ws": "^8.19.0"
   }
 }

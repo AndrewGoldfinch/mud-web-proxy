@@ -16,39 +16,39 @@ In modern browsers, web-pages served through `https://` are not allowed to open 
 
 ## Features
 
-  * MCCP compression support (zlib)
-  * MXP protocol support built into the client
-  * MSDP protocol support
-  * GMCP / ATCP protocol support (JSON) with sample uses in multiple existing plugins
-  * 256-color support, including background colors
-  * Unicode font support and UTF-8 negotiation
-  * To avoid abuse, default installation only allows connection to an specific server, although it can be configured to connect to any server sent by the client as an argument.
+- MCCP compression support (zlib)
+- MXP protocol support built into the client
+- MSDP protocol support
+- GMCP / ATCP protocol support (JSON) with sample uses in multiple existing plugins
+- 256-color support, including background colors
+- Unicode font support and UTF-8 negotiation
+- To avoid abuse, default installation only allows connection to an specific server, although it can be configured to connect to any server sent by the client as an argument.
 
 ## Installation
 
-``` bash
+```bash
 git clone https://github.com/maldorne/mud-web-proxy
-npm install
-sudo node wsproxy.js
+bun install
+sudo bun wsproxy.js
 ```
 
 You need to have your certificates available to use wsproxy. If you start the proxy without certificates, you'll see something like this:
 
-``` bash
+```bash
 $ sudo node wsproxy.js
 Could not find cert and/or privkey files, exiting.
 ```
 
 You need to have available both files in the same directory as the proxy, like this:
 
-``` bash
+```bash
 $ ls
 cert.pem  chat.json  LICENSE.md  node_modules  package.json  package-lock.json  privkey.pem  README.md  wsproxy.js
 ```
 
 where `cert.pem` and `privkey.pem` will be links to the real files, something like:
 
-``` bash
+```bash
 cert.pem -> /etc/letsencrypt/live/...somewhere.../cert.pem
 privkey.pem -> /etc/letsencrypt/live/...somewhere.../privkey.pem
 ```
@@ -59,7 +59,7 @@ How to install the certificates is beyond the scope of this project, but you cou
 
 In `wsproxy.js` you can change the following options:
 
-``` javascript
+```javascript
   /* this websocket proxy port */
   ws_port: 6200,
   /* default telnet host */
@@ -75,5 +75,6 @@ In `wsproxy.js` you can change the following options:
 ```
 
 Probably you will only have to change:
- * `tn_host` with your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
- * `tn_port` with the port where the mud is running.
+
+- `tn_host` with your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
+- `tn_port` with the port where the mud is running.
