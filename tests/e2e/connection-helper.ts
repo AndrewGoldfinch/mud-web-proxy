@@ -3,7 +3,6 @@
  * Manages WebSocket connections to proxy and verifies protocol negotiations
  */
 
-import WebSocket from 'ws';
 import type { E2EConfig } from './config-loader';
 
 export interface ConnectionResult {
@@ -50,6 +49,7 @@ export class E2EConnection {
   async connect(proxyUrl: string): Promise<ConnectionResult> {
     return new Promise((resolve) => {
       try {
+        // Use native Bun WebSocket
         this.ws = new WebSocket(proxyUrl);
 
         const timeout = setTimeout(() => {
@@ -61,7 +61,7 @@ export class E2EConnection {
           });
         }, this.config.testTimeoutMs);
 
-        this.ws.on('open', () => {
+        this.ws.onopen = () => {
           // Send connect request
           const connectMsg = {
             type: 'connect',
@@ -70,11 +70,11 @@ export class E2EConnection {
             deviceToken: 'e2e-test-device',
           };
           this.ws?.send(JSON.stringify(connectMsg));
-        });
+        };
 
-        this.ws.on('message', (data: WebSocket.Data) => {
+        this.ws.onmessage = (event: MessageEvent) => {
           try {
-            const msg = JSON.parse(data.toString());
+            const msg = JSON.parse(event.data.toString());
             this.messages.push({
               type: msg.type || 'unknown',
               data: msg,
@@ -112,21 +112,21 @@ export class E2EConnection {
           } catch (_err) {
             // Not JSON, probably telnet data
           }
-        });
+        };
 
-        this.ws.on('error', (err: Error) => {
+        this.ws.onerror = (event: Event) => {
           clearTimeout(timeout);
           resolve({
             success: false,
-            error: err.message,
+            error: 'WebSocket error: ' + (event as ErrorEvent).message,
             negotiatedProtocols: this.negotiatedProtocols,
             messages: this.messages,
           });
-        });
+        };
 
-        this.ws.on('close', () => {
+        this.ws.onclose = () => {
           // Connection closed
-        });
+        };
       } catch (err) {
         resolve({
           success: false,
@@ -149,6 +149,7 @@ export class E2EConnection {
   ): Promise<ConnectionResult> {
     return new Promise((resolve) => {
       try {
+        // Use native Bun WebSocket
         this.ws = new WebSocket(proxyUrl);
 
         const timeout = setTimeout(() => {
@@ -160,7 +161,7 @@ export class E2EConnection {
           });
         }, this.config.testTimeoutMs);
 
-        this.ws.on('open', () => {
+        this.ws.onopen = () => {
           // Send resume request
           const resumeMsg = {
             type: 'resume',
@@ -170,11 +171,11 @@ export class E2EConnection {
             deviceToken: 'e2e-test-device',
           };
           this.ws?.send(JSON.stringify(resumeMsg));
-        });
+        };
 
-        this.ws.on('message', (data: WebSocket.Data) => {
+        this.ws.onmessage = (event: MessageEvent) => {
           try {
-            const msg = JSON.parse(data.toString());
+            const msg = JSON.parse(event.data.toString());
             this.messages.push({
               type: msg.type || 'unknown',
               data: msg,
@@ -207,17 +208,17 @@ export class E2EConnection {
           } catch (_err) {
             // Not JSON, probably telnet data
           }
-        });
+        };
 
-        this.ws.on('error', (err: Error) => {
+        this.ws.onerror = (event: Event) => {
           clearTimeout(timeout);
           resolve({
             success: false,
-            error: err.message,
+            error: 'WebSocket error: ' + (event as ErrorEvent).message,
             negotiatedProtocols: this.negotiatedProtocols,
             messages: this.messages,
           });
-        });
+        };
       } catch (err) {
         resolve({
           success: false,
@@ -313,22 +314,37 @@ export class E2EConnection {
     if (!msg.payload) return;
 
     try {
-      const data = Buffer.from(msg.payload, 'base64').toString();
+      const data = Buffer.from(msg.payload, 'base64');
 
-      // Check for protocol negotiations
-      if (data.includes('IAC DO GMCP') || data.includes('IAC WILL GMCP')) {
-        this.negotiatedProtocols.gmcp = true;
+      // Check for protocol negotiations using telnet IAC codes
+      // IAC = 0xFF (255)
+      // WILL = 0xFB (251), DO = 0xFD (253)
+      // GMCP = 0xC9 (201), MXP = 0x5B (91), MSDP = 0x45 (69), MCCP = 0x56 (86)
+
+      for (let i = 0; i < data.length - 2; i++) {
+        if (data[i] === 0xff) {
+          // IAC found
+          const cmd = data[i + 1];
+          const option = data[i + 2];
+
+          if (cmd === 0xfb || cmd === 0xfd) {
+            // WILL or DO
+            if (option === 0xc9) {
+              this.negotiatedProtocols.gmcp = true;
+            } else if (option === 0x5b) {
+              this.negotiatedProtocols.mxp = true;
+            } else if (option === 0x45) {
+              this.negotiatedProtocols.msdp = true;
+            } else if (option === 0x56) {
+              this.negotiatedProtocols.mccp = true;
+            }
+          }
+        }
       }
-      if (data.includes('IAC DO MXP') || data.includes('IAC WILL MXP')) {
-        this.negotiatedProtocols.mxp = true;
-      }
-      if (data.includes('IAC DO MSDP') || data.includes('IAC WILL MSDP')) {
-        this.negotiatedProtocols.msdp = true;
-      }
-      if (data.includes('IAC DO MCCP') || data.includes('MCCP')) {
-        this.negotiatedProtocols.mccp = true;
-      }
-      if (data.includes('UTF-8') || data.includes('utf8')) {
+
+      // Also check for UTF-8 in string form
+      const str = data.toString('utf8');
+      if (str.includes('UTF-8') || str.includes('utf8')) {
         this.negotiatedProtocols.utf8 = true;
       }
     } catch (_err) {
