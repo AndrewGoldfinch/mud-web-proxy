@@ -23,13 +23,13 @@ The proxy maintains a persistent telnet connection to the MUD server. The iOS ap
 
 You have three realistic options for the proxy server:
 
-**Node.js** is the path of least resistance. The `mud-web-proxy` project (github.com/maldorne/mud-web-proxy) already handles WebSocket-to-telnet bridging with MCCP, GMCP, MSDP, and MXP support out of the box. It's ~400 lines of JavaScript. You'd fork it and add session persistence and push notifications. The `ws` library handles WebSocket, and `net.Socket` handles raw TCP to the MUD.
+**TypeScript/Bun (chosen approach):** The `mud-web-proxy` project (github.com/maldorne/mud-web-proxy) has been migrated to TypeScript (~1160 lines) running on Bun. It already handles WebSocket-to-telnet bridging with MCCP, GMCP, MSDP, MXP, ATCP, and full telnet option negotiation out of the box. It has a comprehensive test suite (12 test files) using Bun's native test framework. The `ws` library handles WebSocket, and `net.Socket` handles raw TCP to the MUD. We'll extend it with session persistence and push notifications.
 
 **Swift (Vapor)** keeps your entire stack in one language. Vapor has built-in WebSocket support via SwiftNIO and first-class APNS integration through the `VaporAPNS` package. You'd write the telnet handling yourself using SwiftNIO's `ClientBootstrap`. Deployment is slightly more involved — you need to compile a Linux binary.
 
 **Go** is fast, deploys as a single static binary, and has gorilla/websocket for WebSockets plus standard `net` for TCP. The krishproxy project (github.com/Untermina/krishproxy) is a minimal Go WebSocket-to-telnet proxy you could build on. APNS would use a library like `sideshow/apns2`.
 
-For a MUD client where you already know Swift, **Vapor is the most natural fit** if you want to own the whole thing. But if you want to ship something fast, **forking mud-web-proxy** and bolting on session management will get you there in a weekend.
+We went with **TypeScript/Bun** — the existing mud-web-proxy codebase provides a solid, well-tested foundation for the telnet protocol layer, and Bun gives us fast startup, built-in TypeScript support, and a native test runner.
 
 ## The session model
 
@@ -171,7 +171,7 @@ app.apns.configuration = try .init(
 )
 ```
 
-**With Node.js**, use the `apn` package or make raw HTTP/2 requests to `api.push.apple.com`.
+**With TypeScript/Bun**, use the `apn` package or make raw HTTP/2 requests to `api.push.apple.com`.
 
 ### Notification types
 
@@ -194,22 +194,28 @@ A $5-6/month VPS handles this easily. The proxy is lightweight — each session 
 | Vultr | $5/mo (1GB) | Many regions |
 | Linode | $5/mo (1GB) | Owned by Akamai |
 
-**Setup with Node.js on Ubuntu:**
+**Setup with Bun on Ubuntu:**
 ```bash
 # On your VPS
-sudo apt update && sudo apt install -y nodejs npm certbot
+sudo apt update && sudo apt install -y certbot unzip
+# Install Bun runtime
+curl -fsSL https://bun.sh/install | bash
+source ~/.bashrc
+
 git clone https://github.com/maldorne/mud-web-proxy
-cd mud-web-proxy && npm install
+cd mud-web-proxy && bun install
+
+# Build TypeScript
+bun run build
 
 # Get TLS cert
 sudo certbot certonly --standalone -d mudproxy.yourdomain.com
 ln -s /etc/letsencrypt/live/mudproxy.yourdomain.com/fullchain.pem cert.pem
 ln -s /etc/letsencrypt/live/mudproxy.yourdomain.com/privkey.pem privkey.pem
 
-# Run (use pm2 or systemd for production)
-npm install -g pm2
-pm2 start wsproxy.js --name mud-proxy
-pm2 save && pm2 startup
+# Run (use systemd for production)
+bun start
+# Or for development: bun dev
 ```
 
 ### Fly.io
@@ -347,11 +353,11 @@ func application(_ app: UIApplication, didRegisterForRemoteNotificationsWithDevi
 
 ## What to build first
 
-1. **Fork mud-web-proxy** or write a minimal Node.js/Vapor WebSocket-to-telnet bridge
+1. ~~**Fork mud-web-proxy**~~ — **DONE.** Forked and migrated to TypeScript/Bun with comprehensive test suite
 2. **Add session persistence** — decouple WS lifecycle from telnet lifecycle, add the output buffer and sequence numbering
 3. **Test with MUDBasher** — connect via WSS, verify MUD interaction works, verify reconnection replays correctly
 4. **Add APNS** — implement tell detection and push notifications
-5. **Deploy to a VPS** — DigitalOcean or Hetzner, pm2 or systemd, certbot for TLS
+5. **Deploy to a VPS** — DigitalOcean or Hetzner, systemd, certbot for TLS
 6. **Add a "Proxy" settings screen in MUDBasher** — let users enter their proxy URL or use your hosted one
 
-The critical path is steps 1-3. Push notifications and hosted deployment are polish. Get session persistence working first — that's the whole point.
+Step 1 is complete. The critical path is now steps 2-3. Push notifications and hosted deployment are polish. Get session persistence working first — that's the whole point.
