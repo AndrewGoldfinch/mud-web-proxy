@@ -42,11 +42,43 @@ import iconv from 'iconv-lite';
 import type { WebSocket as WS, WebSocketServer } from 'ws';
 import type { Socket } from 'net';
 import type { Server as HttpServer } from 'https';
-import type { IncomingMessage } from 'http';
+import type { IncomingMessage, ServerResponse } from 'http';
+
+import { SessionIntegration } from './src/session-integration';
 
 // Get current file directory in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// Initialize session persistence layer
+const sessionIntegration = new SessionIntegration({
+  sessions: {
+    timeoutHours: 24,
+    maxPerDevice: 5,
+    maxPerIP: 10,
+  },
+  buffer: {
+    sizeKB: 50,
+  },
+  triggers: {
+    rateLimit: {
+      perTypePerMinute: 1,
+      totalPerHour: 10,
+    },
+  },
+  // APNS config from environment
+  apns: process.env.APNS_KEY_PATH
+    ? {
+        keyPath: process.env.APNS_KEY_PATH,
+        keyId: process.env.APNS_KEY_ID || '',
+        teamId: process.env.APNS_TEAM_ID || '',
+        topic: process.env.APNS_TOPIC || '',
+        environment:
+          (process.env.APNS_ENVIRONMENT as 'sandbox' | 'production') ||
+          'sandbox',
+      }
+    : undefined,
+});
 
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
@@ -348,6 +380,22 @@ const srv: ServerConfig = {
       srv.log('(ws) server listening: port ' + srv.ws_port);
     });
 
+    // Add health check endpoint
+    webserver.on('request', (req: IncomingMessage, res: ServerResponse) => {
+      if (req.url === '/health') {
+        const stats = sessionIntegration.getStats();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({
+            status: 'healthy',
+            timestamp: new Date().toISOString(),
+            version: '3.1.0',
+            ...stats,
+          }),
+        );
+      }
+    });
+
     // Create WebSocket server based on Node.js version
     try {
       if (majorVersion >= 16) {
@@ -458,6 +506,21 @@ const srv: ServerConfig = {
 
   parse: function (s: SocketExtended, d: Buffer): number {
     if (d[0] != '{'.charCodeAt(0)) return 0;
+
+    // Try new session-aware message format first
+    try {
+      const msg = d.toString();
+      const parsed = JSON.parse(msg);
+      if (parsed && parsed.type) {
+        // New format with type field - handle via session integration
+        // Session integration will handle connect, resume, input, naws
+        // Returns 1 if handled, 0 if should fall through
+        const handled = sessionIntegration.parseNewMessage(s, d, () => 0);
+        if (handled) return 1;
+      }
+    } catch (_err) {
+      // Not new format, fall through to legacy
+    }
 
     let req: ClientRequest;
 
@@ -687,6 +750,25 @@ const srv: ServerConfig = {
   },
 
   closeSocket: function (s: SocketExtended): void {
+    // Check if this socket is part of a session
+    if (sessionIntegration.hasSession(s)) {
+      // Detach from session instead of fully closing
+      sessionIntegration.handleSocketClose(s);
+
+      // Remove from socket list
+      const i = server.sockets.indexOf(s);
+      if (i != -1) server.sockets.splice(i, 1);
+
+      srv.log(
+        '(ws) peer ' +
+          s.req.connection.remoteAddress +
+          ' detached from session',
+      );
+      srv.log('active sockets: ' + server.sockets.length);
+      return;
+    }
+
+    // Legacy behavior - close everything
     if (s.ts) {
       srv.log(
         'closing telnet socket: ' + s.host ||

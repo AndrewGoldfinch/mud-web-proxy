@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, jest } from 'bun:test';
+import { describe, it, expect, beforeEach, afterEach, jest } from 'bun:test';
 import type { WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import zlib from 'zlib';
@@ -139,6 +139,7 @@ const createMockSocket = (
       connection: { remoteAddress: '127.0.0.1' },
     },
     sendUTF: mockSend,
+    send: mockSend,
     terminate: mockTerminate,
     remoteAddress: '127.0.0.1',
     ts: undefined,
@@ -493,45 +494,76 @@ describe('Error Handling', () => {
   });
 
   describe('Compression Errors', () => {
-    it('should handle zlib deflateRaw error', () => {
+    let originalDeflateRaw: typeof zlib.deflateRaw;
+
+    beforeEach(() => {
+      // Save original function before each test
+      originalDeflateRaw = zlib.deflateRaw;
+    });
+
+    afterEach(() => {
+      // Always restore original function after each test
+      zlib.deflateRaw = originalDeflateRaw;
+    });
+
+    it('should handle zlib deflateRaw error', async () => {
       const s = createMockSocket();
       const data = Buffer.from('test data');
 
-      // Mock zlib to trigger error
+      // Mock zlib to trigger error using a simple wrapper
+      let deflateCalled = false;
+      const errorMock = (
+        _data: unknown,
+        callback: (err: Error | null, buffer: Buffer) => void,
+      ) => {
+        deflateCalled = true;
+        callback(new Error('Compression failed'), Buffer.from(''));
+      };
+
       const originalDeflateRaw = zlib.deflateRaw;
       (zlib as unknown as { deflateRaw: typeof zlib.deflateRaw }).deflateRaw =
-        jest.fn(
-          (
-            _data: unknown,
-            callback: (err: Error | null, buffer: Buffer) => void,
-          ) => {
-            callback(new Error('Compression failed'), Buffer.from(''));
-          },
-        ) as unknown as typeof zlib.deflateRaw;
+        errorMock as typeof zlib.deflateRaw;
 
       sendClient(s, data);
 
       // Wait for async callback
-      setTimeout(() => {
-        expect(mockLog).toHaveBeenCalledWith(
-          expect.stringContaining('zlib error:'),
-        );
-        // Restore original
-        (
-          zlib as unknown as { deflateRaw: typeof zlib.deflateRaw }
-        ).deflateRaw = originalDeflateRaw;
-      }, 100);
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
+      expect(deflateCalled).toBe(true);
+      expect(mockLog).toHaveBeenCalledWith(
+        expect.stringContaining('zlib error:'),
+      );
     });
 
-    it('should fallback gracefully on compression failure', () => {
+    it('should fallback gracefully on compression failure', async () => {
       const s = createMockSocket();
       const data = Buffer.from('test data');
+
+      // Mock zlib to trigger error
+      let deflateCalled = false;
+      const errorMock = (
+        _data: unknown,
+        callback: (err: Error | null, buffer: Buffer) => void,
+      ) => {
+        deflateCalled = true;
+        callback(new Error('Compression failed'), Buffer.from(''));
+      };
+
+      const originalDeflateRaw = zlib.deflateRaw;
+      (zlib as unknown as { deflateRaw: typeof zlib.deflateRaw }).deflateRaw =
+        errorMock as typeof zlib.deflateRaw;
 
       // Should still send data even if compression fails
       sendClient(s, data);
 
+      // Wait for async callback
+      await new Promise((resolve) => setTimeout(resolve, 100));
+
       // Data should be sent (either compressed or uncompressed)
       expect(mockSend).toHaveBeenCalled();
+
+      // Restore original
+      zlib.deflateRaw = originalDeflateRaw;
     });
 
     it('should handle empty buffer compression', () => {

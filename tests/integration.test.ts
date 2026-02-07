@@ -999,7 +999,7 @@ describe('Integration Tests - Real Server Components', () => {
     // 7. Clean up
 
     // For now, verify the setup exists
-    const proxyPath = path.join(process.cwd(), 'wsproxy.ts');
+    const proxyPath = path.join(__dirname, '..', 'wsproxy.ts');
     expect(fs.existsSync(proxyPath)).toBe(true);
   });
 });

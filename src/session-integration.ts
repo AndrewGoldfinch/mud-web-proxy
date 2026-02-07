@@ -1,0 +1,443 @@
+/**
+ * Session Integration - Integrates session persistence into wsproxy.ts
+ *
+ * This module extends the existing wsproxy.ts with session management.
+ * It maintains backward compatibility while adding new functionality.
+ */
+
+import { SessionManager } from './session-manager';
+import type { SocketExtended } from './types';
+import { TriggerMatcher } from './trigger-matcher';
+import { NotificationManager } from './notification-manager';
+import type {
+  ConnectRequest,
+  ResumeRequest,
+  InputRequest,
+  NAWSRequest,
+  ClientMessage,
+  ProcessedData,
+} from './types';
+
+export interface SessionIntegrationConfig {
+  sessions: {
+    timeoutHours: number;
+    maxPerDevice: number;
+    maxPerIP: number;
+  };
+  buffer: {
+    sizeKB: number;
+  };
+  triggers: {
+    rateLimit: {
+      perTypePerMinute: number;
+      totalPerHour: number;
+    };
+  };
+  apns?: {
+    keyPath: string;
+    keyId: string;
+    teamId: string;
+    topic: string;
+    environment: 'sandbox' | 'production';
+  };
+}
+
+export class SessionIntegration {
+  sessionManager: SessionManager;
+  triggerMatcher: TriggerMatcher;
+  notificationManager: NotificationManager;
+  config: SessionIntegrationConfig;
+
+  constructor(config: Partial<SessionIntegrationConfig> = {}) {
+    this.config = {
+      sessions: {
+        timeoutHours: 24,
+        maxPerDevice: 5,
+        maxPerIP: 10,
+      },
+      buffer: {
+        sizeKB: 50,
+      },
+      triggers: {
+        rateLimit: {
+          perTypePerMinute: 1,
+          totalPerHour: 10,
+        },
+      },
+      ...config,
+    };
+
+    this.sessionManager = new SessionManager(this.config.sessions);
+    this.triggerMatcher = new TriggerMatcher(this.config.triggers);
+    this.notificationManager = new NotificationManager(
+      {
+        enabled: !!this.config.apns,
+        apns: this.config.apns,
+      },
+      this.triggerMatcher,
+    );
+
+    // Start notification retry processor
+    setInterval(() => {
+      this.notificationManager.processPending();
+    }, 60 * 1000);
+
+    // Log startup
+    console.log(
+      '[SessionIntegration] Initialized with buffer size: ' +
+        this.config.buffer.sizeKB +
+        'KB',
+    );
+  }
+
+  /**
+   * Parse new-style client messages (connect, resume, input, naws)
+   * Returns true if message was handled (new format), false otherwise
+   */
+  parseNewMessage(
+    socket: SocketExtended,
+    data: Buffer,
+    legacyHandler: (s: SocketExtended, d: Buffer) => number,
+  ): number {
+    try {
+      const msg = data.toString();
+
+      // Check if it's JSON (starts with {)
+      if (msg.trim()[0] !== '{') {
+        return legacyHandler(socket, data);
+      }
+
+      const parsed = JSON.parse(msg) as ClientMessage;
+
+      // Only handle messages with type field
+      if (!('type' in parsed)) {
+        return legacyHandler(socket, data);
+      }
+
+      const clientMsg = parsed;
+
+      switch (clientMsg.type) {
+        case 'connect':
+          this.handleConnect(socket, clientMsg);
+          return 1;
+        case 'resume':
+          this.handleResume(socket, clientMsg);
+          return 1;
+        case 'input':
+          this.handleInput(socket, clientMsg);
+          return 1;
+        case 'naws':
+          this.handleNAWS(socket, clientMsg);
+          return 1;
+        default:
+          return legacyHandler(socket, data);
+      }
+    } catch (err) {
+      // Not valid JSON or new format, fall back to legacy
+      return legacyHandler(socket, data);
+    }
+  }
+
+  /**
+   * Handle connect request - create new session
+   */
+  private async handleConnect(
+    socket: SocketExtended,
+    msg: ConnectRequest,
+  ): Promise<void> {
+    const ip = socket.req?.connection?.remoteAddress || 'unknown';
+
+    // Check connection limits
+    if (msg.deviceToken) {
+      const limits = this.sessionManager.enforceConnectionLimits(
+        msg.deviceToken,
+        ip,
+      );
+      if (!limits.allowed) {
+        this.sendError(
+          socket,
+          'rate_limited',
+          limits.reason || 'Connection limit exceeded',
+        );
+        return;
+      }
+    }
+
+    // Create new session
+    const session = this.sessionManager.create(
+      msg.host,
+      msg.port,
+      msg.deviceToken,
+      this.config.buffer.sizeKB * 1024,
+    );
+
+    // Set device token and window size
+    if (msg.deviceToken) {
+      session.setDeviceToken(msg.deviceToken);
+    }
+    if (msg.width && msg.height) {
+      session.updateWindowSize(msg.width, msg.height);
+    }
+
+    // Attach WebSocket to session
+    this.sessionManager.attachWebSocket(session.id, socket);
+
+    if (msg.deviceToken) {
+      this.sessionManager.incrementIPCount(ip);
+    }
+
+    // Send session response
+    const response = {
+      type: 'session',
+      sessionId: session.id,
+      token: session.authToken,
+    };
+    socket.sendUTF(JSON.stringify(response));
+
+    // Connect to MUD
+    try {
+      await session.connect();
+
+      // Set up data handler
+      session.onData((data: Buffer) => {
+        this.processMudData(session, socket, data);
+      });
+
+      // Set up close handler
+      session.onClose(() => {
+        this.sendError(socket, 'connection_failed', 'MUD connection closed');
+        this.sessionManager.removeSession(session.id);
+      });
+
+      // Set up error handler
+      session.onError((err: Error) => {
+        this.sendError(socket, 'connection_failed', err.message);
+        this.sessionManager.removeSession(session.id);
+      });
+    } catch (err) {
+      this.sendError(socket, 'connection_failed', (err as Error).message);
+      this.sessionManager.removeSession(session.id);
+    }
+  }
+
+  /**
+   * Handle resume request - reattach to existing session
+   */
+  private handleResume(socket: SocketExtended, msg: ResumeRequest): void {
+    // Validate token
+    if (!this.sessionManager.validateToken(msg.sessionId, msg.token)) {
+      this.sendError(
+        socket,
+        'invalid_resume',
+        'Session not found or token invalid',
+      );
+      return;
+    }
+
+    // Get session
+    const session = this.sessionManager.get(msg.sessionId);
+    if (!session) {
+      this.sendError(socket, 'invalid_resume', 'Session not found');
+      return;
+    }
+
+    // Check if session timed out
+    if (session.isTimedOut(this.config.sessions.timeoutHours)) {
+      this.sessionManager.removeSession(msg.sessionId);
+      this.sendError(socket, 'session_expired', 'Session has expired');
+      return;
+    }
+
+    // Attach WebSocket
+    this.sessionManager.attachWebSocket(msg.sessionId, socket);
+
+    // Update device token if provided
+    if (msg.deviceToken) {
+      session.setDeviceToken(msg.deviceToken);
+    }
+
+    // Replay buffered output
+    const chunks = session.replayFromSequence(msg.lastSeq);
+    for (const chunk of chunks) {
+      if (chunk.type === 'gmcp') {
+        const response = {
+          type: 'gmcp',
+          seq: chunk.sequence,
+          package: chunk.gmcpPackage,
+          data: chunk.gmcpData,
+        };
+        socket.sendUTF(JSON.stringify(response));
+      } else {
+        const response = {
+          type: 'data',
+          seq: chunk.sequence,
+          payload: chunk.data.toString('base64'),
+        };
+        socket.sendUTF(JSON.stringify(response));
+      }
+    }
+  }
+
+  /**
+   * Handle input - send command to MUD
+   */
+  private handleInput(socket: SocketExtended, msg: InputRequest): void {
+    const session = this.sessionManager.findByWebSocket(socket);
+    if (!session) {
+      // Legacy mode - forward to existing telnet socket
+      return;
+    }
+
+    session.sendToMud(msg.text + '\r\n');
+  }
+
+  /**
+   * Handle NAWS - update window size
+   */
+  private handleNAWS(socket: SocketExtended, msg: NAWSRequest): void {
+    const session = this.sessionManager.findByWebSocket(socket);
+    if (session) {
+      session.updateWindowSize(msg.width, msg.height);
+    }
+
+    // Also send NAWS to MUD if connected
+    if (socket.ts) {
+      const p = {
+        IAC: 255,
+        SB: 250,
+        NAWS: 31,
+        SE: 240,
+      };
+      const buf = Buffer.from([
+        p.IAC,
+        p.SB,
+        p.NAWS,
+        0,
+        msg.width,
+        0,
+        msg.height,
+        p.IAC,
+        p.SE,
+      ]);
+      socket.ts.write(buf);
+    }
+  }
+
+  /**
+   * Process MUD data - buffer and forward to clients
+   */
+  private processMudData(
+    session: import('./session').Session,
+    _socket: SocketExtended,
+    data: Buffer,
+  ): void {
+    // Check for notifications when no clients connected
+    if (!session.hasClients()) {
+      // Convert buffer to string for pattern matching
+      const text = data.toString('utf8');
+      const match = this.notificationManager.processOutput(text, session.id);
+
+      if (match && session.deviceToken) {
+        this.notificationManager
+          .sendNotification(session.deviceToken, match, session.id)
+          .catch((err) => {
+            console.error('Failed to send notification:', err);
+          });
+      }
+    }
+
+    // Process with legacy sendClient
+    // This will be called from wsproxy.ts and handle protocol negotiation
+    // Then we buffer and forward
+
+    // Buffer the raw data
+    const processed: ProcessedData = {
+      data,
+      type: 'data',
+    };
+    const chunk = session.bufferOutput(processed);
+
+    // Forward to all attached clients
+    const response = {
+      type: 'data',
+      seq: chunk.sequence,
+      payload: data.toString('base64'),
+    };
+    session.broadcastToClients(JSON.stringify(response));
+  }
+
+  /**
+   * Send error response to client
+   */
+  private sendError(
+    socket: SocketExtended,
+    code: string,
+    message: string,
+  ): void {
+    const response = {
+      type: 'error',
+      code,
+      message,
+    };
+    try {
+      socket.sendUTF(JSON.stringify(response));
+    } catch (err) {
+      // Socket might be closed
+    }
+  }
+
+  /**
+   * Handle WebSocket close - detach from session
+   */
+  handleSocketClose(socket: SocketExtended): void {
+    const session = this.sessionManager.findByWebSocket(socket);
+    if (session) {
+      // Detach instead of terminate
+      this.sessionManager.detachWebSocket(socket);
+
+      // Decrement IP count
+      const ip = socket.req?.connection?.remoteAddress;
+      if (ip) {
+        this.sessionManager.decrementIPCount(ip);
+      }
+    }
+  }
+
+  /**
+   * Check if socket is part of a session
+   */
+  hasSession(socket: SocketExtended): boolean {
+    return !!this.sessionManager.findByWebSocket(socket);
+  }
+
+  /**
+   * Get session for socket
+   */
+  getSession(socket: SocketExtended) {
+    return this.sessionManager.findByWebSocket(socket);
+  }
+
+  /**
+   * Get statistics
+   */
+  getStats() {
+    return {
+      sessions: this.sessionManager.getStats(),
+      notifications: this.notificationManager.getStatus(),
+    };
+  }
+
+  /**
+   * Clean up on shutdown
+   */
+  shutdown(): void {
+    this.sessionManager.clearAll();
+  }
+}
+
+// Export singleton instance creator
+export function createSessionIntegration(
+  config?: Partial<SessionIntegrationConfig>,
+): SessionIntegration {
+  return new SessionIntegration(config);
+}
