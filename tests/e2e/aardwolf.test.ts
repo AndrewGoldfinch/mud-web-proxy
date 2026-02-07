@@ -7,41 +7,50 @@
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
 import { E2EConnection } from './connection-helper';
+import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
-// Use wss:// for TLS connection
-const PROXY_URL = process.env.E2E_PROXY_URL || 'wss://localhost:6200';
 const MUD_NAME = 'aardwolf';
+const TEST_PROXY_PORT = 6299;
 
 describe('Aardwolf MUD (aardmud.org:4000)', () => {
   const configResult = loadE2EConfig(MUD_NAME);
   const config = configResult.config;
   let connection: E2EConnection | null = null;
+  let proxy: ProxyLauncher | null = null;
 
-  beforeAll(() => {
+  beforeAll(async () => {
     if (configResult.skip) {
       throw new Error(`E2E test config error: ${configResult.reason}`);
     }
+
+    // Start test proxy
+    proxy = await startTestProxy(TEST_PROXY_PORT);
   });
 
-  afterAll(() => {
+  afterAll(async () => {
     if (connection) {
       connection.close();
       connection = null;
     }
+
+    if (proxy) {
+      await proxy.stop();
+      proxy = null;
+    }
   });
 
   it('should connect and create session', async () => {
-    if (!config) {
+    if (!config || !proxy) {
       expect(config).not.toBeNull();
+      expect(proxy).not.toBeNull();
       return;
     }
 
     connection = new E2EConnection(config);
-    const result = await connection.connect(PROXY_URL);
+    const result = await connection.connect(proxy.url);
 
     if (!result.success) {
       console.log('Connection failed:', result.error);
-      console.log('Messages received:', result.messages.length);
     }
 
     expect(result.success).toBe(true);
@@ -94,7 +103,8 @@ describe('Aardwolf MUD (aardmud.org:4000)', () => {
 
     // Verify we got actual data (not empty)
     const hasData = dataMessages.some((m) => {
-      const payload = (m.data as { payload?: string }).payload;
+      const data = m.data as { payload?: string };
+      const payload = data?.payload;
       return payload && payload.length > 0;
     });
     expect(hasData).toBe(true);
@@ -119,8 +129,9 @@ describe('Aardwolf MUD (aardmud.org:4000)', () => {
   });
 
   it('should handle session resume', async () => {
-    if (!config || !connection) {
+    if (!config || !connection || !proxy) {
       expect(connection).not.toBeNull();
+      expect(proxy).not.toBeNull();
       return;
     }
 
@@ -138,14 +149,13 @@ describe('Aardwolf MUD (aardmud.org:4000)', () => {
 
     // Close connection
     connection.close();
-    connection = null;
 
     // Wait a moment
     await new Promise((resolve) => setTimeout(resolve, 500));
 
     // Create new connection and resume
     connection = new E2EConnection(config);
-    const result = await connection.resume(PROXY_URL, sessionId, token, 0);
+    const result = await connection.resume(proxy.url, sessionId, token, 0);
 
     expect(result.success).toBe(true);
     expect(result.sessionId).toBe(sessionId);

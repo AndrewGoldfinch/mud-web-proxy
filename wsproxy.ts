@@ -273,12 +273,12 @@ interface ServerConfig {
 
 const srv: ServerConfig = {
   path: __dirname,
-  /* this websocket proxy port */
-  ws_port: 6200,
-  /* default telnet host */
-  tn_host: 'muds.maldorne.org',
-  /* default telnet/target port */
-  tn_port: 5010,
+  /* this websocket proxy port - can be overridden with WS_PORT env var */
+  ws_port: parseInt(process.env.WS_PORT || '6200', 10),
+  /* default telnet host - can be overridden with TN_HOST env var */
+  tn_host: process.env.TN_HOST || 'muds.maldorne.org',
+  /* default telnet/target port - can be overridden with TN_PORT env var */
+  tn_port: parseInt(process.env.TN_PORT || '5010', 10),
   /* enable additional debugging */
   debug: false,
   /* use node zlib (different from mccp) - you want this turned off unless your server can't do MCCP and your client can inflate data */

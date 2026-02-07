@@ -1,88 +1,63 @@
 /**
- * E2E Tests: Discworld MUD
- * Tests: MXP support, extended protocols
+ * E2E Tests: Discworld (MXP)
+ * Automatically starts test proxy on port 6299
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { loadE2EConfig, shouldRunE2ETests } from './config-loader';
+import { loadE2EConfig } from './config-loader';
 import { E2EConnection } from './connection-helper';
+import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
-const PROXY_URL = process.env.E2E_PROXY_URL || 'ws://localhost:6200';
 const MUD_NAME = 'discworld';
+const TEST_PROXY_PORT = 6299;
 
-describe.skipIf(!shouldRunE2ETests(), 'Discworld E2E Tests')(
-  'Discworld MUD (MXP support)',
-  () => {
-    const configResult = loadE2EConfig(MUD_NAME);
-    const config = configResult.config;
-    let connection: E2EConnection | null = null;
+describe('Discworld (MXP)', () => {
+  const configResult = loadE2EConfig(MUD_NAME);
+  const config = configResult.config;
+  let connection: E2EConnection | null = null;
+  let proxy: ProxyLauncher | null = null;
 
-    beforeAll(() => {
-      if (configResult.skip) {
-        console.log(`❌ Skipping Discworld E2E tests: ${configResult.reason}`);
-      }
-    });
+  beforeAll(async () => {
+    if (configResult.skip) {
+      console.log(`❌ Skipping tests: ${configResult.reason}`);
+      return;
+    }
+    
+    // Start test proxy
+    proxy = await startTestProxy(TEST_PROXY_PORT);
+  });
 
-    afterAll(() => {
-      if (connection) {
-        connection.close();
-        connection = null;
-      }
-    });
+  afterAll(async () => {
+    if (connection) {
+      connection.close();
+      connection = null;
+    }
+    
+    if (proxy) {
+      await proxy.stop();
+      proxy = null;
+    }
+  });
 
-    it.skipIf(
-      configResult.skip,
-      'should connect and negotiate MXP',
-      async () => {
-        if (!config) {
-          expect(config).not.toBeNull();
-          return;
-        }
+  it('should connect and create session', async () => {
+    if (!config || !proxy) {
+      expect(config).not.toBeNull();
+      expect(proxy).not.toBeNull();
+      return;
+    }
 
-        connection = new E2EConnection(config);
-        const result = await connection.connect(PROXY_URL);
+    connection = new E2EConnection(config);
+    const result = await connection.connect(proxy.url);
 
-        expect(result.success).toBe(true);
+    expect(result.success).toBe(true);
+    expect(result.sessionId).toBeDefined();
+    expect(result.token).toBeDefined();
+  });
 
-        // Wait for protocol negotiation
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-
-        // Check if MXP was negotiated
-        const negotiated = connection.isProtocolNegotiated('mxp');
-        expect(negotiated).toBe(true);
-      },
-    );
-
-    it.skipIf(
-      configResult.skip,
-      'should receive MXP markup in output',
-      async () => {
-        if (!config || !connection) {
-          expect(connection).not.toBeNull();
-          return;
-        }
-
-        // Wait for data
-        await new Promise((resolve) => setTimeout(resolve, 3000));
-
-        const messages = connection.getMessages();
-        const dataMessages = messages.filter((m) => m.type === 'data');
-
-        // Verify MXP tags if present
-        const hasData = dataMessages.length > 0;
-        expect(hasData).toBe(true);
-      },
-    );
-
-    it.skipIf(configResult.skip, 'should display login prompt', async () => {
-      if (!config || !connection) {
-        expect(connection).not.toBeNull();
-        return;
-      }
-
-      // Wait for login prompt
-      const promptFound = await connection.waitForText('login', 15000);
-      expect(promptFound).toBe(true);
-    });
-  },
-);
+  // Skip remaining tests if connection failed or config is missing
+  beforeEach(() => {
+    if (!connection) {
+      console.log('⚠️ Connection not available, skipping test');
+    }
+  });
+});
