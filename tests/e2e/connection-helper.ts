@@ -50,6 +50,7 @@ export class E2EConnection {
     return new Promise((resolve) => {
       try {
         // Use native Bun WebSocket
+        // Note: proxyUrl should be ws:// for non-TLS testing
         this.ws = new WebSocket(proxyUrl);
 
         const timeout = setTimeout(() => {

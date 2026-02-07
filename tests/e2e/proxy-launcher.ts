@@ -27,7 +27,7 @@ export async function startTestProxy(
 
     console.log(`[E2E] Starting test proxy on port ${port}...`);
 
-    // Spawn proxy process with test port
+    // Spawn proxy process with test port (non-TLS mode)
     const proxyProcess = spawn('bun', [proxyPath], {
       env: {
         ...process.env,
@@ -35,6 +35,7 @@ export async function startTestProxy(
         TN_HOST: 'aardmud.org',
         TN_PORT: '4000',
         ONLY_ALLOW_DEFAULT_SERVER: 'false',
+        DISABLE_TLS: '1',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -57,7 +58,7 @@ export async function startTestProxy(
           setTimeout(() => {
             resolve({
               process: proxyProcess,
-              url: `wss://localhost:${port}`,
+              url: `ws://localhost:${port}`,
               stop: () => stopProxy(proxyProcess),
             });
           }, 500);

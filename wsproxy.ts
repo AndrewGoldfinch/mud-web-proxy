@@ -32,6 +32,7 @@ by the basic in-proxy chat system.
 import util from 'util';
 import net from 'net';
 import https from 'https';
+import http from 'http';
 import zlib from 'zlib';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
@@ -41,7 +42,7 @@ import * as ws from 'ws';
 import iconv from 'iconv-lite';
 import type { WebSocket as WS, WebSocketServer } from 'ws';
 import type { Socket } from 'net';
-import type { Server as HttpServer } from 'https';
+import type { Server as HttpServer } from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
 
 import { SessionIntegration } from './src/session-integration';
@@ -365,13 +366,24 @@ const srv: ServerConfig = {
       chatlog = [];
     }
 
-    if (fs.existsSync('./cert.pem') && fs.existsSync('./privkey.pem')) {
+    // Check if TLS is disabled (for testing)
+    const USE_TLS = process.env.DISABLE_TLS !== '1';
+
+    if (
+      USE_TLS &&
+      fs.existsSync('./cert.pem') &&
+      fs.existsSync('./privkey.pem')
+    ) {
       webserver = https.createServer({
         cert: fs.readFileSync('./cert.pem'),
         key: fs.readFileSync('./privkey.pem'),
       });
+      srv.log('(ws) Using TLS/SSL');
+    } else if (!USE_TLS) {
+      // Non-TLS mode for testing
+      webserver = http.createServer();
+      srv.log('(ws) Running without TLS (DISABLE_TLS=1)');
     } else {
-      // TODO: maybe fallback to non secure connection
       srv.log('Could not find cert and/or privkey files, exiting.');
       process.exit();
     }

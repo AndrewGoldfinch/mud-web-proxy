@@ -12,6 +12,16 @@ These tests connect to actual MUD servers through the proxy to verify:
 - Data flow
 - Authentication
 
+### Automatic Proxy
+
+**No manual setup needed!** Each test automatically:
+
+1. Starts a test proxy on port 6299 (non-TLS mode)
+2. Runs the tests
+3. Stops the proxy when done
+
+Tests use `ws://` (non-TLS) to avoid certificate issues.
+
 ## Supported MUDs
 
 | MUD Type   | Test File            | Protocols        |
@@ -85,12 +95,6 @@ bun run test:e2e:rom
 bun run test:e2e:discworld
 bun run test:e2e:ire
 bun run test:e2e:raw
-```
-
-**Run with custom proxy URL:**
-
-```bash
-E2E_PROXY_URL=ws://your-proxy:6200 bun run test:e2e
 ```
 
 ## Test Behavior

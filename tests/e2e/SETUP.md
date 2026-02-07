@@ -4,6 +4,8 @@
 
 The E2E tests automatically start a test proxy server on port 6299, so you don't need to manually start the proxy.
 
+**Tests use non-TLS mode (ws://) to avoid certificate issues.**
+
 ## Running Tests
 
 ### Run all E2E tests:
@@ -55,14 +57,13 @@ cp config/e2e.example.json config/e2e/aardwolf.json
 1. **Auto-start**: Each test file automatically starts the proxy on port 6299
 2. **Isolation**: Tests run in isolation with their own proxy instance
 3. **Cleanup**: Proxy is stopped after each test file completes
-4. **TLS**: Self-signed certificates are accepted automatically
+4. **Non-TLS**: Tests use `ws://` (not `wss://`) to avoid certificate issues
 
 ## Environment Variables
 
 - `WS_PORT` - WebSocket proxy port (default: 6200, test: 6299)
 - `TN_HOST` - Default telnet host
 - `TN_PORT` - Default telnet port
-- `NODE_TLS_REJECT_UNAUTHORIZED=0` - Disable TLS verification for testing
 
 ## Troubleshooting
 
@@ -78,7 +79,7 @@ cp config/e2e.example.json config/e2e/aardwolf.json
 ### Connection failed
 
 - Check if proxy started (logs will show "[E2E] Proxy started")
-- Verify TLS certificates exist
+- Look for error messages in proxy output
 
 ## Adding New MUDs
 
