@@ -6,7 +6,7 @@ MUDBasher needs a proxy server that sits between the iOS client and MUD servers.
 
 This solves the core problem of mobile MUD clients: iOS kills network connections when apps background, breaking the continuous session model that MUDs expect.
 
-**Implementation approach:** Fork and extend `mud-web-proxy` (github.com/maldorne/mud-web-proxy), an existing Node.js WebSocket-to-telnet bridge with MCCP, GMCP, MSDP, and MXP support. The existing codebase handles the telnet protocol layer. We'll add session persistence, output buffering, sequence numbering, and APNS integration.
+**Implementation approach:** Fork and extend `mud-web-proxy` (github.com/maldorne/mud-web-proxy), a TypeScript WebSocket-to-telnet bridge running on Bun with MCCP, GMCP, MSDP, and MXP support. The existing codebase handles the telnet protocol layer and has a comprehensive test suite. We'll add session persistence, output buffering, sequence numbering, and APNS integration.
 
 **Target launch:** MVP in 4-6 weeks
 
@@ -30,7 +30,7 @@ This solves the core problem of mobile MUD clients: iOS kills network connection
 
 ## Existing Codebase: mud-web-proxy
 
-The `mud-web-proxy` project provides our foundation. Here's what it already handles:
+The `mud-web-proxy` project provides our foundation. The codebase has been migrated to TypeScript with Bun as the runtime and package manager.
 
 **Already implemented:**
 - WebSocket server using `ws` library
@@ -38,15 +38,22 @@ The `mud-web-proxy` project provides our foundation. Here's what it already hand
 - MCCP2 decompression (telnet option 86)
 - GMCP/MSDP/MXP protocol parsing
 - ANSI escape sequence pass-through
-- Basic telnet option negotiation (NAWS, TTYPE, charset)
+- Full telnet option negotiation (NAWS, TTYPE, CHARSET, UTF-8, SGA, NEW-ENV, ECHO)
+- ATCP protocol support
 - Configurable host/port connection
 - TLS/WSS support
+- In-proxy chat system
+- Password mode detection (ECHO negotiation, omits passwords from logs)
+- Comprehensive test suite (12 test files covering protocol negotiation, socket management, client requests, data transformation, chat, security, error handling, and integration)
 
 **Architecture:**
-- ~400 lines of JavaScript
-- Single file (`wsproxy.js`)
+- ~1160 lines of TypeScript (`wsproxy.ts`)
+- Single-file design with a central `srv` object (configuration + methods singleton)
+- Full type definitions: `SocketExtended`, `TelnetSocket`, `ClientRequest`, `ServerConfig`, `ProtocolConstants`
+- ES modules (`"type": "module"`) targeting ES2022
+- Bun runtime with TypeScript compiler for builds
 - Creates new telnet connection per WebSocket connection
-- No session persistence - connection dies with WebSocket
+- No session persistence — connection dies with WebSocket
 - No buffering or replay capability
 - No push notifications
 
@@ -64,41 +71,67 @@ The `mud-web-proxy` project provides our foundation. Here's what it already hand
 **Current structure (mud-web-proxy):**
 ```
 mud-web-proxy/
-├── wsproxy.js          # Main server file (~400 lines)
-├── package.json
-├── cert.pem           # TLS certificate
-├── privkey.pem        # TLS private key
+├── wsproxy.ts              # Main server file (~1160 lines TypeScript)
+├── package.json            # Bun package manager, ES modules
+├── tsconfig.json           # TypeScript config (ES2022, strict)
+├── eslint.config.js        # ESLint with TypeScript + Prettier
+├── bun.lock                # Bun lockfile
+├── dist/                   # Compiled output (tsc)
+│   ├── wsproxy.js
+│   └── wsproxy.d.ts
+├── tests/
+│   ├── setup.ts                        # Test setup/helpers
+│   ├── config/                         # Test configuration
+│   ├── mocks/                          # Test mocks
+│   ├── telnet-negotiation-part1.test.ts  # MCCP, TTYPE, GMCP, MSDP
+│   ├── telnet-negotiation-part2.test.ts  # MXP, NEW-ENV, ECHO, SGA, NAWS, CHARSET
+│   ├── protocol-constants.test.ts      # Protocol buffer validation
+│   ├── socket-management.test.ts       # Socket lifecycle
+│   ├── client-request.test.ts          # Client message parsing
+│   ├── data-transformation.test.ts     # Data encoding/compression
+│   ├── chat-system.test.ts             # Chat functionality
+│   ├── security.test.ts                # Security controls
+│   ├── error-handling.test.ts          # Error scenarios
+│   ├── utilities.test.ts              # Utility functions
+│   └── integration.test.ts            # End-to-end flows
+├── cert.pem                # TLS certificate (not in git)
+├── privkey.pem             # TLS private key (not in git)
+├── CLAUDE.md               # AI coding assistant guidance
+├── AGENTS.md               # AI agent coding guidelines
 └── README.md
 ```
 
-**Target structure (with our additions):**
+**Target structure (with session persistence additions):**
 ```
-mudbasher-proxy/       # Forked repo
+mudbasher-proxy/            # Forked repo
+├── wsproxy.ts              # Main server (existing, extended)
 ├── src/
-│   ├── server.js           # Main entry point (refactored wsproxy.js)
-│   ├── session.js          # Session class - manages telnet + buffer
-│   ├── session-manager.js  # SessionManager - stores active sessions
-│   ├── circular-buffer.js  # CircularBuffer - output buffering
-│   ├── notification-manager.js  # APNS integration
-│   ├── trigger-matcher.js  # Pattern matching for notifications
-│   └── telnet-handler.js   # Existing protocol code (extracted)
+│   ├── session.ts               # Session class - manages telnet + buffer
+│   ├── session-manager.ts       # SessionManager - stores active sessions
+│   ├── circular-buffer.ts       # CircularBuffer - output buffering
+│   ├── notification-manager.ts  # APNS integration
+│   └── trigger-matcher.ts       # Pattern matching for notifications
 ├── config/
 │   ├── production.json     # Production config
 │   ├── development.json    # Dev config
 │   └── apns-key.p8        # APNS auth key (not in git)
 ├── tests/
-│   ├── session.test.js
-│   ├── buffer.test.js
-│   └── triggers.test.js
+│   ├── ... (existing test files)
+│   ├── session.test.ts
+│   ├── buffer.test.ts
+│   └── triggers.test.ts
 ├── package.json
+├── tsconfig.json
 └── README.md
 ```
 
 **Where existing mud-web-proxy code goes:**
-- Telnet protocol negotiation → `telnet-handler.js`
-- MCCP/GMCP/MSDP parsing → `telnet-handler.js`
-- WebSocket server setup → `server.js`
-- Main event loop → Refactored into `server.js` + `session.js`
+- Telnet protocol negotiation → stays in `wsproxy.ts` (single-file design retained)
+- MCCP/GMCP/MSDP parsing → stays in `wsproxy.ts`
+- WebSocket server setup → stays in `wsproxy.ts`
+- Session management → new `src/session.ts` + `src/session-manager.ts`
+- Buffering → new `src/circular-buffer.ts`
+- Notifications → new `src/notification-manager.ts` + `src/trigger-matcher.ts`
 
 ## User Personas
 
@@ -234,7 +267,7 @@ Proxy → Client:
 **TR-1: Deployment target**
 - VPS with 512MB RAM, 1 CPU core, 10GB disk
 - Ubuntu 22.04 or 24.04 LTS
-- Node.js 18+ or Swift/Vapor on Linux
+- Bun runtime (primary) or Node.js 18+ as fallback
 - Systemd for process management
 
 **TR-2: Networking**
@@ -288,103 +321,113 @@ Proxy → Client:
 
 ### Current Architecture (mud-web-proxy baseline)
 
-```javascript
-// Simplified current flow
-websocket.on('connection', (ws) => {
-  const telnet = net.createConnection(mudHost, mudPort);
-  
-  // Bidirectional pipe
-  ws.on('message', data => telnet.write(data));
-  telnet.on('data', data => ws.send(processOutput(data)));
-  
-  // Coupled lifecycle
-  ws.on('close', () => telnet.end());
-  telnet.on('close', () => ws.close());
-});
+```typescript
+// Simplified current flow (wsproxy.ts)
+// Central srv object holds config + methods
+const srv = {
+  init() {
+    // Creates HTTPS + WebSocketServer, loads chat log
+  },
+  parse(ws: SocketExtended, msg: ClientRequest) {
+    // Parses JSON commands from WebSocket clients
+    // Calls initT() for new connections
+  },
+  initT(ws: SocketExtended, host: string, port: number) {
+    // Opens telnet socket to MUD server
+    // Sets up bidirectional data flow
+  },
+  sendClient(ws: SocketExtended, data: Buffer) {
+    // Processes telnet data: protocol negotiation,
+    // MCCP decompression, GMCP/MSDP/MXP extraction
+  },
+  forward(ws: SocketExtended, data: Buffer) {
+    // Forwards raw data from WebSocket to telnet
+  },
+  closeSocket(ws: SocketExtended) {
+    // Cleans up both WebSocket and telnet connections
+  }
+};
 ```
 
-**Problem:** WebSocket and telnet lifecycles are tightly coupled. When WebSocket closes, telnet closes.
+**Problem:** WebSocket and telnet lifecycles are tightly coupled via `SocketExtended`. When WebSocket closes, `closeSocket()` terminates the telnet connection.
 
 ### Target Architecture (with session persistence)
 
-```javascript
-// Session-based architecture
-const sessions = new Map(); // sessionId -> Session
+```typescript
+// Session-based architecture extending srv object
+// New imports from src/ modules
+import { Session } from './src/session';
+import { SessionManager } from './src/session-manager';
+import { CircularBuffer } from './src/circular-buffer';
+import { NotificationManager } from './src/notification-manager';
+import { TriggerMatcher } from './src/trigger-matcher';
 
-websocket.on('connection', (ws) => {
-  ws.on('message', (msg) => {
-    const parsed = JSON.parse(msg);
-    
-    if (parsed.type === 'connect') {
-      // Create new session
-      const session = createSession(parsed.host, parsed.port);
-      sessions.set(session.id, session);
-      
-      // Attach WebSocket to session
+const sessionManager = new SessionManager();
+
+// Extended srv.parse() handles session-aware messages
+srv.parse = (ws: SocketExtended, msg: ClientRequest) => {
+  if (msg.type === 'connect') {
+    const session = sessionManager.create(msg.host, msg.port);
+    session.attachClient(ws);
+    ws.send(JSON.stringify({
+      type: 'session',
+      sessionId: session.id,
+      token: session.authToken,
+    }));
+  } else if (msg.type === 'resume') {
+    const session = sessionManager.get(msg.sessionId);
+    if (session?.validateToken(msg.token)) {
       session.attachClient(ws);
-      
-      ws.send(JSON.stringify({
-        type: 'session',
-        sessionId: session.id,
-        token: session.authToken
-      }));
-      
-    } else if (parsed.type === 'resume') {
-      // Resume existing session
-      const session = sessions.get(parsed.sessionId);
-      if (validateToken(session, parsed.token)) {
-        session.attachClient(ws);
-        session.replayBuffer(parsed.lastSeq);
-      } else {
-        ws.send(JSON.stringify({ type: 'error', code: 'invalid_resume' }));
-      }
-      
-    } else if (parsed.type === 'input') {
-      // Forward to session's telnet connection
-      const session = findSessionByWebSocket(ws);
-      session.sendToMud(parsed.text);
+      session.replayBuffer(msg.lastSeq);
+    } else {
+      ws.send(JSON.stringify({ type: 'error', code: 'invalid_resume' }));
     }
-  });
-  
-  ws.on('close', () => {
-    const session = findSessionByWebSocket(ws);
-    if (session) {
-      session.detachClient(ws);
-      // Session continues, telnet stays alive
-    }
-  });
-});
+  } else if (msg.type === 'input') {
+    const session = sessionManager.findByWebSocket(ws);
+    session?.sendToMud(msg.text);
+  }
+};
 
-// Session class manages telnet independently
+// Extended srv.closeSocket() detaches instead of destroying
+srv.closeSocket = (ws: SocketExtended) => {
+  const session = sessionManager.findByWebSocket(ws);
+  if (session) {
+    session.detachClient(ws);
+    // Session continues, telnet stays alive
+  }
+};
+
+// Session class (src/session.ts)
 class Session {
-  constructor(host, port) {
-    this.telnet = net.createConnection(host, port);
+  id: string;            // UUID
+  authToken: string;     // crypto-random 64-char hex
+  telnet: TelnetSocket;
+  buffer: CircularBuffer;
+  sequence: number = 0;
+  clients: Set<SocketExtended> = new Set();
+
+  constructor(host: string, port: number) {
+    this.telnet = net.createConnection(host, port) as TelnetSocket;
     this.buffer = new CircularBuffer(50 * 1024);
-    this.sequence = 0;
-    this.clients = new Set(); // Multiple WebSockets possible
-    
-    this.telnet.on('data', (data) => {
-      const processed = this.processOutput(data);
+
+    this.telnet.on('data', (data: Buffer) => {
+      const processed = srv.sendClient(this.activeClient, data);
       this.bufferOutput(processed);
-      
+
       if (this.clients.size === 0) {
-        // Client disconnected, check for notification triggers
         this.checkTriggers(processed);
       } else {
-        // Client connected, send immediately
         this.broadcast(processed);
       }
     });
   }
-  
-  attachClient(ws) {
+
+  attachClient(ws: SocketExtended): void {
     this.clients.add(ws);
-    this.clientConnected = true;
   }
-  
-  detachClient(ws) {
+
+  detachClient(ws: SocketExtended): void {
     this.clients.delete(ws);
-    this.clientConnected = (this.clients.size > 0);
   }
 }
 ```
@@ -558,20 +601,35 @@ class Session {
 
 ## Implementation Phases
 
-### Phase 1: Fork and Baseline (Week 1)
-- Fork mud-web-proxy repository
-- Set up local development environment
-- Deploy unmodified mud-web-proxy to test VPS
-- Configure TLS with Let's Encrypt
-- Test basic WebSocket-to-telnet bridging with MUDBasher
-- Document existing codebase architecture
+### Phase 1: Fork, Baseline, and Modernize (Week 1) — COMPLETED
+
+- [x] Fork mud-web-proxy repository
+- [x] Migrate codebase from JavaScript to TypeScript (~1160 lines)
+- [x] Switch runtime to Bun (package manager + dev server)
+- [x] Set up ES modules (`"type": "module"`) targeting ES2022
+- [x] Add full type definitions (`SocketExtended`, `TelnetSocket`, `ClientRequest`, `ServerConfig`, `ProtocolConstants`)
+- [x] Configure build tooling (TypeScript compiler → `dist/`)
+- [x] Set up ESLint with TypeScript + Prettier (79 char width, 2-space indent, single quotes)
+- [x] Create comprehensive test suite (12 test files using Bun's native test framework with coverage)
+- [x] Add AI coding assistant guidance (`CLAUDE.md`, `AGENTS.md`)
+- [x] Document existing codebase architecture
+- [ ] Deploy to test VPS
+- [ ] Configure TLS with Let's Encrypt
+- [ ] Test basic WebSocket-to-telnet bridging with MUDBasher
 
 **Acceptance criteria:**
-- Can connect from MUDBasher to Aardwolf via unmodified proxy
-- Commands sent through proxy reach MUD
-- MUD output appears in MUDBasher
-- ANSI colors render correctly
-- GMCP data flows through correctly
+- ~~Can connect from MUDBasher to Aardwolf via unmodified proxy~~
+- ~~Commands sent through proxy reach MUD~~
+- ~~MUD output appears in MUDBasher~~
+- ~~ANSI colors render correctly~~
+- ~~GMCP data flows through correctly~~
+- [x] TypeScript compiles cleanly (`bun run build`)
+- [x] All tests pass (`bun run test`)
+- [x] Linting passes (`bun run lint`)
+- [x] Type checking passes (`bun run typecheck`)
+- [ ] Can connect from MUDBasher to Aardwolf via proxy
+- [ ] Commands sent through proxy reach MUD
+- [ ] MUD output appears in MUDBasher with ANSI colors and GMCP data
 
 ### Phase 2: Session Persistence Layer (Week 2-3)
 - Create SessionManager class to store active sessions
@@ -583,11 +641,12 @@ class Session {
 - Implement session resume logic with token validation
 
 **Code changes:**
-- Refactor `wsproxy.js` to extract session management
-- Add `SessionManager` class with Map of sessionId → Session
-- Add `CircularBuffer` class for output buffering
-- Modify MUD output handler to buffer data with sequence numbers
-- Add resume message handler
+- Extend `wsproxy.ts` to integrate session management imports
+- Add `SessionManager` class (`src/session-manager.ts`) with Map of sessionId → Session
+- Add `Session` class (`src/session.ts`) decoupling telnet from WebSocket lifecycle
+- Add `CircularBuffer` class (`src/circular-buffer.ts`) for output buffering
+- Modify MUD output handler in `srv.sendClient()` to buffer data with sequence numbers
+- Add resume message handler in `srv.parse()`
 
 **Acceptance criteria:**
 - WebSocket disconnect doesn't terminate telnet connection
@@ -608,10 +667,10 @@ class Session {
 - Send APNS notifications when clientConnected == false
 
 **Code changes:**
-- Add `NotificationManager` class with APNS client
-- Add `TriggerMatcher` class with regex patterns
-- Hook matcher into MUD output processing before buffering
-- Store device token from connect/resume messages
+- Add `NotificationManager` class (`src/notification-manager.ts`) with APNS client
+- Add `TriggerMatcher` class (`src/trigger-matcher.ts`) with regex patterns
+- Hook matcher into MUD output processing in `srv.sendClient()` before buffering
+- Store device token from connect/resume messages in Session object
 - Implement rate limiting with timestamp tracking
 
 **Acceptance criteria:**
@@ -635,21 +694,24 @@ class Session {
 **Infrastructure setup:**
 ```bash
 # On VPS
-apt update && apt install -y nodejs npm certbot
-git clone your-fork-of-mud-web-proxy
-cd mud-web-proxy && npm install
+apt update && apt install -y certbot unzip
+# Install Bun runtime
+curl -fsSL https://bun.sh/install | bash
+source ~/.bashrc
 
-# Production dependencies
-npm install apn winston --save
+git clone your-fork-of-mud-web-proxy
+cd mud-web-proxy && bun install
+
+# Build TypeScript
+bun run build
 
 # TLS cert
 certbot certonly --standalone -d mudproxy.yourdomain.com
 
-# Process management
-npm install -g pm2
-pm2 start wsproxy.js --name mudbasher-proxy
-pm2 startup
-pm2 save
+# Process management (systemd recommended for Bun)
+# Copy systemd service file and enable
+systemctl enable mudbasher-proxy
+systemctl start mudbasher-proxy
 ```
 
 **Acceptance criteria:**
@@ -1035,17 +1097,28 @@ LOG_FILE=/var/log/mudbasher-proxy.log
 ### Command Line Usage
 
 ```bash
-# Start with default config
-node server.js
+# Development (run TypeScript directly with Bun)
+bun dev
+
+# Production (build first, then run compiled output)
+bun run build
+bun start
 
 # Start with specific config file
-node server.js --config config/production.json
+bun dist/wsproxy.js --config config/production.json
 
 # Override specific settings
-node server.js --port 8080 --buffer-size 100
+bun dist/wsproxy.js --port 8080 --buffer-size 100
 
 # Enable debug logging
-node server.js --log-level debug
+bun dist/wsproxy.js --log-level debug
+
+# Run tests
+bun run test
+
+# Lint and type-check
+bun run lint
+bun run typecheck
 ```
 
 ## Open Questions
@@ -1067,16 +1140,24 @@ A: Not in v1. Memory-only sessions. If proxy restarts, all sessions lost. Add Re
 
 ## Dependencies
 
-**Existing (from mud-web-proxy):**
-- `ws` ^8.0.0 - WebSocket server
-- `node` >=14.0.0 - Runtime
-- Built-in `net` module - TCP sockets
-- Built-in `zlib` module - MCCP decompression
+**Existing runtime (from mud-web-proxy):**
+- `ws` ^8.19.0 — WebSocket server
+- `iconv-lite` ^0.6.3 — Character encoding conversion
+- `uglify-js` ^3.19.3 — Client JavaScript minification
+- Built-in `net` module — TCP sockets
+- Built-in `zlib` module — MCCP decompression
+- Built-in `crypto` module — Token generation
 
-**New additions:**
-- `apn` ^2.2.0 - Apple Push Notification Service client
-- `winston` ^3.8.0 - Structured logging
-- `uuid` ^9.0.0 - Session ID generation
+**Existing dev dependencies:**
+- `typescript` ^5.9.3 — TypeScript compiler
+- `@types/node`, `@types/ws` — Type definitions
+- `eslint` ^9.39.2 with `@typescript-eslint/*` — Linting
+- `prettier` ^3.8.1 — Code formatting
+- `eslint-config-prettier`, `eslint-plugin-prettier` — ESLint/Prettier integration
+
+**New additions (for session persistence):**
+- `apn` ^2.2.0 — Apple Push Notification Service client (or raw HTTP/2)
+- `uuid` ^9.0.0 — Session ID generation (or `crypto.randomUUID()`)
 
 **External services:**
 - Apple Push Notification Service (APNS)
@@ -1089,10 +1170,10 @@ A: Not in v1. Memory-only sessions. If proxy restarts, all sessions lost. Add Re
 - APNS authentication key (.p8 file from Apple Developer)
 
 **Development:**
-- Node.js 18+ (LTS)
-- npm or yarn
+- Bun runtime (primary) — package manager, dev server, test runner
+- Node.js 18+ (fallback runtime)
 - Git for version control
-- Text editor with JavaScript support
+- Text editor with TypeScript support
 
 ## Documentation Needs
 
