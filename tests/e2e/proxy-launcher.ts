@@ -19,8 +19,14 @@ export interface ProxyLauncher {
 /**
  * Start proxy server for E2E testing
  */
+export interface ProxyConfig {
+  TN_HOST?: string;
+  TN_PORT?: string;
+}
+
 export async function startTestProxy(
   port: number = 6299,
+  extraEnv?: ProxyConfig,
 ): Promise<ProxyLauncher> {
   return new Promise((resolve, reject) => {
     const proxyPath = path.join(__dirname, '..', '..', 'wsproxy.ts');
@@ -32,8 +38,8 @@ export async function startTestProxy(
       env: {
         ...process.env,
         WS_PORT: port.toString(),
-        TN_HOST: 'aardmud.org',
-        TN_PORT: '4000',
+        TN_HOST: extraEnv?.TN_HOST || 'aardmud.org',
+        TN_PORT: extraEnv?.TN_PORT || '4000',
         ONLY_ALLOW_DEFAULT_SERVER: 'false',
         DISABLE_TLS: '1',
       },
