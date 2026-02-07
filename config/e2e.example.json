@@ -1,0 +1,19 @@
+{
+  "_comment": "Copy this file to create your own E2E test configs. Example: cp e2e.example.json e2e/aardwolf.json",
+  "enabled": false,
+  "host": "muds.example.com",
+  "port": 4000,
+  "username": "your_username",
+  "password": "your_password",
+  "character": "YourCharacter",
+  "expectations": {
+    "gmcp": false,
+    "mccp": false,
+    "mxp": false,
+    "msdp": false,
+    "utf8": true,
+    "ansi": true
+  },
+  "testTimeoutMs": 30000,
+  "loginPrompt": "Enter your username:"
+}

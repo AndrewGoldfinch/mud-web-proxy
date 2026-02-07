@@ -15,6 +15,13 @@
     "dev": "bun wsproxy.ts",
     "start": "bun dist/wsproxy.js",
     "test": "bun test --coverage",
+    "test:unit": "bun test tests/*.test.ts --coverage",
+    "test:e2e": "bun test tests/e2e/**/*.test.ts",
+    "test:e2e:aardwolf": "bun test tests/e2e/aardwolf.test.ts",
+    "test:e2e:rom": "bun test tests/e2e/rom-mud.test.ts",
+    "test:e2e:discworld": "bun test tests/e2e/discworld.test.ts",
+    "test:e2e:ire": "bun test tests/e2e/ire-mud.test.ts",
+    "test:e2e:raw": "bun test tests/e2e/raw-telnet.test.ts",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
     "typecheck": "tsc --noEmit"
