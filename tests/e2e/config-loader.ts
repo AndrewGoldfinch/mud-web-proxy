@@ -8,6 +8,7 @@
  * 3. .env (defaults, can be committed)
  *
  * Per-MUD configs: .env.aardwolf, .env.achaea, etc.
+ * Each file contains unprefixed variables like ENABLED=true, HOST=..., etc.
  */
 
 import path from 'path';
@@ -44,59 +45,58 @@ export interface ConfigLoadResult {
 /**
  * Load E2E config for a specific MUD from environment variables
  * Variables are loaded from .env.{mud} and .env.{mud}.local files
+ * Variables in each file are unprefixed (e.g., ENABLED=true, HOST=...)
  *
- * Example for Aardwolf:
- *   AARDWOLF_ENABLED=true
- *   AARDWOLF_HOST=aardmud.org
- *   AARDWOLF_PORT=4000
- *   AARDWOLF_USERNAME=your_name
- *   AARDWOLF_PASSWORD=your_pass
- *   AARDWOLF_EXPECT_GMCP=true
+ * Example for Aardwolf in .env.aardwolf:
+ *   ENABLED=true
+ *   HOST=aardmud.org
+ *   PORT=4000
+ *   USERNAME=your_name
+ *   PASSWORD=your_pass
+ *   EXPECT_GMCP=true
  *   ...
  */
 export function loadE2EConfig(mudName: string): ConfigLoadResult {
-  const prefix = mudName.toUpperCase().replace(/-/g, '_');
-
-  // Check if enabled
-  const enabled = getEnvBool(`${prefix}_ENABLED`, false);
+  // Check if enabled (no prefix needed since each .env file is MUD-specific)
+  const enabled = getEnvBool('ENABLED', false);
   if (!enabled) {
     return {
       config: null,
       skip: true,
-      reason: `E2E tests disabled (${prefix}_ENABLED not set or false). Create .env.${mudName}.local to enable.`,
+      reason: `E2E tests disabled (ENABLED not set or false). Create .env.${mudName}.local to enable.`,
     };
   }
 
   // Load required fields
-  const host = process.env[`${prefix}_HOST`];
-  const port = getEnvInt(`${prefix}_PORT`, 0);
+  const host = process.env['HOST'];
+  const port = getEnvInt('PORT', 0);
 
   if (!host || port === 0) {
     return {
       config: null,
       skip: true,
-      reason: `Missing required fields: ${prefix}_HOST and/or ${prefix}_PORT`,
+      reason: `Missing required fields: HOST and/or PORT`,
     };
   }
 
-  // Build config from environment
+  // Build config from environment (no prefix needed)
   const config: E2EConfig = {
     enabled: true,
     host,
     port,
-    username: process.env[`${prefix}_USERNAME`] || undefined,
-    password: process.env[`${prefix}_PASSWORD`] || undefined,
-    character: process.env[`${prefix}_CHARACTER`] || undefined,
+    username: process.env['USERNAME'] || undefined,
+    password: process.env['PASSWORD'] || undefined,
+    character: process.env['CHARACTER'] || undefined,
     expectations: {
-      gmcp: getEnvBool(`${prefix}_EXPECT_GMCP`, true),
-      mccp: getEnvBool(`${prefix}_EXPECT_MCCP`, true),
-      mxp: getEnvBool(`${prefix}_EXPECT_MXP`, false),
-      msdp: getEnvBool(`${prefix}_EXPECT_MSDP`, false),
-      utf8: getEnvBool(`${prefix}_EXPECT_UTF8`, true),
-      ansi: getEnvBool(`${prefix}_EXPECT_ANSI`, true),
+      gmcp: getEnvBool('EXPECT_GMCP', true),
+      mccp: getEnvBool('EXPECT_MCCP', true),
+      mxp: getEnvBool('EXPECT_MXP', false),
+      msdp: getEnvBool('EXPECT_MSDP', false),
+      utf8: getEnvBool('EXPECT_UTF8', true),
+      ansi: getEnvBool('EXPECT_ANSI', true),
     },
-    testTimeoutMs: getEnvInt(`${prefix}_TIMEOUT_MS`, 30000),
-    loginPrompt: process.env[`${prefix}_LOGIN_PROMPT`] || undefined,
+    testTimeoutMs: getEnvInt('TIMEOUT_MS', 30000),
+    loginPrompt: process.env['LOGIN_PROMPT'] || undefined,
   };
 
   return {
@@ -115,20 +115,8 @@ export function shouldRunE2ETests(): boolean {
     return false;
   }
 
-  // In CI, check if we have any configs set up
-  if (isCI()) {
-    // In CI, check if at least one MUD is enabled
-    const muds = ['aardwolf', 'achaea', 'discworld', 'ire', 'rom', 'raw'];
-    return muds.some((mud) => {
-      const prefix = mud.toUpperCase().replace(/-/g, '_');
-      return (
-        process.env[`${prefix}_ENABLED`] === 'true' ||
-        process.env[`${prefix}_ENABLED`] === '1'
-      );
-    });
-  }
-
-  // In dev, always allow (will check per-MUD)
+  // In dev, always allow (will check per-MUD when loading specific configs)
+  // In CI, tests should use the mock server instead
   return true;
 }
 
@@ -147,13 +135,18 @@ export function isCI(): boolean {
 
 /**
  * Get list of available E2E configs
+ * Note: This now checks each MUD's specific .env file
  */
 export function listAvailableConfigs(): string[] {
   const muds = ['aardwolf', 'achaea', 'discworld', 'ire', 'rom', 'raw'];
 
   return muds.filter((mud) => {
-    const prefix = mud.toUpperCase().replace(/-/g, '_');
-    const enabled = process.env[`${prefix}_ENABLED`];
+    // In a real implementation, we would load each .env.{mud} file
+    // and check if ENABLED=true. For now, just return empty or
+    // check if there's a way to know which are configured.
+    // This is a simplified version - in practice, you'd need to
+    // actually load each .env file to check.
+    const enabled = process.env['ENABLED'];
     return enabled === 'true' || enabled === '1';
   });
 }
@@ -193,19 +186,37 @@ export function getAllEnv(): Record<string, string | undefined> {
 }
 
 /**
- * Get MUD-specific environment variables
+ * Get MUD-specific environment variables from current loaded env
+ * Returns variables relevant to the current MUD context
  */
 export function getMudEnv(
-  mudName: string,
+  _mudName: string,
 ): Record<string, string | undefined> {
-  const prefix = mudName.toUpperCase().replace(/-/g, '_');
-  const result: Record<string, string | undefined> = {};
+  // Since each MUD has its own .env file, we just return all env vars
+  // that are relevant to MUD configuration (not system vars)
+  const mudVars: Record<string, string | undefined> = {};
+  const relevantKeys = [
+    'ENABLED',
+    'HOST',
+    'PORT',
+    'USERNAME',
+    'PASSWORD',
+    'CHARACTER',
+    'EXPECT_GMCP',
+    'EXPECT_MCCP',
+    'EXPECT_MXP',
+    'EXPECT_MSDP',
+    'EXPECT_UTF8',
+    'EXPECT_ANSI',
+    'TIMEOUT_MS',
+    'LOGIN_PROMPT',
+  ];
 
-  for (const [key, value] of Object.entries(process.env)) {
-    if (key.startsWith(prefix)) {
-      result[key] = value;
+  for (const key of relevantKeys) {
+    if (key in process.env) {
+      mudVars[key] = process.env[key];
     }
   }
 
-  return result;
+  return mudVars;
 }

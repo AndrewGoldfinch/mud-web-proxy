@@ -54,25 +54,34 @@ cp .env.raw .env.raw.local
 
 ### 2. Configure Each MUD
 
-Edit each `.env.{mud}.local` file with your credentials:
+Edit each `.env.{mud}.local` file with your credentials. Since each file is MUD-specific, variables don't need prefixes:
 
 **.env.aardwolf.local:**
 
 ```env
-AARDWOLF_ENABLED=true
-AARDWOLF_HOST=aardmud.org
-AARDWOLF_PORT=4000
-AARDWOLF_USERNAME=your_username
-AARDWOLF_PASSWORD=your_password
-AARDWOLF_CHARACTER=YourCharacter
-AARDWOLF_EXPECT_GMCP=true
-AARDWOLF_EXPECT_MCCP=true
-AARDWOLF_EXPECT_MXP=false
-AARDWOLF_EXPECT_MSDP=false
-AARDWOLF_EXPECT_UTF8=true
-AARDWOLF_EXPECT_ANSI=true
-AARDWOLF_TIMEOUT_MS=30000
-AARDWOLF_LOGIN_PROMPT=Enter your username:
+# Enable this MUD for testing
+ENABLED=true
+
+# Connection settings
+HOST=aardmud.org
+PORT=4000
+
+# Authentication (add to .env.aardwolf.local, not this file!)
+USERNAME=your_username
+PASSWORD=your_password
+CHARACTER=YourCharacter
+
+# Protocol expectations
+EXPECT_GMCP=true
+EXPECT_MCCP=true
+EXPECT_MXP=false
+EXPECT_MSDP=false
+EXPECT_UTF8=true
+EXPECT_ANSI=true
+
+# Test settings
+TIMEOUT_MS=30000
+LOGIN_PROMPT="Enter your username:"
 ```
 
 ### 3. Start the Proxy
@@ -105,13 +114,13 @@ bun run test:e2e:raw
 
 Tests are automatically skipped if:
 
-- Environment variable `{MUD}_ENABLED` is not set or is `false`
-- Missing required fields (`{MUD}_HOST`, `{MUD}_PORT`)
+- Environment variable `ENABLED` is not set or is `false`
+- Missing required fields (`HOST`, `PORT`)
 
 You'll see a message like:
 
 ```
-❌ Skipping Aardwolf E2E tests: E2E tests disabled (AARDWOLF_ENABLED not set or false). Create .env.aardwolf.local to enable.
+❌ Skipping Aardwolf E2E tests: E2E tests disabled (ENABLED not set or false). Create .env.aardwolf.local to enable.
 ```
 
 ### What Tests Verify
@@ -153,24 +162,24 @@ You'll see a message like:
 
 ## Configuration Options
 
-| Variable             | Required | Description                                   |
-| -------------------- | -------- | --------------------------------------------- |
-| `{MUD}_ENABLED`      | Yes      | Set to `true` to run tests                    |
-| `{MUD}_HOST`         | Yes      | MUD server hostname                           |
-| `{MUD}_PORT`         | Yes      | MUD server port                               |
-| `{MUD}_USERNAME`     | No       | Your MUD username                             |
-| `{MUD}_PASSWORD`     | No       | Your MUD password                             |
-| `{MUD}_CHARACTER`    | No       | Character name                                |
-| `{MUD}_EXPECT_GMCP`  | Yes      | Expect GMCP support                           |
-| `{MUD}_EXPECT_MCCP`  | Yes      | Expect MCCP support                           |
-| `{MUD}_EXPECT_MXP`   | Yes      | Expect MXP support                            |
-| `{MUD}_EXPECT_MSDP`  | Yes      | Expect MSDP support                           |
-| `{MUD}_EXPECT_UTF8`  | Yes      | Expect UTF-8 support                          |
-| `{MUD}_EXPECT_ANSI`  | Yes      | Expect ANSI color support                     |
-| `{MUD}_TIMEOUT_MS`   | No       | Test timeout in milliseconds (default: 30000) |
-| `{MUD}_LOGIN_PROMPT` | No       | Text to wait for at login                     |
+Since each MUD has its own `.env.{mud}` file, variables don't need prefixes:
 
-Replace `{MUD}` with the uppercase MUD name (e.g., `AARDWOLF`, `ROM`, etc.)
+| Variable       | Required | Description                                   |
+| -------------- | -------- | --------------------------------------------- |
+| `ENABLED`      | Yes      | Set to `true` to run tests                    |
+| `HOST`         | Yes      | MUD server hostname                           |
+| `PORT`         | Yes      | MUD server port                               |
+| `USERNAME`     | No       | Your MUD username                             |
+| `PASSWORD`     | No       | Your MUD password                             |
+| `CHARACTER`    | No       | Character name                                |
+| `EXPECT_GMCP`  | Yes      | Expect GMCP support                           |
+| `EXPECT_MCCP`  | Yes      | Expect MCCP support                           |
+| `EXPECT_MXP`   | Yes      | Expect MXP support                            |
+| `EXPECT_MSDP`  | Yes      | Expect MSDP support                           |
+| `EXPECT_UTF8`  | Yes      | Expect UTF-8 support                          |
+| `EXPECT_ANSI`  | Yes      | Expect ANSI color support                     |
+| `TIMEOUT_MS`   | No       | Test timeout in milliseconds (default: 30000) |
+| `LOGIN_PROMPT` | No       | Text to wait for at login                     |
 
 ## Security Notes
 
@@ -183,20 +192,20 @@ Replace `{MUD}` with the uppercase MUD name (e.g., `AARDWOLF`, `ROM`, etc.)
 
 ### Tests timeout
 
-- Increase `{MUD}_TIMEOUT_MS` in config
+- Increase `TIMEOUT_MS` in config
 - Check proxy is running: `bun dev`
 - Verify MUD server is reachable
 
 ### "E2E tests disabled"
 
 - Create the `.env.{mud}.local` file
-- Set `{MUD}_ENABLED=true` in the file
+- Set `ENABLED=true` in the file
 - Ensure all required fields are set
 
 ### "Connection failed"
 
 - Check proxy is running on correct port
-- Verify `{MUD}_HOST` and `{MUD}_PORT` are correct
+- Verify `HOST` and `PORT` are correct
 - Check firewall/proxy settings
 
 ### Protocol not negotiating
@@ -213,6 +222,22 @@ Replace `{MUD}` with the uppercase MUD name (e.g., `AARDWOLF`, `ROM`, etc.)
 4. Add tests for your MUD's specific features
 5. Create config: `.env.your-mud` and `.env.your-mud.local`
 6. Add npm script to `package.json`
+
+Example `.env.your-mud`:
+
+```env
+ENABLED=true
+HOST=your-mud.com
+PORT=4000
+EXPECT_GMCP=true
+EXPECT_MCCP=false
+EXPECT_MXP=true
+EXPECT_MSDP=false
+EXPECT_UTF8=true
+EXPECT_ANSI=true
+TIMEOUT_MS=30000
+LOGIN_PROMPT="Login:"
+```
 
 ## CI/CD Integration
 
@@ -232,38 +257,26 @@ To enable in CI, set environment variables and ensure proxy is running:
     bun run test:e2e
   env:
     E2E_PROXY_URL: ws://localhost:6200
-    AARDWOLF_ENABLED: true
-    AARDWOLF_HOST: aardmud.org
-    AARDWOLF_PORT: 4000
-    # ... other MUD configs
 ```
 
-## Migration from JSON Config
+## Migration from Prefixed Format
 
-If you were using the old JSON config files in `config/e2e/`:
+If you were using the old prefixed format (e.g., `AARDWOLF_ENABLED`), simply remove the prefixes:
 
-1. Move your configs to `.env.{mud}.local` files
-2. Use the environment variable format shown above
-3. Delete old JSON files from `config/e2e/`
-
-Example conversion:
-
-```json
-// Old: config/e2e/aardwolf.json
-{
-  "enabled": true,
-  "host": "aardmud.org",
-  "port": 4000,
-  "username": "your_name",
-  "password": "your_pass"
-}
-```
+**Old format:**
 
 ```env
-# New: .env.aardwolf.local
 AARDWOLF_ENABLED=true
 AARDWOLF_HOST=aardmud.org
 AARDWOLF_PORT=4000
-AARDWOLF_USERNAME=your_name
-AARDWOLF_PASSWORD=your_pass
 ```
+
+**New format:**
+
+```env
+ENABLED=true
+HOST=aardmud.org
+PORT=4000
+```
+
+Since each MUD has its own `.env.{mud}` file, the prefix is unnecessary and redundant.
