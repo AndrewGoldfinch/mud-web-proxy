@@ -14,15 +14,15 @@ A comprehensive mock MUD server that simulates various MUD types and protocols f
 
 ## Supported Protocols
 
-| Protocol | Description | Supported |
-|----------|-------------|-----------|
-| **GMCP** | Generic MUD Communication Protocol | ✅ Yes |
-| **MCCP** | MUD Client Compression Protocol | ✅ Yes |
-| **MXP** | MUD eXtension Protocol | ✅ Yes |
-| **MSDP** | MUD Server Data Protocol | ✅ Yes |
-| **NAWS** | Negotiate About Window Size | ✅ Yes |
-| **ANSI** | Color codes | ✅ Yes |
-| **UTF-8** | Unicode support | ✅ Yes |
+| Protocol  | Description                        | Supported |
+| --------- | ---------------------------------- | --------- |
+| **GMCP**  | Generic MUD Communication Protocol | Yes       |
+| **MCCP**  | MUD Client Compression Protocol    | Yes       |
+| **MXP**   | MUD eXtension Protocol             | Yes       |
+| **MSDP**  | MUD Server Data Protocol           | Yes       |
+| **NAWS**  | Negotiate About Window Size        | Yes       |
+| **ANSI**  | Color codes                        | Yes       |
+| **UTF-8** | Unicode support                    | Yes       |
 
 ## Usage
 
@@ -65,12 +65,14 @@ await server.stop();
 ### MUD Types
 
 **IRE MUD** (`createIREMUD()`)
+
 - Port: 6301
 - Heavy GMCP with Char.Vitals
 - MCCP compression
 - ANSI colors
 
 **Aardwolf** (`createAardwolfMUD()`)
+
 - Port: 6302
 - GMCP with room info
 - MCCP compression
@@ -78,16 +80,19 @@ await server.stop();
 - Custom prompts
 
 **Discworld** (`createDiscworldMUD()`)
+
 - Port: 6303
 - MXP support
 - ANSI colors
 
 **ROM MUD** (`createROMMUD()`)
+
 - Port: 6304
 - Basic telnet only
 - ANSI colors
 
 **Chaos Mode** (`createChaosMUD()`)
+
 - Port: 6305
 - All protocols enabled
 - Random delays (50-500ms)
@@ -106,10 +111,10 @@ const chaosServer = createChaosMUD();
 chaosServer = new MockMUDServer({
   chaos: {
     enabled: true,
-    packetLoss: 0.05,      // 5% packets dropped
+    packetLoss: 0.05, // 5% packets dropped
     delay: { min: 50, max: 500 }, // Random delays
-    corruptData: true,     // Random corruption
-    dropConnection: 0.01,  // 1% chance to disconnect
+    corruptData: true, // Random corruption
+    dropConnection: 0.01, // 1% chance to disconnect
     malformedPackets: true, // Send bad data
   },
 });
@@ -158,10 +163,10 @@ export USE_MOCK_MUD=0
 it('should negotiate GMCP', async () => {
   const server = createIREMUD();
   await server.start();
-  
+
   // Connect and verify GMCP negotiation
   // ...
-  
+
   await server.stop();
 });
 ```
@@ -201,7 +206,7 @@ it('should use MCCP', async () => {
 ```typescript
 it('should handle errors gracefully', async () => {
   const chaos = createChaosMUD();
-  
+
   // Run multiple connections
   // Some will fail, some succeed
   // Verify error handling works
@@ -210,36 +215,51 @@ it('should handle errors gracefully', async () => {
 
 ## Benefits
 
-| Benefit | Description |
-|---------|-------------|
-| **Fast** | No network latency, instant responses |
-| **Reliable** | 100% uptime, predictable behavior |
-| **Isolated** | No external dependencies |
-| **Reproducible** | Same results every time |
-| **CI-Friendly** | Works in any CI environment |
-| **Debuggable** | Full control over server state |
-| **Protocol Testing** | Can inject errors, test edge cases |
+| Benefit              | Description                           |
+| -------------------- | ------------------------------------- |
+| **Fast**             | No network latency, instant responses |
+| **Reliable**         | 100% uptime, predictable behavior     |
+| **Isolated**         | No external dependencies              |
+| **Reproducible**     | Same results every time               |
+| **CI-Friendly**      | Works in any CI environment           |
+| **Debuggable**       | Full control over server state        |
+| **Protocol Testing** | Can inject errors, test edge cases    |
 
 ## Comparison
 
-| Feature | Mock MUD | Real MUD |
-|---------|----------|----------|
-| Speed | ⚡ Instant | 🐌 Network latency |
-| Reliability | ✅ 100% | ❌ May be down |
-| Realism | ❌ Simulated | ✅ Real |
-| Error Injection | ✅ Easy | ❌ Hard |
-| CI/CD | ✅ Works | ❌ Needs network |
-| Debugging | ✅ Full control | ❌ Limited |
-| Cost | Free | May require account |
+| Feature         | Mock MUD     | Real MUD            |
+| --------------- | ------------ | ------------------- |
+| Speed           | Instant      | Network latency     |
+| Reliability     | 100%         | May be down         |
+| Realism         | Simulated    | Real                |
+| Error Injection | Easy         | Hard                |
+| CI/CD           | Works        | Needs network       |
+| Debugging       | Full control | Limited             |
+| Cost            | Free         | May require account |
 
 ## File Structure
 
 ```
 tests/e2e/
-├── mock-mud.ts           # Main mock server
-├── mock-mud-helper.ts    # Test helpers
-├── mock-mud.test.ts      # Sample tests
-└── README.md             # This file
+├── mock-mud.ts         # Main mock server
+├── mock-mud-helper.ts  # Test helpers
+├── mock-mud.test.ts    # Sample tests
+├── config-loader.ts    # Environment config loader
+├── README.md           # E2E test documentation
+└── ...
+```
+
+## Configuration (Environment Variables)
+
+Tests use `.env` files for configuration instead of JSON. See `tests/e2e/README.md` for details.
+
+```bash
+# Example .env.aardwolf.local
+AARDWOLF_ENABLED=true
+AARDWOLF_HOST=localhost
+AARDWOLF_PORT=6300
+AARDWOLF_EXPECT_GMCP=true
+AARDWOLF_EXPECT_MCCP=true
 ```
 
 ## Extending
