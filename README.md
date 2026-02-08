@@ -2,7 +2,7 @@
 
 ### What is this?
 
-[node.js](https://nodejs.org/en/) microserver which provides a secure websocket (`wss://`) to telnet (`telnet://`) proxy for [MUD](https://en.wikipedia.org/wiki/MUD) / MUSH / MOO game servers, supporting all major data interchange and interactive text protocols. To connect and play a game, you will need to run in your web page a web client capable to connect through `wss` to this proxy, like [`mud-web-client`](https://github.com/maldorne/mud-web-client).
+[Bun](https://bun.sh/) / TypeScript microserver which provides a secure websocket (`wss://`) to telnet (`telnet://`) proxy for [MUD](https://en.wikipedia.org/wiki/MUD) / MUSH / MOO game servers, supporting all major data interchange and interactive text protocols. To connect and play a game, you will need to run in your web page a web client capable to connect through `wss` to this proxy, like [`mud-web-client`](https://github.com/maldorne/mud-web-client).
 
 ### History
 
@@ -29,13 +29,19 @@ In modern browsers, web-pages served through `https://` are not allowed to open 
 ```bash
 git clone https://github.com/maldorne/mud-web-proxy
 bun install
-sudo bun wsproxy.js
+
+# Development (run TypeScript directly)
+bun dev
+
+# Production (compile first, then run)
+bun run build
+bun start
 ```
 
 You need to have your certificates available to use wsproxy. If you start the proxy without certificates, you'll see something like this:
 
 ```bash
-$ sudo node wsproxy.js
+$ bun dev
 Could not find cert and/or privkey files, exiting.
 ```
 
@@ -43,7 +49,7 @@ You need to have available both files in the same directory as the proxy, like t
 
 ```bash
 $ ls
-cert.pem  chat.json  LICENSE.md  node_modules  package.json  package-lock.json  privkey.pem  README.md  wsproxy.js
+cert.pem  chat.json  dist/  docs/  LICENSE.md  package.json  privkey.pem  README.md  src/  tsconfig.json  wsproxy.ts
 ```
 
 where `cert.pem` and `privkey.pem` will be links to the real files, something like:
@@ -57,9 +63,9 @@ How to install the certificates is beyond the scope of this project, but you cou
 
 ## Configuration
 
-In `wsproxy.js` you can change the following options:
+In `wsproxy.ts` you can change the following options:
 
-```javascript
+```typescript
   /* this websocket proxy port */
   ws_port: 6200,
   /* default telnet host */
@@ -74,7 +80,16 @@ In `wsproxy.js` you can change the following options:
   open: true,
 ```
 
+These settings can also be overridden via environment variables:
+
+| Variable      | Description                          | Default              |
+| ------------- | ------------------------------------ | -------------------- |
+| `WS_PORT`     | WebSocket proxy port                 | `6200`               |
+| `TN_HOST`     | Default telnet host                  | `muds.maldorne.org`  |
+| `TN_PORT`     | Default telnet port                  | `5010`               |
+| `DISABLE_TLS` | Set to `1` to disable TLS (dev mode) | _(TLS enabled)_      |
+
 Probably you will only have to change:
 
-- `tn_host` with your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
-- `tn_port` with the port where the mud is running.
+- `tn_host` (or `TN_HOST`) with your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
+- `tn_port` (or `TN_PORT`) with the port where the mud is running.

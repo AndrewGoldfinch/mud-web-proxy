@@ -27,6 +27,7 @@ Tests use `ws://` (non-TLS) to avoid certificate issues.
 | MUD Type   | Test File            | Protocols        |
 | ---------- | -------------------- | ---------------- |
 | Aardwolf   | `aardwolf.test.ts`   | GMCP, MCCP, ANSI |
+| Achaea     | `achaea.test.ts`     | GMCP             |
 | ROM MUD    | `rom-mud.test.ts`    | Basic telnet     |
 | Discworld  | `discworld.test.ts`  | MXP              |
 | IRE MUD    | `ire-mud.test.ts`    | Heavy GMCP       |
