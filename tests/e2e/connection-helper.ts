@@ -183,7 +183,20 @@ export class E2EConnection {
               timestamp: Date.now(),
             });
 
-            // Resume successful - start receiving data
+            // Resume successful
+            if (msg.type === 'resumed') {
+              clearTimeout(timeout);
+              resolve({
+                success: true,
+                sessionId: msg.sessionId || sessionId,
+                token,
+                lastSeq: lastSeq,
+                negotiatedProtocols: this.negotiatedProtocols,
+                messages: this.messages,
+              });
+            }
+
+            // Also resolve on data/gmcp if resumed wasn't sent
             if (msg.type === 'data' || msg.type === 'gmcp') {
               clearTimeout(timeout);
               resolve({
@@ -351,6 +364,96 @@ export class E2EConnection {
     } catch (_err) {
       // Ignore decode errors
     }
+  }
+
+  /**
+   * Get the last sequence number from received data/gmcp messages
+   */
+  getLastSequence(): number {
+    let lastSeq = 0;
+    for (const msg of this.messages) {
+      if ((msg.type === 'data' || msg.type === 'gmcp') && typeof (msg.data as any)?.seq === 'number') {
+        lastSeq = Math.max(lastSeq, (msg.data as any).seq);
+      }
+    }
+    return lastSeq;
+  }
+
+  /**
+   * Get all messages received after a given sequence number
+   */
+  getMessagesAfterSeq(seq: number): E2EMessage[] {
+    return this.messages.filter(
+      (m) => (m.type === 'data' || m.type === 'gmcp') && typeof (m.data as any)?.seq === 'number' && (m.data as any).seq > seq,
+    );
+  }
+
+  /**
+   * Get only data message payloads (base64 decoded to string)
+   */
+  getDataPayloads(): string[] {
+    return this.messages
+      .filter((m) => m.type === 'data' && (m.data as any)?.payload)
+      .map((m) => {
+        const payload = (m.data as any).payload;
+        try {
+          return Buffer.from(payload, 'base64').toString('utf8');
+        } catch {
+          return payload;
+        }
+      });
+  }
+
+  /**
+   * Send NAWS (window size) to proxy
+   */
+  sendNAWS(width: number, height: number): void {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(
+        JSON.stringify({
+          type: 'naws',
+          width,
+          height,
+        }),
+      );
+    }
+  }
+
+  /**
+   * Wait for a minimum number of messages of a given type
+   */
+  async waitForMessageCount(
+    type: string,
+    count: number,
+    timeoutMs: number = 10000,
+  ): Promise<E2EMessage[]> {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+
+      const check = () => {
+        const matches = this.messages.filter((m) => m.type === type);
+        if (matches.length >= count) {
+          resolve(matches);
+          return;
+        }
+
+        if (Date.now() - startTime > timeoutMs) {
+          resolve(matches); // Return what we have
+          return;
+        }
+
+        setTimeout(check, 100);
+      };
+
+      check();
+    });
+  }
+
+  /**
+   * Clear all stored messages
+   */
+  clearMessages(): void {
+    this.messages.length = 0;
   }
 
   /**

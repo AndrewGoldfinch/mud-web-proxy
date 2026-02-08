@@ -60,6 +60,12 @@ export interface MockMUDConfig {
     dropConnection: number; // 0-1 probability
     malformedPackets: boolean;
   };
+  continuousOutput?: {
+    enabled: boolean;
+    intervalMs: number;     // e.g. 500ms
+    messages: string[];     // cycle through these
+    count?: number;         // stop after N (undefined = infinite)
+  };
   responses: {
     loginPrompt: string;
     passwordPrompt: string;
@@ -93,6 +99,9 @@ export class MockMUDServer extends EventEmitter {
   private clients: Map<string, MockClient> = new Map();
   private config: MockMUDConfig;
   private running = false;
+  private continuousTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private continuousCounts: Map<string, number> = new Map();
+  private receivedCommands: string[] = [];
 
   constructor(config: Partial<MockMUDConfig> = {}) {
     super();
@@ -174,6 +183,11 @@ export class MockMUDServer extends EventEmitter {
 
   async stop(): Promise<void> {
     return new Promise((resolve) => {
+      // Stop all continuous output timers
+      for (const client of this.clients.values()) {
+        this.stopContinuousOutput(client);
+      }
+
       // Close all client connections
       for (const client of this.clients.values()) {
         client.socket.end();
@@ -220,6 +234,7 @@ export class MockMUDServer extends EventEmitter {
 
     socket.on('close', () => {
       console.log(`[MockMUD] Client disconnected: ${clientId}`);
+      this.stopContinuousOutput(client);
       this.clients.delete(clientId);
       this.emit('disconnect', client);
     });
@@ -382,6 +397,7 @@ export class MockMUDServer extends EventEmitter {
 
   private async handleText(client: MockClient, text: string): Promise<void> {
     console.log(`[MockMUD] Received text: ${text.trim()}`);
+    this.receivedCommands.push(text.trim());
 
     // Chaos mode: Drop connection randomly
     if (this.config.chaos?.enabled && this.config.chaos.dropConnection > 0) {
@@ -435,6 +451,11 @@ export class MockMUDServer extends EventEmitter {
     // Send room description
     await this.sendText(client, this.config.responses.roomDescription);
     await this.sendText(client, this.config.responses.prompt);
+
+    // Start continuous output if configured
+    if (this.config.continuousOutput?.enabled) {
+      this.startContinuousOutput(client);
+    }
   }
 
   private async sendText(client: MockClient, text: string): Promise<void> {
@@ -553,12 +574,70 @@ export class MockMUDServer extends EventEmitter {
     }
   }
 
+  // MARK: - Continuous Output
+
+  public startContinuousOutput(client: MockClient): void {
+    const cfg = this.config.continuousOutput;
+    if (!cfg?.enabled || !cfg.messages.length) return;
+
+    let msgIndex = 0;
+    this.continuousCounts.set(client.id, 0);
+
+    const timer = setInterval(() => {
+      const sent = this.continuousCounts.get(client.id) ?? 0;
+      if (cfg.count !== undefined && sent >= cfg.count) {
+        this.stopContinuousOutput(client);
+        return;
+      }
+
+      const msg = cfg.messages[msgIndex % cfg.messages.length];
+      this.sendText(client, msg + '\r\n');
+      msgIndex++;
+      this.continuousCounts.set(client.id, sent + 1);
+    }, cfg.intervalMs);
+
+    this.continuousTimers.set(client.id, timer);
+  }
+
+  public stopContinuousOutput(client: MockClient): void {
+    const timer = this.continuousTimers.get(client.id);
+    if (timer) {
+      clearInterval(timer);
+      this.continuousTimers.delete(client.id);
+    }
+    this.continuousCounts.delete(client.id);
+  }
+
+  /**
+   * Send a burst of messages to all connected clients for buffer overflow testing.
+   */
+  public async sendBurst(count: number, sizeBytes: number): Promise<void> {
+    const payload = 'X'.repeat(sizeBytes) + '\r\n';
+    for (const client of this.clients.values()) {
+      for (let i = 0; i < count; i++) {
+        await this.sendText(client, `[burst ${i + 1}/${count}] ${payload}`);
+      }
+    }
+  }
+
+  public getReceivedCommands(): string[] {
+    return [...this.receivedCommands];
+  }
+
+  public clearReceivedCommands(): void {
+    this.receivedCommands.length = 0;
+  }
+
   public isRunning(): boolean {
     return this.running;
   }
 
   public getClientCount(): number {
     return this.clients.size;
+  }
+
+  public getClients(): MockClient[] {
+    return Array.from(this.clients.values());
   }
 }
 
@@ -737,6 +816,39 @@ export function createChaosMUD(): MockMUDServer {
       passwordPrompt: 'Password: ',
       welcomeMessage: 'Welcome to Chaos MUD!\n',
       roomDescription: 'Everything is unpredictable here.\n',
+      prompt: '> ',
+    },
+  });
+}
+
+export function createBufferTestMUD(): MockMUDServer {
+  return new MockMUDServer({
+    name: 'Mock Buffer Test MUD',
+    type: 'generic',
+    port: 6306,
+    supports: {
+      gmcp: true,
+      mccp: false,
+      mxp: false,
+      msdp: false,
+      ansi: true,
+      utf8: true,
+    },
+    continuousOutput: {
+      enabled: true,
+      intervalMs: 500,
+      messages: [
+        'The wind howls through the valley.',
+        'A distant wolf cries in the night.',
+        'Torchlight flickers against the stone walls.',
+      ],
+      count: 20,
+    },
+    responses: {
+      loginPrompt: 'Login: ',
+      passwordPrompt: 'Password: ',
+      welcomeMessage: 'Welcome to the Buffer Test MUD!\r\n',
+      roomDescription: 'You stand in a quiet room.\r\n',
       prompt: '> ',
     },
   });
