@@ -340,6 +340,12 @@ class MockTestRunner {
       await connection.connect('ws://localhost:6299');
       await this.delay(2000);
 
+      // Login to trigger data flow
+      connection.sendCommand('testuser');
+      await this.delay(500);
+      connection.sendCommand('testpass');
+      await this.delay(2000);
+
       const messages = connection.getMessages();
       const hasData = messages.some((m: E2EMessage) => m.type === 'data');
       const negotiated = connection.isProtocolNegotiated('mccp');
@@ -347,7 +353,6 @@ class MockTestRunner {
       connection.close();
 
       // In mock mode, just check we received data
-      // Protocol negotiation timing can vary
       if (!hasData) {
         throw new Error('No data received');
       }
