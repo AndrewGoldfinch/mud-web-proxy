@@ -47,6 +47,48 @@ import type { IncomingMessage, ServerResponse } from 'http';
 
 import { SessionIntegration } from './src/session-integration';
 
+// Log levels enum
+enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
+}
+
+// ANSI color codes
+const Colors = {
+  reset: '\x1b[0m',
+  dim: '\x1b[2m',
+  bright: '\x1b[1m',
+  red: '\x1b[31m',
+  green: '\x1b[32m',
+  yellow: '\x1b[33m',
+  blue: '\x1b[34m',
+  magenta: '\x1b[35m',
+  cyan: '\x1b[36m',
+  gray: '\x1b[90m',
+};
+
+// Get log level from environment
+const getLogLevel = (): LogLevel => {
+  const envLevel = process.env.LOG_LEVEL?.toUpperCase();
+  switch (envLevel) {
+    case 'DEBUG':
+      return LogLevel.DEBUG;
+    case 'INFO':
+      return LogLevel.INFO;
+    case 'WARN':
+      return LogLevel.WARN;
+    case 'ERROR':
+      return LogLevel.ERROR;
+    default:
+      return LogLevel.INFO;
+  }
+};
+
+// Check if TTY for color support
+const useColors = process.stdout.isTTY && process.env.NO_COLOR !== '1';
+
 // Get current file directory in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -265,7 +307,16 @@ interface ServerConfig {
   chatUpdate: () => void;
   chatCleanup: (t: string) => string;
   originAllowed: () => number;
-  log: (msg: unknown, s?: SocketExtended) => void;
+  log: (
+    msg: unknown,
+    s?: SocketExtended,
+    level?: LogLevel,
+    context?: string,
+  ) => void;
+  logDebug: (msg: unknown, s?: SocketExtended, context?: string) => void;
+  logInfo: (msg: unknown, s?: SocketExtended, context?: string) => void;
+  logWarn: (msg: unknown, s?: SocketExtended, context?: string) => void;
+  logError: (msg: unknown, s?: SocketExtended, context?: string) => void;
   die: (core?: boolean) => void;
   newSocket: (s: SocketExtended) => void;
   forward: (s: SocketExtended, d: Buffer) => void;
@@ -1138,17 +1189,114 @@ const srv: ServerConfig = {
     return 1;
   },
 
-  log: function (msg: unknown, s?: SocketExtended): void {
-    if (!s)
-      s = { req: { connection: { remoteAddress: '' } } } as SocketExtended;
+  log: function (
+    msg: unknown,
+    s?: SocketExtended,
+    level: LogLevel = LogLevel.INFO,
+    context?: string,
+  ): void {
+    const currentLevel = getLogLevel();
+    if (level < currentLevel) return;
+
+    // Get client info
+    const clientInfo = s?.req?.connection?.remoteAddress || '';
+    const clientStr = clientInfo ? `[${clientInfo}] ` : '';
+
+    // Get timestamp
+    const timestamp = new Date().toISOString();
+
+    // Format level string with color
+    let levelStr: string;
+    let levelColor: string;
+    switch (level) {
+      case LogLevel.DEBUG:
+        levelStr = 'DEBUG';
+        levelColor = Colors.gray;
+        break;
+      case LogLevel.INFO:
+        levelStr = 'INFO ';
+        levelColor = Colors.green;
+        break;
+      case LogLevel.WARN:
+        levelStr = 'WARN ';
+        levelColor = Colors.yellow;
+        break;
+      case LogLevel.ERROR:
+        levelStr = 'ERROR';
+        levelColor = Colors.red;
+        break;
+      default:
+        levelStr = 'INFO ';
+        levelColor = Colors.green;
+    }
+
+    // Format context if provided
+    const contextStr = context
+      ? ` ${Colors.cyan}[${context}]${Colors.reset}`
+      : '';
+
+    // Format message
+    let messageStr: string;
+    if (typeof msg === 'string') {
+      messageStr = msg;
+    } else if (msg instanceof Error) {
+      messageStr = `${msg.name}: ${msg.message}`;
+      if (msg.stack && level <= LogLevel.DEBUG) {
+        messageStr += `\n${msg.stack}`;
+      }
+    } else {
+      messageStr = util.inspect(msg, {
+        depth: 3,
+        colors: useColors,
+        compact: true,
+      });
+    }
+
+    // Build final output
+    const parts: string[] = [];
+    if (useColors) {
+      parts.push(
+        `${Colors.dim}${timestamp}${Colors.reset}`,
+        `${levelColor}${levelStr}${Colors.reset}`,
+        `${Colors.bright}${clientStr}${Colors.reset}${contextStr}`,
+        messageStr,
+      );
+    } else {
+      parts.push(timestamp, levelStr, `${clientStr}${contextStr}`, messageStr);
+    }
+
     // eslint-disable-next-line no-console
-    console.log(
-      util.format(
-        new Date().toISOString() + ' %s: %s',
-        s.req.connection.remoteAddress,
-        msg,
-      ),
-    );
+    console.log(parts.join(' '));
+  },
+
+  // Convenience methods for different log levels
+  logDebug: function (
+    msg: unknown,
+    s?: SocketExtended,
+    context?: string,
+  ): void {
+    srv.log(msg, s, LogLevel.DEBUG, context);
+  },
+  logInfo: function (
+    msg: unknown,
+    s?: SocketExtended,
+    context?: string,
+  ): void {
+    srv.log(msg, s, LogLevel.INFO, context);
+  },
+  logWarn: function (
+    msg: unknown,
+    s?: SocketExtended,
+    context?: string,
+  ): void {
+    srv.log(msg, s, LogLevel.WARN, context);
+  },
+  logError: function (
+    msg: unknown,
+    s?: SocketExtended,
+    context?: string,
+  ): void {
+    srv.log(msg, s, LogLevel.ERROR, context);
   },
 
   die: function (core?: boolean): void {
