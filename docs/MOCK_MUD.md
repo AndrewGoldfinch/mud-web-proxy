@@ -241,12 +241,21 @@ it('should handle errors gracefully', async () => {
 
 ```
 tests/e2e/
-├── mock-mud.ts         # Main mock server
-├── mock-mud-helper.ts  # Test helpers
-├── mock-mud.test.ts    # Sample tests
-├── config-loader.ts    # Environment config loader
-├── README.md           # E2E test documentation
-└── ...
+├── mock-mud.ts # Main mock server
+├── mock-mud-helper.ts # Test helpers
+├── proxy-launcher.ts # Proxy lifecycle management
+├── connection-helper.ts # WebSocket connection helpers
+├── config-loader.ts # Test config loading
+├── run-mock-tests.ts # Mock test runner
+├── mock-mud.test.ts # Mock MUD tests
+├── aardwolf.test.ts # Aardwolf E2E tests
+├── achaea.test.ts # Achaea E2E tests (GMCP)
+├── discworld.test.ts # Discworld E2E tests (MXP)
+├── ire-mud.test.ts # IRE MUD E2E tests
+├── rom-mud.test.ts # ROM MUD E2E tests
+├── raw-telnet.test.ts # Raw telnet E2E tests
+├── README.md # E2E test documentation
+└── SETUP.md # Setup guide
 ```
 
 ## Configuration (Environment Variables)
@@ -260,6 +269,23 @@ AARDWOLF_HOST=localhost
 AARDWOLF_PORT=6300
 AARDWOLF_EXPECT_GMCP=true
 AARDWOLF_EXPECT_MCCP=true
+=======
+├── mock-mud.ts           # Main mock server
+├── mock-mud-helper.ts    # Test helpers
+├── proxy-launcher.ts     # Proxy lifecycle management
+├── connection-helper.ts  # WebSocket connection helpers
+├── config-loader.ts      # Test config loading
+├── run-mock-tests.ts     # Mock test runner
+├── mock-mud.test.ts      # Mock MUD tests
+├── aardwolf.test.ts      # Aardwolf E2E tests
+├── achaea.test.ts        # Achaea E2E tests (GMCP)
+├── discworld.test.ts     # Discworld E2E tests (MXP)
+├── ire-mud.test.ts       # IRE MUD E2E tests
+├── rom-mud.test.ts       # ROM MUD E2E tests
+├── raw-telnet.test.ts    # Raw telnet E2E tests
+├── README.md             # E2E test documentation
+└── SETUP.md              # Setup guide
+>>>>>>> origin/develop
 ```
 
 ## Extending

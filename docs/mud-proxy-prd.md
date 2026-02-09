@@ -949,6 +949,7 @@ func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIS
 
 **MUD compatibility:**
 - [ ] Test with Aardwolf (GMCP, MCCP, ANSI colors)
+- [ ] Test with Achaea (GMCP)
 - [ ] Test with ROM-based MUD (basic telnet)
 - [ ] Test with Discworld (MXP support)
 - [ ] Test with IRE MUD (heavy GMCP usage)
@@ -1103,15 +1104,6 @@ bun dev
 # Production (build first, then run compiled output)
 bun run build
 bun start
-
-# Start with specific config file
-bun dist/wsproxy.js --config config/production.json
-
-# Override specific settings
-bun dist/wsproxy.js --port 8080 --buffer-size 100
-
-# Enable debug logging
-bun dist/wsproxy.js --log-level debug
 
 # Run tests
 bun run test

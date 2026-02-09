@@ -20,6 +20,7 @@ Complete E2E test suite for testing against real MUD servers.
 ### MUD-Specific Tests
 
 - `tests/e2e/aardwolf.test.ts` - Aardwolf (GMCP, MCCP, ANSI)
+- `tests/e2e/achaea.test.ts` - Achaea (GMCP)
 - `tests/e2e/rom-mud.test.ts` - ROM-based MUD (basic telnet)
 - `tests/e2e/discworld.test.ts` - Discworld (MXP)
 - `tests/e2e/ire-mud.test.ts` - IRE MUD (heavy GMCP)
