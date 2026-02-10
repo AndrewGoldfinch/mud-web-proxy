@@ -35,6 +35,7 @@ import https from 'https';
 import http from 'http';
 import zlib from 'zlib';
 import fs from 'fs';
+import { X509Certificate } from 'crypto';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { minify } from 'uglify-js';
@@ -425,11 +426,53 @@ const srv: ServerConfig = {
       fs.existsSync('./cert.pem') &&
       fs.existsSync('./privkey.pem')
     ) {
+      const cert = fs.readFileSync('./cert.pem');
+      const key = fs.readFileSync('./privkey.pem');
       webserver = https.createServer({
-        cert: fs.readFileSync('./cert.pem'),
-        key: fs.readFileSync('./privkey.pem'),
+        cert: cert,
+        key: key,
       });
-      srv.log('(ws) Using TLS/SSL');
+
+      // Parse and log certificate info
+      try {
+        const x509 = new X509Certificate(cert);
+        const validFrom = x509.validFrom;
+        const validTo = x509.validTo;
+        const issuer =
+          x509.issuer
+            .split('\n')
+            .find((line) => line.startsWith('CN='))
+            ?.slice(3) ||
+          x509.issuer
+            .split('\n')
+            .find((line) => line.startsWith('O='))
+            ?.slice(2) ||
+          'Unknown';
+        const subject =
+          x509.subject
+            .split('\n')
+            .find((line) => line.startsWith('CN='))
+            ?.slice(3) ||
+          x509.subject
+            .split('\n')
+            .find((line) => line.startsWith('O='))
+            ?.slice(2) ||
+          'Unknown';
+        const daysUntilExpiry = Math.floor(
+          (new Date(validTo).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
+        );
+
+        srv.logInfo('(ws) Using TLS/SSL');
+        srv.logInfo(`  Certificate: ${subject}`, undefined, 'ssl');
+        srv.logInfo(`  Issuer: ${issuer}`, undefined, 'ssl');
+        srv.logInfo(
+          `  Valid: ${validFrom} to ${validTo} (${daysUntilExpiry} days remaining)`,
+          undefined,
+          'ssl',
+        );
+      } catch (_err) {
+        srv.logInfo('(ws) Using TLS/SSL (certificate details unavailable)');
+      }
     } else if (!USE_TLS) {
       // Non-TLS mode for testing
       webserver = http.createServer();
