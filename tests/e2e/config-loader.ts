@@ -57,7 +57,7 @@ export interface ConfigLoadResult {
  *   ...
  */
 export function loadE2EConfig(mudName: string): ConfigLoadResult {
-  // Check if enabled (no prefix needed since each .env file is MUD-specific)
+  // Env vars loaded via bun --env-file in package.json scripts
   const enabled = getEnvBool('ENABLED', false);
   if (!enabled) {
     return {

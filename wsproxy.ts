@@ -691,26 +691,26 @@ const srv: ServerConfig = {
   sendTTYPE: function (s: SocketExtended, msg: string): void {
     if (msg) {
       const p = srv.prt;
-      s.ts!.write(p.WILL_TTYPE);
-      s.ts!.write(Buffer.from([p.IAC, p.SB, p.TTYPE, p.IS]));
-      s.ts!.send(msg);
-      s.ts!.write(Buffer.from([p.IAC, p.SE]));
+      writeTelnet(s, p.WILL_TTYPE);
+      writeTelnet(s, Buffer.from([p.IAC, p.SB, p.TTYPE, p.IS]));
+      if (s.ts) s.ts.send(msg);
+      writeTelnet(s, Buffer.from([p.IAC, p.SE]));
       srv.log(msg);
     }
   },
 
   sendGMCP: function (s: SocketExtended, msg: string): void {
-    s.ts!.write(srv.prt.START);
-    s.ts!.write(msg);
-    s.ts!.write(srv.prt.STOP);
+    writeTelnet(s, srv.prt.START);
+    writeTelnet(s, msg);
+    writeTelnet(s, srv.prt.STOP);
   },
 
   sendMXP: function (s: SocketExtended, msg: string): void {
     const p = srv.prt;
-    s.ts!.write(Buffer.from([p.ESC]));
-    s.ts!.write('[1z' + msg);
-    s.ts!.write(Buffer.from([p.ESC]));
-    s.ts!.write('[7z');
+    writeTelnet(s, Buffer.from([p.ESC]));
+    writeTelnet(s, '[1z' + msg);
+    writeTelnet(s, Buffer.from([p.ESC]));
+    writeTelnet(s, '[7z');
   },
 
   sendMSDP: function (s: SocketExtended, msdp: MSDPRequest): void {
@@ -719,27 +719,27 @@ const srv: ServerConfig = {
 
     if (!msdp.key || !msdp.val) return;
 
-    s.ts!.write(Buffer.from([p.IAC, p.SB, p.MSDP, p.MSDP_VAR]));
-    s.ts!.write(msdp.key);
+    writeTelnet(s, Buffer.from([p.IAC, p.SB, p.MSDP, p.MSDP_VAR]));
+    writeTelnet(s, msdp.key);
 
     const values = Array.isArray(msdp.val) ? msdp.val : [msdp.val];
 
     for (let i = 0; i < values.length; i++) {
-      s.ts!.write(Buffer.from([p.MSDP_VAL]));
-      s.ts!.write(values[i]);
+      writeTelnet(s, Buffer.from([p.MSDP_VAL]));
+      writeTelnet(s, values[i]);
     }
 
-    s.ts!.write(Buffer.from([p.IAC, p.SE]));
+    writeTelnet(s, Buffer.from([p.IAC, p.SE]));
   },
 
   sendMSDPPair: function (s: SocketExtended, key: string, val: string): void {
     const p = srv.prt;
     srv.log('sendMSDPPair ' + key + '=' + val, s);
-    s.ts!.write(Buffer.from([p.IAC, p.SB, p.MSDP, p.MSDP_VAR]));
-    s.ts!.write(key);
-    s.ts!.write(Buffer.from([p.MSDP_VAL]));
-    s.ts!.write(val);
-    s.ts!.write(Buffer.from([p.IAC, p.SE]));
+    writeTelnet(s, Buffer.from([p.IAC, p.SB, p.MSDP, p.MSDP_VAR]));
+    writeTelnet(s, key);
+    writeTelnet(s, Buffer.from([p.MSDP_VAL]));
+    writeTelnet(s, val);
+    writeTelnet(s, Buffer.from([p.IAC, p.SE]));
   },
 
   initT: function (so: SocketExtended): void {
@@ -802,14 +802,16 @@ const srv: ServerConfig = {
         srv.log('error: ' + (ex as Error).toString(), s);
       }
 
-      if (s.ts!.writable) s.ts!.write(data);
+      writeTelnet(s, data);
     };
+
+    let negotiationTimeout: ReturnType<typeof setTimeout> | null = null;
 
     s.ts
       .on('connect', function () {
         srv.log('new telnet socket connected');
 
-        setTimeout(function () {
+        negotiationTimeout = setTimeout(function () {
           s.utf8_negotiated =
             s.mccp_negotiated =
             s.mxp_negotiated =
@@ -829,6 +831,7 @@ const srv: ServerConfig = {
         srv.sendClient(s, data);
       })
       .on('timeout', function () {
+        if (negotiationTimeout) clearTimeout(negotiationTimeout);
         srv.log('telnet socket timeout: ' + s);
         srv.sendClient(s, Buffer.from('Timeout: server port is down.\r\n'));
         setTimeout(function () {
@@ -836,6 +839,7 @@ const srv: ServerConfig = {
         }, SOCKET_CLOSE_DELAY_MS);
       })
       .on('close', function () {
+        if (negotiationTimeout) clearTimeout(negotiationTimeout);
         srv.log('telnet socket closed: ' + s.remoteAddress);
         srv.chatUpdate();
         setTimeout(function () {
@@ -843,6 +847,7 @@ const srv: ServerConfig = {
         }, SOCKET_CLOSE_DELAY_MS);
       })
       .on('error', function (err: Error) {
+        if (negotiationTimeout) clearTimeout(negotiationTimeout);
         srv.log('error: ' + err.toString());
         srv.sendClient(s, Buffer.from('Error: maybe the mud server is down?'));
         setTimeout(function () {
@@ -904,7 +909,7 @@ const srv: ServerConfig = {
         ) {
           setTimeout(function () {
             srv.log('IAC DO MCCP2', s);
-            s.ts!.write(p.DO_MCCP);
+            writeTelnet(s, p.DO_MCCP);
           }, MCCP_NEGOTIATION_DELAY_MS);
         } else if (
           data[i] === p.IAC &&
@@ -931,11 +936,6 @@ const srv: ServerConfig = {
         ) {
           srv.log('IAC DO TTYPE <- IAC FIRST TTYPE', s);
           srv.sendTTYPE(s, s.ttype.shift()!);
-          /*
-           * s.ts.send(p.WILL_TTYPE);
-          for (i = 0; i < s.ttype.length; i++) {
-            srv.sendTTYPE(s, s.ttype.shift());
-          }*/
         } else if (
           data[i] === p.IAC &&
           data[i + 1] === p.SB &&
@@ -957,8 +957,8 @@ const srv: ServerConfig = {
         ) {
           srv.log('IAC DO GMCP', s);
 
-          if (data[i + 1] === p.DO) s.ts!.write(p.WILL_GMCP);
-          else s.ts!.write(p.DO_GMCP);
+          if (data[i + 1] === p.DO) writeTelnet(s, p.WILL_GMCP);
+          else writeTelnet(s, p.DO_GMCP);
 
           srv.log('IAC DO GMCP <- IAC WILL GMCP', s);
 
@@ -985,7 +985,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.WILL &&
           data[i + 2] === p.MSDP
         ) {
-          s.ts!.write(p.DO_MSDP);
+          writeTelnet(s, p.DO_MSDP);
           srv.log('IAC WILL MSDP <- IAC DO MSDP', s);
           srv.sendMSDPPair(s, 'CLIENT_ID', s.client || 'mudportal.com');
           srv.sendMSDPPair(s, 'CLIENT_VERSION', '1.0');
@@ -1005,7 +1005,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.DO &&
           data[i + 2] === p.MXP
         ) {
-          s.ts!.write(Buffer.from([p.IAC, p.WILL, p.MXP]));
+          writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.MXP]));
           srv.log('IAC DO MXP <- IAC WILL MXP', s);
           s.mxp_negotiated = 1;
         } else if (
@@ -1013,7 +1013,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.WILL &&
           data[i + 2] === p.MXP
         ) {
-          s.ts!.write(Buffer.from([p.IAC, p.DO, p.MXP]));
+          writeTelnet(s, Buffer.from([p.IAC, p.DO, p.MXP]));
           srv.log('IAC WILL MXP <- IAC DO MXP', s);
           s.mxp_negotiated = 1;
         }
@@ -1027,7 +1027,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.DO &&
           data[i + 2] === p.NEW
         ) {
-          s.ts!.write(Buffer.from([p.IAC, p.WILL, p.NEW]));
+          writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.NEW]));
           srv.log('IAC WILL NEW-ENV', s);
           s.new_negotiated = 1;
         }
@@ -1040,11 +1040,11 @@ const srv: ServerConfig = {
           data[i + 2] === p.NEW &&
           data[i + 3] === p.REQUEST
         ) {
-          s.ts!.write(Buffer.from([p.IAC, p.SB, p.NEW, p.IS, p.IS]));
-          s.ts!.write('IPADDRESS');
-          s.ts!.write(Buffer.from([p.REQUEST]));
-          s.ts!.write(s.remoteAddress);
-          s.ts!.write(Buffer.from([p.IAC, p.SE]));
+          writeTelnet(s, Buffer.from([p.IAC, p.SB, p.NEW, p.IS, p.IS]));
+          writeTelnet(s, 'IPADDRESS');
+          writeTelnet(s, Buffer.from([p.REQUEST]));
+          writeTelnet(s, s.remoteAddress);
+          writeTelnet(s, Buffer.from([p.IAC, p.SE]));
           srv.log('IAC NEW-ENV IP VAR SEND');
           s.new_handshake = 1;
         }
@@ -1073,7 +1073,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.WILL &&
           data[i + 2] === p.SGA
         ) {
-          s.ts!.write(Buffer.from([p.IAC, p.WONT, p.SGA]));
+          writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.SGA]));
           srv.log('IAC WILL SGA <- IAC WONT SGA');
           s.sga_negotiated = 1;
         }
@@ -1087,7 +1087,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.WILL &&
           data[i + 2] === p.NAWS
         ) {
-          s.ts!.write(Buffer.from([p.IAC, p.WONT, p.NAWS]));
+          writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.NAWS]));
           srv.log('IAC WILL SGA <- IAC WONT NAWS');
           s.naws_negotiated = 1;
         }
@@ -1101,7 +1101,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.DO &&
           data[i + 2] === p.CHARSET
         ) {
-          s.ts!.write(p.WILL_CHARSET);
+          writeTelnet(s, p.WILL_CHARSET);
           srv.log('IAC DO CHARSET <- IAC WILL CHARSET', s);
         }
 
@@ -1110,7 +1110,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.SB &&
           data[i + 2] === p.CHARSET
         ) {
-          s.ts!.write(p.ACCEPT_UTF8);
+          writeTelnet(s, p.ACCEPT_UTF8);
           srv.log('UTF-8 negotiated', s);
           s.utf8_negotiated = 1;
         }
@@ -1131,10 +1131,13 @@ const srv: ServerConfig = {
 
     /* Client<->Proxy only Compression */
     zlib.deflateRaw(data, function (err: Error | null, buffer: Buffer) {
-      if (!err) {
-        s.send(buffer.toString('base64'));
-      } else {
+      if (err) {
         srv.log('zlib error: ' + err);
+        return;
+      }
+      // Guard: socket may have closed during async compression
+      if (s.readyState === 1) {
+        s.send(buffer.toString('base64'));
       }
     });
   },
@@ -1338,6 +1341,19 @@ const srv: ServerConfig = {
 
   die: function (core?: boolean): void {
     srv.log('Dying gracefully in 3 sec.');
+    srv.open = false;
+
+    // Clean up timers
+    for (const timer of watcherTimers.values()) clearTimeout(timer);
+    watcherTimers.clear();
+    if (chatWriteTimer) {
+      clearTimeout(chatWriteTimer);
+      chatWriteTimer = null;
+    }
+
+    // Shut down session integration (clears intervals, sessions)
+    sessionIntegration.shutdown();
+
     const ss = server.sockets;
 
     for (let i = 0; i < ss.length; i++) {

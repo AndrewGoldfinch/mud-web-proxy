@@ -6,6 +6,7 @@
  */
 
 import { SessionManager } from './session-manager';
+import type { Session } from './session';
 import type { SocketExtended } from './types';
 import { TriggerMatcher } from './trigger-matcher';
 import { NotificationManager } from './notification-manager';
@@ -78,9 +79,10 @@ export class SessionIntegration {
       this.triggerMatcher,
     );
 
-    // Start notification retry processor
+    // Start notification retry processor and trigger cleanup
     this.retryInterval = setInterval(() => {
       this.notificationManager.processPending();
+      this.triggerMatcher.cleanupOldEntries();
     }, 60 * 1000);
 
     // Log startup
@@ -329,7 +331,7 @@ export class SessionIntegration {
    * Process MUD data - buffer and forward to clients
    */
   private processMudData(
-    session: import('./session').Session,
+    session: Session,
     _socket: SocketExtended,
     data: Buffer,
   ): void {
@@ -441,6 +443,7 @@ export class SessionIntegration {
       clearInterval(this.retryInterval);
       this.retryInterval = null;
     }
+    this.sessionManager.stop();
     this.sessionManager.clearAll();
   }
 }
