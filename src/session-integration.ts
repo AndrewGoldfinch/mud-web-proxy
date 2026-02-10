@@ -47,6 +47,7 @@ export class SessionIntegration {
   triggerMatcher: TriggerMatcher;
   notificationManager: NotificationManager;
   config: SessionIntegrationConfig;
+  private retryInterval: ReturnType<typeof setInterval> | null = null;
 
   constructor(config: Partial<SessionIntegrationConfig> = {}) {
     this.config = {
@@ -78,13 +79,14 @@ export class SessionIntegration {
     );
 
     // Start notification retry processor
-    setInterval(() => {
+    this.retryInterval = setInterval(() => {
       this.notificationManager.processPending();
     }, 60 * 1000);
 
     // Log startup
+    // eslint-disable-next-line no-console
     console.log(
-      '[SessionIntegration] Initialized with buffer size: ' +
+      '[session-integration] Initialized with buffer size: ' +
         this.config.buffer.sizeKB +
         'KB',
     );
@@ -132,7 +134,7 @@ export class SessionIntegration {
         default:
           return legacyHandler(socket, data);
       }
-    } catch (err) {
+    } catch (_err) {
       // Not valid JSON or new format, fall back to legacy
       return legacyHandler(socket, data);
     }
@@ -312,10 +314,10 @@ export class SessionIntegration {
         p.IAC,
         p.SB,
         p.NAWS,
-        0,
-        msg.width,
-        0,
-        msg.height,
+        (msg.width >> 8) & 0xff,
+        msg.width & 0xff,
+        (msg.height >> 8) & 0xff,
+        msg.height & 0xff,
         p.IAC,
         p.SE,
       ]);
@@ -341,7 +343,11 @@ export class SessionIntegration {
         this.notificationManager
           .sendNotification(session.deviceToken, match, session.id)
           .catch((err) => {
-            console.error('Failed to send notification:', err);
+            // eslint-disable-next-line no-console
+            console.error(
+              '[session-integration] Failed to send notification:',
+              err,
+            );
           });
       }
     }
@@ -381,7 +387,7 @@ export class SessionIntegration {
     };
     try {
       socket.sendUTF(JSON.stringify(response));
-    } catch (err) {
+    } catch (_err) {
       // Socket might be closed
     }
   }
@@ -431,6 +437,10 @@ export class SessionIntegration {
    * Clean up on shutdown
    */
   shutdown(): void {
+    if (this.retryInterval) {
+      clearInterval(this.retryInterval);
+      this.retryInterval = null;
+    }
     this.sessionManager.clearAll();
   }
 }

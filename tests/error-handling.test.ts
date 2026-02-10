@@ -4,7 +4,6 @@ import type { IncomingMessage } from 'http';
 import zlib from 'zlib';
 import fs from 'fs';
 import iconv from 'iconv-lite';
-import { minify } from 'uglify-js';
 
 // Type definitions
 interface SocketExtended extends WebSocket {
@@ -193,7 +192,7 @@ const parse = (s: SocketExtended, d: Buffer): number => {
   let req: ClientRequest;
 
   try {
-    req = eval('(' + d.toString() + ')');
+    req = JSON.parse(d.toString());
   } catch (err) {
     srv.log('parse: ' + err);
     return 0;
@@ -659,41 +658,25 @@ describe('Error Handling', () => {
       );
     });
 
-    it('should handle minification errors in loadF()', () => {
+    it('should handle import errors in loadF()', async () => {
       const filename = 'invalid-file.js';
 
-      // minify returns an object with error property instead of throwing
-      const result = minify('/nonexistent/path/' + filename);
-      if (result.error) {
-        srv.log(filename);
-        srv.log('Minify/load error: ' + result.error);
-      } else if (result.code) {
+      const loadF = async (f: string): Promise<void> => {
         try {
-          eval(result.code);
+          const modulePath =
+            '/nonexistent/path/' + f + '?t=' + Date.now();
+          await import(modulePath);
+          srv.log('dyn.reload: ' + f);
         } catch (err) {
-          srv.log(filename);
-          srv.log('Minify/load error: ' + err);
+          srv.log('Load error: ' + (err as Error).message);
         }
-      }
+      };
 
-      // Should log either the minify error or the filename
-      expect(mockLog).toHaveBeenCalled();
-    });
+      await loadF(filename);
 
-    it('should handle eval() errors in dynamic reload', () => {
-      const filename = 'test.js';
-      const invalidCode = 'this is not valid javascript { } [';
-
-      try {
-        eval(invalidCode);
-      } catch (err) {
-        srv.log(filename);
-        srv.log('Minify/load error: ' + err);
-      }
-
-      expect(mockLog).toHaveBeenCalledWith(filename);
+      // Should log the load error
       expect(mockLog).toHaveBeenCalledWith(
-        expect.stringContaining('Minify/load error:'),
+        expect.stringContaining('Load error:'),
       );
     });
 

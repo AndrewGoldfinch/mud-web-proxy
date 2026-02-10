@@ -70,8 +70,9 @@ export class NotificationManager {
 
       // Check if file exists
       if (!fs.existsSync(keyPath)) {
+        // eslint-disable-next-line no-console
         console.error(
-          `[NotificationManager] APNS key file not found: ${keyPath}`,
+          `[notification-manager] APNS key file not found: ${keyPath}`,
         );
         return null;
       }
@@ -122,8 +123,9 @@ export class NotificationManager {
 
       return token;
     } catch (err) {
+      // eslint-disable-next-line no-console
       console.error(
-        `[NotificationManager] Failed to generate auth token: ${err}`,
+        `[notification-manager] Failed to generate auth token: ${err}`,
       );
       return null;
     }
@@ -262,13 +264,15 @@ export class NotificationManager {
         if (statusCode >= 200 && statusCode < 300) {
           resolve(true);
         } else {
-          console.error(`[NotificationManager] APNS error ${statusCode}`);
+          // eslint-disable-next-line no-console
+          console.error(`[notification-manager] APNS error ${statusCode}`);
           resolve(false);
         }
       });
 
       req.on('error', (err) => {
-        console.error(`[NotificationManager] Request error: ${err}`);
+        // eslint-disable-next-line no-console
+        console.error(`[notification-manager] Request error: ${err}`);
         resolve(false);
       });
 

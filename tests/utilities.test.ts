@@ -6,7 +6,6 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
-import { minify } from 'uglify-js';
 
 // Store original functions
 const originalConsoleLog = console.log;
@@ -214,95 +213,92 @@ describe('loadF() dynamic reload', () => {
     }
   });
 
-  test('should minify and evaluate code successfully', () => {
-    const testFile = path.join(testDir, 'test.js');
+  test('should dynamically import a module successfully', async () => {
     if (!fs.existsSync(testDir)) {
       fs.mkdirSync(testDir, { recursive: true });
     }
-    fs.writeFileSync(testFile, 'const x = 1 + 1;');
+    fs.writeFileSync(
+      path.join(testDir, 'test.ts'),
+      'export const x = 1 + 1;',
+    );
 
-    const loadF = function (f: string): void {
+    const loadF = async function (f: string): Promise<void> {
       try {
-        const fl = minify(path.join(testDir, f)).code;
-        eval(fl + '');
+        const modulePath = testDir + '/' + f + '?t=' + Date.now();
+        await import(modulePath);
         capturedLogMessages.push('dyn.reload: ' + f);
       } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
+        capturedLogMessages.push('Load error: ' + (err as Error).message);
       }
     };
 
-    loadF('test.js');
-    expect(capturedLogMessages).toContain('dyn.reload: test.js');
+    await loadF('test.ts');
+    expect(capturedLogMessages).toContain('dyn.reload: test.ts');
   });
 
-  test('should handle minification errors', () => {
-    const testFile = path.join(testDir, 'bad.js');
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(testFile, 'function { syntax error }');
-
-    const loadF = function (f: string): void {
+  test('should handle import errors for non-existent files', async () => {
+    const loadF = async function (f: string): Promise<void> {
       try {
-        const fl = minify(path.join(testDir, f)).code;
-        if (!fl) {
-          throw new Error('Minification failed');
-        }
-        eval(fl + '');
+        const modulePath = testDir + '/' + f + '?t=' + Date.now();
+        await import(modulePath);
         capturedLogMessages.push('dyn.reload: ' + f);
       } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
+        capturedLogMessages.push('Load error: ' + (err as Error).message);
       }
     };
 
-    loadF('bad.js');
-    expect(capturedLogMessages).toContain('bad.js');
+    await loadF('nonexistent.ts');
     expect(
-      capturedLogMessages.some((msg) => msg.includes('Minify/load error')),
+      capturedLogMessages.some((msg) => msg.includes('Load error')),
     ).toBe(true);
   });
 
-  test('should handle eval errors in minified code', () => {
-    // Test the error handling path directly
-    const loadF = function (f: string): void {
-      try {
-        // Simulate an error during evaluation
-        throw new Error('Eval error');
-      } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
-      }
-    };
-
-    loadF('eval-error.js');
-    expect(capturedLogMessages).toContain('eval-error.js');
-    expect(
-      capturedLogMessages.some((msg) => msg.includes('Minify/load error')),
-    ).toBe(true);
-  });
-
-  test('should log success and errors appropriately', () => {
-    const testFile = path.join(testDir, 'success.js');
+  test('should handle import errors for invalid modules', async () => {
     if (!fs.existsSync(testDir)) {
       fs.mkdirSync(testDir, { recursive: true });
     }
-    fs.writeFileSync(testFile, 'const success = true;');
+    fs.writeFileSync(
+      path.join(testDir, 'bad.ts'),
+      'throw new Error("Module load failure");',
+    );
 
-    const loadF = function (f: string): void {
+    const loadF = async function (f: string): Promise<void> {
       try {
-        const fl = minify(path.join(testDir, f)).code;
-        eval(fl + '');
+        const modulePath = testDir + '/' + f + '?t=' + Date.now();
+        await import(modulePath);
         capturedLogMessages.push('dyn.reload: ' + f);
       } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
+        capturedLogMessages.push('Load error: ' + (err as Error).message);
       }
     };
 
-    loadF('success.js');
-    expect(capturedLogMessages).toContain('dyn.reload: success.js');
+    await loadF('bad.ts');
+    expect(
+      capturedLogMessages.some((msg) => msg.includes('Load error')),
+    ).toBe(true);
+  });
+
+  test('should log success appropriately', async () => {
+    if (!fs.existsSync(testDir)) {
+      fs.mkdirSync(testDir, { recursive: true });
+    }
+    fs.writeFileSync(
+      path.join(testDir, 'success.ts'),
+      'export const success = true;',
+    );
+
+    const loadF = async function (f: string): Promise<void> {
+      try {
+        const modulePath = testDir + '/' + f + '?t=' + Date.now();
+        await import(modulePath);
+        capturedLogMessages.push('dyn.reload: ' + f);
+      } catch (err) {
+        capturedLogMessages.push('Load error: ' + (err as Error).message);
+      }
+    };
+
+    await loadF('success.ts');
+    expect(capturedLogMessages).toContain('dyn.reload: success.ts');
     expect(capturedLogMessages.some((msg) => msg.includes('error'))).toBe(
       false,
     );
@@ -612,20 +608,20 @@ describe('Server initialization', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  test('should set up file watching on wsproxy.js', () => {
+  test('should set up file watching on wsproxy.ts', () => {
     const testDir = '/tmp/test-watch';
     if (!fs.existsSync(testDir)) {
       fs.mkdirSync(testDir, { recursive: true });
     }
 
-    fs.writeFileSync(path.join(testDir, 'wsproxy.js'), '// test file');
+    fs.writeFileSync(path.join(testDir, 'wsproxy.ts'), '// test file');
 
     // Verify file exists
-    expect(fs.existsSync(path.join(testDir, 'wsproxy.js'))).toBe(true);
+    expect(fs.existsSync(path.join(testDir, 'wsproxy.ts'))).toBe(true);
 
     // Simulate file change
-    fs.writeFileSync(path.join(testDir, 'wsproxy.js'), '// updated content');
-    expect(fs.readFileSync(path.join(testDir, 'wsproxy.js'), 'utf8')).toBe(
+    fs.writeFileSync(path.join(testDir, 'wsproxy.ts'), '// updated content');
+    expect(fs.readFileSync(path.join(testDir, 'wsproxy.ts'), 'utf8')).toBe(
       '// updated content',
     );
 

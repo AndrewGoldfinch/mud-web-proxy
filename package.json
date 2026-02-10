@@ -42,6 +42,7 @@
     "@eslint/js": "^9.39.2",
     "@types/node": "^25.2.1",
     "@types/uglify-js": "^3.17.5",
+    "uglify-js": "^3.19.3",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
@@ -57,7 +58,6 @@
   },
   "dependencies": {
     "iconv-lite": "^0.6.3",
-    "uglify-js": "^3.19.3",
     "ws": "^8.19.0"
   }
 }

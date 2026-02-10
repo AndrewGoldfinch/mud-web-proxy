@@ -37,9 +37,8 @@ import zlib from 'zlib';
 import fs from 'fs';
 import { X509Certificate } from 'crypto';
 import { fileURLToPath } from 'url';
-import { dirname } from 'path';
-import { minify } from 'uglify-js';
-import * as ws from 'ws';
+import path from 'path';
+const { dirname } = path;
 import iconv from 'iconv-lite';
 import type { WebSocket as WS, WebSocketServer } from 'ws';
 import type { Socket } from 'net';
@@ -49,7 +48,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { SessionIntegration } from './src/session-integration';
 
 // Log levels enum
-enum LogLevel {
+const enum LogLevel {
   DEBUG = 0,
   INFO = 1,
   WARN = 2,
@@ -128,6 +127,20 @@ const sessionIntegration = new SessionIntegration({
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = true;
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
+const PACKAGE_VERSION = '3.0.0';
+const MCCP_NEGOTIATION_DELAY_MS = 6000;
+const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
+const SOCKET_CLOSE_DELAY_MS = 500;
+const CHAT_HISTORY_LIMIT = 300;
+
+export const writeTelnet = (
+  s: SocketExtended,
+  data: Buffer | string,
+): boolean => {
+  if (!s.ts?.writable) return false;
+  s.ts.write(data);
+  return true;
+};
 
 interface ServerState {
   sockets: SocketExtended[];
@@ -254,15 +267,25 @@ interface ChatEntry {
 
 let server: ServerState = { sockets: [] };
 let chatlog: ChatEntry[] = [];
-
-process.chdir(__dirname);
+const watcherTimers = new Map<string, NodeJS.Timeout>();
+let chatWriteTimer: NodeJS.Timeout | null = null;
+const debouncedChatWrite = () => {
+  if (chatWriteTimer) clearTimeout(chatWriteTimer);
+  chatWriteTimer = setTimeout(() => {
+    fs.promises
+      .writeFile(path.resolve(__dirname, 'chat.json'), stringify(chatlog))
+      .catch((err) => {
+        srv.log('Chat write error: ' + err);
+      });
+  }, 1000);
+};
 
 const stringify = function (A: unknown): string {
-  const cache: unknown[] = [];
+  const cache = new Set<unknown>();
   const val = JSON.stringify(A, function (_k: string, v: unknown) {
     if (typeof v === 'object' && v !== null) {
-      if (cache.indexOf(v) !== -1) return;
-      cache.push(v);
+      if (cache.has(v)) return;
+      cache.add(v);
     }
     return v;
   });
@@ -272,7 +295,10 @@ const stringify = function (A: unknown): string {
 // Load chat log asynchronously
 const loadChatLog = async (): Promise<ChatEntry[]> => {
   try {
-    const data = await fs.promises.readFile('./chat.json', 'utf8');
+    const data = await fs.promises.readFile(
+      path.resolve(__dirname, 'chat.json'),
+      'utf8',
+    );
     const parsed = JSON.parse(data);
     // Ensure we always return an array
     return Array.isArray(parsed) ? parsed : [];
@@ -303,11 +329,11 @@ interface ServerConfig {
   initT: (so: SocketExtended) => void;
   closeSocket: (s: SocketExtended) => void;
   sendClient: (s: SocketExtended, data: Buffer) => void;
-  loadF: (f: string) => void;
+  loadF: (f: string) => Promise<void>;
   chat: (s: SocketExtended, req: ChatRequest) => void;
   chatUpdate: () => void;
   chatCleanup: (t: string) => string;
-  originAllowed: () => number;
+  originAllowed: (req?: IncomingMessage) => number;
   log: (
     msg: unknown,
     s?: SocketExtended,
@@ -321,7 +347,6 @@ interface ServerConfig {
   die: (core?: boolean) => void;
   newSocket: (s: SocketExtended) => void;
   forward: (s: SocketExtended, d: Buffer) => void;
-  [key: string]: unknown;
 }
 
 const srv: ServerConfig = {
@@ -423,11 +448,11 @@ const srv: ServerConfig = {
 
     if (
       USE_TLS &&
-      fs.existsSync('./cert.pem') &&
-      fs.existsSync('./privkey.pem')
+      fs.existsSync(path.resolve(__dirname, 'cert.pem')) &&
+      fs.existsSync(path.resolve(__dirname, 'privkey.pem'))
     ) {
-      const cert = fs.readFileSync('./cert.pem');
-      const key = fs.readFileSync('./privkey.pem');
+      const cert = fs.readFileSync(path.resolve(__dirname, 'cert.pem'));
+      const key = fs.readFileSync(path.resolve(__dirname, 'privkey.pem'));
       webserver = https.createServer({
         cert: cert,
         key: key,
@@ -495,29 +520,17 @@ const srv: ServerConfig = {
           JSON.stringify({
             status: 'healthy',
             timestamp: new Date().toISOString(),
-            version: '3.1.0',
+            version: PACKAGE_VERSION,
             ...stats,
           }),
         );
       }
     });
 
-    // Create WebSocket server based on Node.js version
+    // Create WebSocket server
     try {
-      if (majorVersion >= 16) {
-        // Dynamic import with destructuring
-        const { WebSocketServer } = await import('ws');
-
-        // Modern Node.js version (16+)
-        wsServer = new WebSocketServer({ server: webserver });
-      } else {
-        // Legacy Node.js version (14 and below)
-        wsServer = new (
-          ws as unknown as {
-            Server: new (opts: { server: HttpServer }) => ws.WebSocketServer;
-          }
-        ).Server({ server: webserver });
-      }
+      const { WebSocketServer } = await import('ws');
+      wsServer = new WebSocketServer({ server: webserver });
 
       srv.log(`WebSocket server initialized (Node.js ${process.version})`);
     } catch (err) {
@@ -534,7 +547,7 @@ const srv: ServerConfig = {
           return;
         }
 
-        if (!srv.originAllowed()) {
+        if (!srv.originAllowed(req)) {
           socket.terminate();
           return;
         }
@@ -553,15 +566,9 @@ const srv: ServerConfig = {
         );
 
         socket.on('message', function message(msg: Buffer) {
-          // if (msg.type === 'utf8') {
-          // msg = msg.utf8Data;
           if (!srv.parse(extendedSocket, msg)) {
             srv.forward(extendedSocket, msg);
           }
-          // }
-          // else {
-          // srv.log('unrecognized msg type: ' + msg.type);
-          // }
         });
 
         socket.on('close', () => {
@@ -588,30 +595,24 @@ const srv: ServerConfig = {
     );
 
     fs.watch(
-      srv.path + '/wsproxy.js',
+      srv.path + '/wsproxy.ts',
       function (_event: string, filename: string | Buffer | null) {
         if (filename === null || typeof filename !== 'string') return;
         const key = 'update-' + filename;
-        if (
-          (srv as Record<string, ReturnType<typeof setTimeout> | undefined>)[
-            key
-          ]
-        )
-          clearTimeout(
-            (srv as Record<string, ReturnType<typeof setTimeout> | undefined>)[
-              key
-            ]!,
-          );
-        (srv as Record<string, ReturnType<typeof setTimeout>>)[key] =
+        const existing = watcherTimers.get(key);
+        if (existing) clearTimeout(existing);
+        watcherTimers.set(
+          key,
           setTimeout(function () {
             srv.loadF(filename);
-          }, 1000);
+          }, 1000),
+        );
       },
     );
   },
 
   parse: function (s: SocketExtended, d: Buffer): number {
-    if (d[0] != '{'.charCodeAt(0)) return 0;
+    if (d[0] !== '{'.charCodeAt(0)) return 0;
 
     // Try new session-aware message format first
     try {
@@ -631,7 +632,7 @@ const srv: ServerConfig = {
     let req: ClientRequest;
 
     try {
-      req = eval('(' + d.toString() + ')');
+      req = JSON.parse(d.toString());
     } catch (err) {
       srv.log('parse: ' + err);
       return 0;
@@ -756,7 +757,8 @@ const srv: ServerConfig = {
 
     // do not allow the proxy connect to different servers
     if (ONLY_ALLOW_DEFAULT_SERVER) {
-      if (s.host !== srv.tn_host) {
+      const resolvedHost = s.host || srv.tn_host;
+      if (resolvedHost !== srv.tn_host) {
         srv.log('avoid connection attempt to: ' + s.host + ':' + s.port, s);
         srv.sendClient(
           s,
@@ -770,7 +772,7 @@ const srv: ServerConfig = {
         );
         setTimeout(function () {
           srv.closeSocket(s);
-        }, 500);
+        }, SOCKET_CLOSE_DELAY_MS);
         return;
       }
     }
@@ -780,8 +782,6 @@ const srv: ServerConfig = {
         'new connection to ' + host + ':' + port + ' for ' + s.remoteAddress,
       );
     }) as TelnetSocket;
-
-    // s.ts.setEncoding('binary');
 
     s.ts.send = function (data: string | Buffer) {
       if (srv.debug) {
@@ -807,8 +807,6 @@ const srv: ServerConfig = {
 
     s.ts
       .on('connect', function () {
-        // let p = srv.prt;
-
         srv.log('new telnet socket connected');
 
         setTimeout(function () {
@@ -823,7 +821,7 @@ const srv: ServerConfig = {
             s.echo_negotiated =
             s.naws_negotiated =
               1;
-        }, 12000);
+        }, PROTOCOL_NEGOTIATION_TIMEOUT_MS);
 
         srv.chatUpdate();
       })
@@ -835,23 +833,21 @@ const srv: ServerConfig = {
         srv.sendClient(s, Buffer.from('Timeout: server port is down.\r\n'));
         setTimeout(function () {
           srv.closeSocket(s);
-        }, 500);
+        }, SOCKET_CLOSE_DELAY_MS);
       })
       .on('close', function () {
         srv.log('telnet socket closed: ' + s.remoteAddress);
         srv.chatUpdate();
         setTimeout(function () {
           srv.closeSocket(s);
-        }, 500);
-        // srv.initT(s);
+        }, SOCKET_CLOSE_DELAY_MS);
       })
       .on('error', function (err: Error) {
         srv.log('error: ' + err.toString());
-        // srv.sendClient(s, Buffer.from(err.toString()));
         srv.sendClient(s, Buffer.from('Error: maybe the mud server is down?'));
         setTimeout(function () {
           srv.closeSocket(s);
-        }, 500);
+        }, SOCKET_CLOSE_DELAY_MS);
       });
   },
 
@@ -863,7 +859,7 @@ const srv: ServerConfig = {
 
       // Remove from socket list
       const i = server.sockets.indexOf(s);
-      if (i != -1) server.sockets.splice(i, 1);
+      if (i !== -1) server.sockets.splice(i, 1);
 
       srv.log(
         '(ws) peer ' +
@@ -877,23 +873,17 @@ const srv: ServerConfig = {
     // Legacy behavior - close everything
     if (s.ts) {
       srv.log(
-        'closing telnet socket: ' + s.host ||
-          srv.tn_host + ':' + s.port ||
-          srv.tn_port,
+        `closing telnet socket: ${s.host ?? srv.tn_host}:${s.port ?? srv.tn_port}`,
       );
-      // s.ts.destroy();
       s.terminate();
     }
 
     const i = server.sockets.indexOf(s);
-    if (i != -1) server.sockets.splice(i, 1);
+    if (i !== -1) server.sockets.splice(i, 1);
 
     srv.log('closing socket: ' + s.remoteAddress);
 
-    if (s.terminate)
-      // s.destroy();
-      s.terminate();
-    // s.socket.destroy();
+    if (s.terminate) s.terminate();
     else
       (
         s as unknown as { socket: { terminate: () => void } }
@@ -908,18 +898,18 @@ const srv: ServerConfig = {
     if (s.mccp && !s.mccp_negotiated && !s.compressed) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.WILL &&
-          data[i + 2] == p.MCCP2
+          data[i] === p.IAC &&
+          data[i + 1] === p.WILL &&
+          data[i + 2] === p.MCCP2
         ) {
           setTimeout(function () {
             srv.log('IAC DO MCCP2', s);
             s.ts!.write(p.DO_MCCP);
-          }, 6000);
+          }, MCCP_NEGOTIATION_DELAY_MS);
         } else if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.SB &&
-          data[i + 2] == p.MCCP2
+          data[i] === p.IAC &&
+          data[i + 1] === p.SB &&
+          data[i + 2] === p.MCCP2
         ) {
           if (i) srv.sendClient(s, data.slice(0, i));
 
@@ -935,9 +925,9 @@ const srv: ServerConfig = {
     if (s.ttype.length) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.DO &&
-          data[i + 2] == p.TTYPE
+          data[i] === p.IAC &&
+          data[i + 1] === p.DO &&
+          data[i + 2] === p.TTYPE
         ) {
           srv.log('IAC DO TTYPE <- IAC FIRST TTYPE', s);
           srv.sendTTYPE(s, s.ttype.shift()!);
@@ -947,10 +937,10 @@ const srv: ServerConfig = {
             srv.sendTTYPE(s, s.ttype.shift());
           }*/
         } else if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.SB &&
-          data[i + 2] == p.TTYPE &&
-          data[i + 3] == p.REQUEST
+          data[i] === p.IAC &&
+          data[i + 1] === p.SB &&
+          data[i + 2] === p.TTYPE &&
+          data[i + 3] === p.REQUEST
         ) {
           srv.log('IAC SB TTYPE <- IAC NEXT TTYPE');
           srv.sendTTYPE(s, s.ttype.shift()!);
@@ -961,13 +951,13 @@ const srv: ServerConfig = {
     if (!s.gmcp_negotiated) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          (data[i + 1] == p.DO || data[i + 1] == p.WILL) &&
-          data[i + 2] == p.GMCP
+          data[i] === p.IAC &&
+          (data[i + 1] === p.DO || data[i + 1] === p.WILL) &&
+          data[i + 2] === p.GMCP
         ) {
           srv.log('IAC DO GMCP', s);
 
-          if (data[i + 1] == p.DO) s.ts!.write(p.WILL_GMCP);
+          if (data[i + 1] === p.DO) s.ts!.write(p.WILL_GMCP);
           else s.ts!.write(p.DO_GMCP);
 
           srv.log('IAC DO GMCP <- IAC WILL GMCP', s);
@@ -975,7 +965,7 @@ const srv: ServerConfig = {
           s.gmcp_negotiated = 1;
 
           for (let t = 0; t < srv.gmcp.portal.length; t++) {
-            if (t == 0 && s.client) {
+            if (t === 0 && s.client) {
               srv.sendGMCP(s, 'client ' + s.client);
               continue;
             }
@@ -991,9 +981,9 @@ const srv: ServerConfig = {
     if (!s.msdp_negotiated) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.WILL &&
-          data[i + 2] == p.MSDP
+          data[i] === p.IAC &&
+          data[i + 1] === p.WILL &&
+          data[i + 2] === p.MSDP
         ) {
           s.ts!.write(p.DO_MSDP);
           srv.log('IAC WILL MSDP <- IAC DO MSDP', s);
@@ -1010,14 +1000,18 @@ const srv: ServerConfig = {
 
     if (!s.mxp_negotiated) {
       for (let i = 0; i < data.length; i++) {
-        if (data[i] == p.IAC && data[i + 1] == p.DO && data[i + 2] == p.MXP) {
+        if (
+          data[i] === p.IAC &&
+          data[i + 1] === p.DO &&
+          data[i + 2] === p.MXP
+        ) {
           s.ts!.write(Buffer.from([p.IAC, p.WILL, p.MXP]));
           srv.log('IAC DO MXP <- IAC WILL MXP', s);
           s.mxp_negotiated = 1;
         } else if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.WILL &&
-          data[i + 2] == p.MXP
+          data[i] === p.IAC &&
+          data[i + 1] === p.WILL &&
+          data[i + 2] === p.MXP
         ) {
           s.ts!.write(Buffer.from([p.IAC, p.DO, p.MXP]));
           srv.log('IAC WILL MXP <- IAC DO MXP', s);
@@ -1028,7 +1022,11 @@ const srv: ServerConfig = {
 
     if (!s.new_negotiated) {
       for (let i = 0; i < data.length; i++) {
-        if (data[i] == p.IAC && data[i + 1] == p.DO && data[i + 2] == p.NEW) {
+        if (
+          data[i] === p.IAC &&
+          data[i + 1] === p.DO &&
+          data[i + 2] === p.NEW
+        ) {
           s.ts!.write(Buffer.from([p.IAC, p.WILL, p.NEW]));
           srv.log('IAC WILL NEW-ENV', s);
           s.new_negotiated = 1;
@@ -1037,10 +1035,10 @@ const srv: ServerConfig = {
     } else if (!s.new_handshake) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.SB &&
-          data[i + 2] == p.NEW &&
-          data[i + 3] == p.REQUEST
+          data[i] === p.IAC &&
+          data[i + 1] === p.SB &&
+          data[i + 2] === p.NEW &&
+          data[i + 3] === p.REQUEST
         ) {
           s.ts!.write(Buffer.from([p.IAC, p.SB, p.NEW, p.IS, p.IS]));
           s.ts!.write('IPADDRESS');
@@ -1056,11 +1054,10 @@ const srv: ServerConfig = {
     if (!s.echo_negotiated) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.WILL &&
-          data[i + 2] == p.ECHO
+          data[i] === p.IAC &&
+          data[i + 1] === p.WILL &&
+          data[i + 2] === p.ECHO
         ) {
-          //s.ts.send(Buffer.from([p.IAC, p.WILL, p.ECHO]));
           srv.log('IAC WILL ECHO <- IAC WONT ECHO');
           // set a flag to avoid logging the next message (maybe passwords)
           s.password_mode = true;
@@ -1072,9 +1069,9 @@ const srv: ServerConfig = {
     if (!s.sga_negotiated) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.WILL &&
-          data[i + 2] == p.SGA
+          data[i] === p.IAC &&
+          data[i + 1] === p.WILL &&
+          data[i + 2] === p.SGA
         ) {
           s.ts!.write(Buffer.from([p.IAC, p.WONT, p.SGA]));
           srv.log('IAC WILL SGA <- IAC WONT SGA');
@@ -1086,9 +1083,9 @@ const srv: ServerConfig = {
     if (!s.naws_negotiated) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.WILL &&
-          data[i + 2] == p.NAWS
+          data[i] === p.IAC &&
+          data[i + 1] === p.WILL &&
+          data[i + 2] === p.NAWS
         ) {
           s.ts!.write(Buffer.from([p.IAC, p.WONT, p.NAWS]));
           srv.log('IAC WILL SGA <- IAC WONT NAWS');
@@ -1100,18 +1097,18 @@ const srv: ServerConfig = {
     if (!s.utf8_negotiated) {
       for (let i = 0; i < data.length; i++) {
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.DO &&
-          data[i + 2] == p.CHARSET
+          data[i] === p.IAC &&
+          data[i + 1] === p.DO &&
+          data[i + 2] === p.CHARSET
         ) {
           s.ts!.write(p.WILL_CHARSET);
           srv.log('IAC DO CHARSET <- IAC WILL CHARSET', s);
         }
 
         if (
-          data[i] == p.IAC &&
-          data[i + 1] == p.SB &&
-          data[i + 2] == p.CHARSET
+          data[i] === p.IAC &&
+          data[i + 1] === p.SB &&
+          data[i + 2] === p.CHARSET
         ) {
           s.ts!.write(p.ACCEPT_UTF8);
           srv.log('UTF-8 negotiated', s);
@@ -1125,7 +1122,6 @@ const srv: ServerConfig = {
       for (let i = 0; i < data.length; i++)
         raw.push(util.format('%d', data[i]));
       srv.log('raw bin: ' + raw, s);
-      // srv.log('raw: ' + data, s);
     }
 
     if (!srv.compress || (s.mccp && s.compressed)) {
@@ -1143,15 +1139,13 @@ const srv: ServerConfig = {
     });
   },
 
-  loadF: function (f: string): void {
+  loadF: async function (f: string): Promise<void> {
     try {
-      const fl = minify(srv.path + '/' + f).code;
-      eval(fl + '');
+      const modulePath = srv.path + '/' + f + '?t=' + Date.now();
+      await import(modulePath);
       srv.log('dyn.reload: ' + f);
     } catch (err) {
-      srv.log(f);
-      srv.log('Minify/load error: ' + err);
-      return;
+      srv.log('Load error: ' + (err as Error).message);
     }
   },
 
@@ -1166,10 +1160,9 @@ const srv: ServerConfig = {
       chatlog = [];
     }
 
-    if (req.channel && req.channel == 'op') {
-      // chatlog = chatlog.filter(function(l) { return (l[1].channel == 'status')?0:1 });
-      // Create a copy of the last 300 messages
-      const temp = Array.from(chatlog).slice(-300);
+    if (req.channel && req.channel === 'op') {
+      // Create a copy of the last N messages
+      const temp = Array.from(chatlog).slice(-CHAT_HISTORY_LIMIT);
       const users: string[] = [];
 
       for (let i = 0; i < ss.length; i++) {
@@ -1183,7 +1176,7 @@ const srv: ServerConfig = {
           u = (ss[i].name || 'Guest') + '@chat';
         }
 
-        if (users.indexOf(u) == -1) users.push(u);
+        if (users.indexOf(u) === -1) users.push(u);
       }
 
       temp.push({
@@ -1194,9 +1187,7 @@ const srv: ServerConfig = {
       let t = stringify(temp);
       t = this.chatCleanup(t);
 
-      // s.sendUTF('portal.chatlog ' + t);
       s.send('portal.chatlog ' + t);
-      // fs.writeFileSync("./chat.json", stringify(chatlog));
       return;
     }
 
@@ -1205,11 +1196,10 @@ const srv: ServerConfig = {
     req.msg = this.chatCleanup(req.msg!);
 
     for (let i = 0; i < ss.length; i++) {
-      // if (ss[i].chat) ss[i].sendUTF('portal.chat ' + stringify(req));
       if (ss[i].chat) ss[i].send('portal.chat ' + stringify(req));
     }
 
-    fs.writeFileSync('./chat.json', stringify(chatlog));
+    debouncedChatWrite();
   },
 
   chatUpdate: function (): void {
@@ -1228,8 +1218,12 @@ const srv: ServerConfig = {
     return t;
   },
 
-  originAllowed: function (): number {
-    return 1;
+  originAllowed: function (req?: IncomingMessage): number {
+    const allowedOrigins = process.env.ALLOWED_ORIGINS;
+    if (!allowedOrigins) return 1; // backward compatible
+    const origin = req?.headers?.origin || '';
+    const allowed = allowedOrigins.split(',').map((s) => s.trim());
+    return allowed.includes(origin) || allowed.includes('*') ? 1 : 0;
   },
 
   log: function (
@@ -1413,8 +1407,6 @@ const srv: ServerConfig = {
 
 // Initialize async
 const init = async () => {
-  chatlog = await loadChatLog();
-
   process.stdin.resume();
 
   process
@@ -1428,7 +1420,7 @@ const init = async () => {
     })
     .on('SIGSEGV', () => {
       srv.log('Got SIGSEGV.');
-      srv.die(true);
+      process.exit(3);
     })
     .on('SIGTERM', () => {
       srv.log('Got SIGTERM.');

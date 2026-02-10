@@ -2,9 +2,9 @@
  * Type definitions for MUDBasher session persistence proxy
  */
 
-import type { Socket } from 'net';
 import type { IncomingMessage } from 'http';
 import type { WebSocket as WS } from 'ws';
+import type { Socket } from 'net';
 
 /**
  * Extended WebSocket type with our custom properties
@@ -12,7 +12,7 @@ import type { WebSocket as WS } from 'ws';
  */
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
-  ts?: Socket;
+  ts?: TelnetSocket;
   host?: string;
   port?: number;
   ttype: string[];
