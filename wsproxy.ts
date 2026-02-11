@@ -503,8 +503,10 @@ const srv: ServerConfig = {
       webserver = http.createServer();
       srv.log('(ws) Running without TLS (DISABLE_TLS=1)');
     } else {
-      srv.log('Could not find cert and/or privkey files, exiting.');
-      process.exit();
+      webserver = http.createServer();
+      srv.log(
+        '(ws) WARNING: No cert.pem/privkey.pem found, running without TLS',
+      );
     }
 
     webserver.listen(srv.ws_port, function () {
