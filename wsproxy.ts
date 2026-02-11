@@ -126,12 +126,32 @@ const sessionIntegration = new SessionIntegration({
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = true;
+// Trust X-Real-IP / X-Forwarded-For headers from a reverse proxy
+const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
 const PACKAGE_VERSION = '3.0.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
 const CHAT_HISTORY_LIMIT = 300;
+
+/**
+ * Resolve the real client IP from proxy headers or the socket.
+ * Only trusts headers when TRUST_PROXY=1.
+ */
+const getClientIP = (req: IncomingMessage): string => {
+  if (TRUST_PROXY) {
+    const realIP = req.headers['x-real-ip'];
+    if (typeof realIP === 'string' && realIP) return realIP;
+
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded) {
+      // First entry is the original client
+      return forwarded.split(',')[0].trim();
+    }
+  }
+  return req.socket?.remoteAddress || '';
+};
 
 export const writeTelnet = (
   s: SocketExtended,
@@ -576,6 +596,9 @@ const srv: ServerConfig = {
         const extendedSocket = socket as SocketExtended;
         if (!extendedSocket.req)
           extendedSocket.req = req as SocketExtended['req'];
+
+        // Resolve real client IP (supports reverse proxy headers)
+        extendedSocket.remoteAddress = getClientIP(req);
 
         // Add compatibility methods for the WebSocket
         extendedSocket.sendUTF = extendedSocket.send.bind(extendedSocket);
@@ -1266,8 +1289,9 @@ const srv: ServerConfig = {
     const currentLevel = getLogLevel();
     if (level < currentLevel) return;
 
-    // Get client info
-    const clientInfo = s?.req?.connection?.remoteAddress || '';
+    // Get client info (prefer resolved remoteAddress, fall back to req)
+    const clientInfo =
+      s?.remoteAddress || s?.req?.connection?.remoteAddress || '';
     const clientStr = clientInfo ? `[${clientInfo}]` : '';
 
     // Get MUD target info

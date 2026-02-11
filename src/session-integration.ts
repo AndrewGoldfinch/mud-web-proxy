@@ -154,7 +154,10 @@ export class SessionIntegration {
     socket: SocketExtended,
     msg: ConnectRequest,
   ): Promise<void> {
-    const ip = socket.req?.connection?.remoteAddress || 'unknown';
+    const ip =
+      socket.remoteAddress ||
+      socket.req?.connection?.remoteAddress ||
+      'unknown';
 
     this.log(`connect request to ${msg.host}:${msg.port}`, ip);
 
@@ -242,7 +245,10 @@ export class SessionIntegration {
    * Handle resume request - reattach to existing session
    */
   private handleResume(socket: SocketExtended, msg: ResumeRequest): void {
-    const ip = socket.req?.connection?.remoteAddress || 'unknown';
+    const ip =
+      socket.remoteAddress ||
+      socket.req?.connection?.remoteAddress ||
+      'unknown';
     this.log(
       `resume request for session ${msg.sessionId} from seq ${msg.lastSeq}`,
       ip,
@@ -430,7 +436,10 @@ export class SessionIntegration {
   handleSocketClose(socket: SocketExtended): void {
     const session = this.sessionManager.findByWebSocket(socket);
     if (session) {
-      const ip = socket.req?.connection?.remoteAddress || 'unknown';
+      const ip =
+        socket.remoteAddress ||
+        socket.req?.connection?.remoteAddress ||
+        'unknown';
       this.log('client detached from session', ip, session.id);
 
       // Detach instead of terminate
