@@ -596,8 +596,12 @@ const srv: ServerConfig = {
       },
     );
 
+    const watchPath = path.resolve(srv.path, 'wsproxy.ts');
+    if (!fs.existsSync(watchPath)) {
+      srv.log('wsproxy.ts not found at ' + watchPath + ', skipping watch');
+    } else
     fs.watch(
-      srv.path + '/wsproxy.ts',
+      watchPath,
       function (_event: string, filename: string | Buffer | null) {
         if (filename === null || typeof filename !== 'string') return;
         const key = 'update-' + filename;
