@@ -275,7 +275,7 @@ const debouncedChatWrite = () => {
     fs.promises
       .writeFile(path.resolve(__dirname, 'chat.json'), stringify(chatlog))
       .catch((err) => {
-        srv.log('Chat write error: ' + err);
+        srv.logError('Chat write error: ' + err, undefined, 'chat');
       });
   }, 1000);
 };
@@ -303,7 +303,7 @@ const loadChatLog = async (): Promise<ChatEntry[]> => {
     // Ensure we always return an array
     return Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    srv.log('Chat log error: ' + err);
+    srv.logError('Chat log error: ' + err, undefined, 'chat');
     return [];
   }
 };
@@ -428,7 +428,12 @@ const srv: ServerConfig = {
     const nodeVersion = process.version;
     const majorVersion = parseInt(nodeVersion.slice(1).split('.')[0], 10);
 
-    srv.log('Using node version ' + majorVersion);
+    srv.log(
+      'Using node version ' + majorVersion,
+      undefined,
+      LogLevel.INFO,
+      'init',
+    );
 
     server = {
       sockets: [],
@@ -437,9 +442,9 @@ const srv: ServerConfig = {
     try {
       // Load chat log asynchronously
       chatlog = await loadChatLog();
-      srv.log('Chat log loaded successfully');
+      srv.logInfo('Chat log loaded successfully', undefined, 'init');
     } catch (err) {
-      srv.log('Error loading chat log: ' + err);
+      srv.logError('Error loading chat log: ' + err, undefined, 'init');
       chatlog = [];
     }
 
@@ -487,7 +492,7 @@ const srv: ServerConfig = {
           (new Date(validTo).getTime() - Date.now()) / (1000 * 60 * 60 * 24),
         );
 
-        srv.logInfo('(ws) Using TLS/SSL');
+        srv.logInfo('Using TLS/SSL', undefined, 'init');
         srv.logInfo(`  Certificate: ${subject}`, undefined, 'ssl');
         srv.logInfo(`  Issuer: ${issuer}`, undefined, 'ssl');
         srv.logInfo(
@@ -496,21 +501,27 @@ const srv: ServerConfig = {
           'ssl',
         );
       } catch (_err) {
-        srv.logInfo('(ws) Using TLS/SSL (certificate details unavailable)');
+        srv.logInfo(
+          'Using TLS/SSL (certificate details unavailable)',
+          undefined,
+          'init',
+        );
       }
     } else if (!USE_TLS) {
       // Non-TLS mode for testing
       webserver = http.createServer();
-      srv.log('(ws) Running without TLS (DISABLE_TLS=1)');
+      srv.logInfo('Running without TLS (DISABLE_TLS=1)', undefined, 'init');
     } else {
       webserver = http.createServer();
-      srv.log(
-        '(ws) WARNING: No cert.pem/privkey.pem found, running without TLS',
+      srv.logWarn(
+        'No cert.pem/privkey.pem found, running without TLS',
+        undefined,
+        'init',
       );
     }
 
     webserver.listen(srv.ws_port, function () {
-      srv.log('(ws) server listening: port ' + srv.ws_port);
+      srv.logInfo('server listening: port ' + srv.ws_port, undefined, 'init');
     });
 
     // Add health check endpoint
@@ -534,16 +545,24 @@ const srv: ServerConfig = {
       const { WebSocketServer } = await import('ws');
       wsServer = new WebSocketServer({ server: webserver });
 
-      srv.log(`WebSocket server initialized (Node.js ${process.version})`);
+      srv.logInfo(
+        `WebSocket server initialized (Node.js ${process.version})`,
+        undefined,
+        'init',
+      );
     } catch (err) {
-      srv.log('Error creating WebSocket server: ' + err);
+      srv.logError(
+        'Error creating WebSocket server: ' + err,
+        undefined,
+        'init',
+      );
       process.exit(1);
     }
 
     wsServer.on(
       'connection',
       function connection(socket: WS, req: IncomingMessage) {
-        srv.log('(ws on connection) new connection');
+        srv.logInfo('new connection', undefined, 'ws');
         if (!srv.open) {
           socket.terminate();
           return;
@@ -563,8 +582,10 @@ const srv: ServerConfig = {
         extendedSocket.terminate = () => extendedSocket.close();
 
         server.sockets.push(extendedSocket);
-        srv.log(
-          '(ws on connection) connection count: ' + server.sockets.length,
+        srv.logInfo(
+          'connection count: ' + server.sockets.length,
+          extendedSocket,
+          'ws',
         );
 
         socket.on('message', function message(msg: Buffer) {
@@ -574,23 +595,12 @@ const srv: ServerConfig = {
         });
 
         socket.on('close', () => {
-          srv.log(
-            new Date().toISOString() +
-              ' (ws) peer ' +
-              extendedSocket.req.connection.remoteAddress +
-              ' disconnected.',
-          );
+          srv.logInfo('peer disconnected', extendedSocket, 'ws');
           srv.closeSocket(extendedSocket);
         });
 
         socket.on('error', (error: Error) => {
-          srv.log(
-            new Date().toISOString() +
-              ' (ws) peer ' +
-              extendedSocket.req.connection.remoteAddress +
-              ' error: ' +
-              error,
-          );
+          srv.logError('peer error: ' + error, extendedSocket, 'ws');
           srv.closeSocket(extendedSocket);
         });
       },
@@ -598,23 +608,27 @@ const srv: ServerConfig = {
 
     const watchPath = path.resolve(srv.path, 'wsproxy.ts');
     if (!fs.existsSync(watchPath)) {
-      srv.log('wsproxy.ts not found at ' + watchPath + ', skipping watch');
+      srv.logInfo(
+        'wsproxy.ts not found at ' + watchPath + ', skipping watch',
+        undefined,
+        'init',
+      );
     } else
-    fs.watch(
-      watchPath,
-      function (_event: string, filename: string | Buffer | null) {
-        if (filename === null || typeof filename !== 'string') return;
-        const key = 'update-' + filename;
-        const existing = watcherTimers.get(key);
-        if (existing) clearTimeout(existing);
-        watcherTimers.set(
-          key,
-          setTimeout(function () {
-            srv.loadF(filename);
-          }, 1000),
-        );
-      },
-    );
+      fs.watch(
+        watchPath,
+        function (_event: string, filename: string | Buffer | null) {
+          if (filename === null || typeof filename !== 'string') return;
+          const key = 'update-' + filename;
+          const existing = watcherTimers.get(key);
+          if (existing) clearTimeout(existing);
+          watcherTimers.set(
+            key,
+            setTimeout(function () {
+              srv.loadF(filename);
+            }, 1000),
+          );
+        },
+      );
   },
 
   parse: function (s: SocketExtended, d: Buffer): number {
@@ -640,23 +654,23 @@ const srv: ServerConfig = {
     try {
       req = JSON.parse(d.toString());
     } catch (err) {
-      srv.log('parse: ' + err);
+      srv.logWarn('parse: ' + err, s, 'parse');
       return 0;
     }
 
     if (req.host) {
       s.host = req.host;
-      srv.log('Target host set to ' + s.host, s);
+      srv.logInfo('Target host set to ' + s.host, s, 'parse');
     }
 
     if (req.port) {
       s.port = req.port;
-      srv.log('Target port set to ' + s.port, s);
+      srv.logInfo('Target port set to ' + s.port, s, 'parse');
     }
 
     if (req.ttype) {
       s.ttype = [req.ttype];
-      srv.log('Client ttype set to ' + s.ttype, s);
+      srv.logInfo('Client ttype set to ' + s.ttype, s, 'parse');
     }
 
     if (req.name) s.name = req.name;
@@ -675,19 +689,19 @@ const srv: ServerConfig = {
 
     if (req.bin && s.ts) {
       try {
-        srv.log('Attempt binary send: ' + req.bin);
+        srv.logInfo('Attempt binary send: ' + req.bin, s, 'parse');
         s.ts.send(Buffer.from(req.bin));
       } catch (ex) {
-        srv.log(ex);
+        srv.logError(ex, s, 'parse');
       }
     }
 
     if (req.msdp && s.ts) {
       try {
-        srv.log('Attempt msdp send: ' + stringify(req.msdp));
+        srv.logInfo('Attempt msdp send: ' + stringify(req.msdp), s, 'parse');
         srv.sendMSDP(s, req.msdp);
       } catch (ex) {
-        srv.log(ex);
+        srv.logError(ex, s, 'parse');
       }
     }
 
@@ -701,7 +715,7 @@ const srv: ServerConfig = {
       writeTelnet(s, Buffer.from([p.IAC, p.SB, p.TTYPE, p.IS]));
       if (s.ts) s.ts.send(msg);
       writeTelnet(s, Buffer.from([p.IAC, p.SE]));
-      srv.log(msg);
+      srv.logInfo(msg, s, 'proto');
     }
   },
 
@@ -721,7 +735,7 @@ const srv: ServerConfig = {
 
   sendMSDP: function (s: SocketExtended, msdp: MSDPRequest): void {
     const p = srv.prt;
-    srv.log('sendMSDP ' + stringify(msdp), s);
+    srv.logInfo('sendMSDP ' + stringify(msdp), s, 'proto');
 
     if (!msdp.key || !msdp.val) return;
 
@@ -740,7 +754,7 @@ const srv: ServerConfig = {
 
   sendMSDPPair: function (s: SocketExtended, key: string, val: string): void {
     const p = srv.prt;
-    srv.log('sendMSDPPair ' + key + '=' + val, s);
+    srv.logInfo('sendMSDPPair ' + key + '=' + val, s, 'proto');
     writeTelnet(s, Buffer.from([p.IAC, p.SB, p.MSDP, p.MSDP_VAR]));
     writeTelnet(s, key);
     writeTelnet(s, Buffer.from([p.MSDP_VAL]));
@@ -765,7 +779,11 @@ const srv: ServerConfig = {
     if (ONLY_ALLOW_DEFAULT_SERVER) {
       const resolvedHost = s.host || srv.tn_host;
       if (resolvedHost !== srv.tn_host) {
-        srv.log('avoid connection attempt to: ' + s.host + ':' + s.port, s);
+        srv.logWarn(
+          'blocked connection attempt to: ' + s.host + ':' + s.port,
+          s,
+          'telnet',
+        );
         srv.sendClient(
           s,
           Buffer.from(
@@ -784,8 +802,10 @@ const srv: ServerConfig = {
     }
 
     s.ts = net.createConnection(port, host, function () {
-      srv.log(
+      srv.logInfo(
         'new connection to ' + host + ':' + port + ' for ' + s.remoteAddress,
+        s,
+        'telnet',
       );
     }) as TelnetSocket;
 
@@ -799,13 +819,17 @@ const srv: ServerConfig = {
               typeof data === 'string' ? data.charCodeAt(i) : data[i],
             ),
           );
-        srv.log('write bin: ' + raw.toString(), s);
+        srv.logDebug('write bin: ' + raw.toString(), s, 'telnet');
       }
 
       try {
         data = iconv.encode(data as string, 'latin1');
       } catch (ex) {
-        srv.log('error: ' + (ex as Error).toString(), s);
+        srv.logError(
+          'iconv encode error: ' + (ex as Error).toString(),
+          s,
+          'telnet',
+        );
       }
 
       writeTelnet(s, data);
@@ -815,7 +839,7 @@ const srv: ServerConfig = {
 
     s.ts
       .on('connect', function () {
-        srv.log('new telnet socket connected');
+        srv.logInfo('new telnet socket connected', s, 'telnet');
 
         negotiationTimeout = setTimeout(function () {
           s.utf8_negotiated =
@@ -838,7 +862,7 @@ const srv: ServerConfig = {
       })
       .on('timeout', function () {
         if (negotiationTimeout) clearTimeout(negotiationTimeout);
-        srv.log('telnet socket timeout: ' + s);
+        srv.logWarn('telnet socket timeout', s, 'telnet');
         srv.sendClient(s, Buffer.from('Timeout: server port is down.\r\n'));
         setTimeout(function () {
           srv.closeSocket(s);
@@ -846,7 +870,7 @@ const srv: ServerConfig = {
       })
       .on('close', function () {
         if (negotiationTimeout) clearTimeout(negotiationTimeout);
-        srv.log('telnet socket closed: ' + s.remoteAddress);
+        srv.logInfo('telnet socket closed', s, 'telnet');
         srv.chatUpdate();
         setTimeout(function () {
           srv.closeSocket(s);
@@ -854,7 +878,7 @@ const srv: ServerConfig = {
       })
       .on('error', function (err: Error) {
         if (negotiationTimeout) clearTimeout(negotiationTimeout);
-        srv.log('error: ' + err.toString());
+        srv.logError('telnet error: ' + err.toString(), s, 'telnet');
         srv.sendClient(s, Buffer.from('Error: maybe the mud server is down?'));
         setTimeout(function () {
           srv.closeSocket(s);
@@ -872,19 +896,17 @@ const srv: ServerConfig = {
       const i = server.sockets.indexOf(s);
       if (i !== -1) server.sockets.splice(i, 1);
 
-      srv.log(
-        '(ws) peer ' +
-          s.req.connection.remoteAddress +
-          ' detached from session',
-      );
-      srv.log('active sockets: ' + server.sockets.length);
+      srv.logInfo('peer detached from session', s, 'ws');
+      srv.logInfo('active sockets: ' + server.sockets.length, s, 'ws');
       return;
     }
 
     // Legacy behavior - close everything
     if (s.ts) {
-      srv.log(
+      srv.logInfo(
         `closing telnet socket: ${s.host ?? srv.tn_host}:${s.port ?? srv.tn_port}`,
+        s,
+        'ws',
       );
       s.terminate();
     }
@@ -892,7 +914,7 @@ const srv: ServerConfig = {
     const i = server.sockets.indexOf(s);
     if (i !== -1) server.sockets.splice(i, 1);
 
-    srv.log('closing socket: ' + s.remoteAddress);
+    srv.logInfo('closing socket', s, 'ws');
 
     if (s.terminate) s.terminate();
     else
@@ -900,7 +922,7 @@ const srv: ServerConfig = {
         s as unknown as { socket: { terminate: () => void } }
       ).socket.terminate();
 
-    srv.log('active sockets: ' + server.sockets.length);
+    srv.logInfo('active sockets: ' + server.sockets.length, s, 'ws');
   },
 
   sendClient: function (s: SocketExtended, data: Buffer): void {
@@ -914,7 +936,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.MCCP2
         ) {
           setTimeout(function () {
-            srv.log('IAC DO MCCP2', s);
+            srv.logInfo('IAC DO MCCP2', s, 'proto');
             writeTelnet(s, p.DO_MCCP);
           }, MCCP_NEGOTIATION_DELAY_MS);
         } else if (
@@ -926,7 +948,7 @@ const srv: ServerConfig = {
 
           data = data.slice(i + 5);
           s.compressed = 1;
-          srv.log('MCCP compression started', s);
+          srv.logInfo('MCCP compression started', s, 'proto');
 
           if (!data.length) return;
         }
@@ -940,7 +962,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.DO &&
           data[i + 2] === p.TTYPE
         ) {
-          srv.log('IAC DO TTYPE <- IAC FIRST TTYPE', s);
+          srv.logInfo('IAC DO TTYPE <- IAC FIRST TTYPE', s, 'proto');
           srv.sendTTYPE(s, s.ttype.shift()!);
         } else if (
           data[i] === p.IAC &&
@@ -948,7 +970,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.TTYPE &&
           data[i + 3] === p.REQUEST
         ) {
-          srv.log('IAC SB TTYPE <- IAC NEXT TTYPE');
+          srv.logInfo('IAC SB TTYPE <- IAC NEXT TTYPE', s, 'proto');
           srv.sendTTYPE(s, s.ttype.shift()!);
         }
       }
@@ -961,12 +983,12 @@ const srv: ServerConfig = {
           (data[i + 1] === p.DO || data[i + 1] === p.WILL) &&
           data[i + 2] === p.GMCP
         ) {
-          srv.log('IAC DO GMCP', s);
+          srv.logInfo('IAC DO GMCP', s, 'proto');
 
           if (data[i + 1] === p.DO) writeTelnet(s, p.WILL_GMCP);
           else writeTelnet(s, p.DO_GMCP);
 
-          srv.log('IAC DO GMCP <- IAC WILL GMCP', s);
+          srv.logInfo('IAC DO GMCP <- IAC WILL GMCP', s, 'proto');
 
           s.gmcp_negotiated = 1;
 
@@ -992,7 +1014,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.MSDP
         ) {
           writeTelnet(s, p.DO_MSDP);
-          srv.log('IAC WILL MSDP <- IAC DO MSDP', s);
+          srv.logInfo('IAC WILL MSDP <- IAC DO MSDP', s, 'proto');
           srv.sendMSDPPair(s, 'CLIENT_ID', s.client || 'mudportal.com');
           srv.sendMSDPPair(s, 'CLIENT_VERSION', '1.0');
           srv.sendMSDPPair(s, 'CLIENT_IP', s.remoteAddress);
@@ -1012,7 +1034,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.MXP
         ) {
           writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.MXP]));
-          srv.log('IAC DO MXP <- IAC WILL MXP', s);
+          srv.logInfo('IAC DO MXP <- IAC WILL MXP', s, 'proto');
           s.mxp_negotiated = 1;
         } else if (
           data[i] === p.IAC &&
@@ -1020,7 +1042,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.MXP
         ) {
           writeTelnet(s, Buffer.from([p.IAC, p.DO, p.MXP]));
-          srv.log('IAC WILL MXP <- IAC DO MXP', s);
+          srv.logInfo('IAC WILL MXP <- IAC DO MXP', s, 'proto');
           s.mxp_negotiated = 1;
         }
       }
@@ -1034,7 +1056,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.NEW
         ) {
           writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.NEW]));
-          srv.log('IAC WILL NEW-ENV', s);
+          srv.logInfo('IAC WILL NEW-ENV', s, 'proto');
           s.new_negotiated = 1;
         }
       }
@@ -1051,7 +1073,7 @@ const srv: ServerConfig = {
           writeTelnet(s, Buffer.from([p.REQUEST]));
           writeTelnet(s, s.remoteAddress);
           writeTelnet(s, Buffer.from([p.IAC, p.SE]));
-          srv.log('IAC NEW-ENV IP VAR SEND');
+          srv.logInfo('IAC NEW-ENV IP VAR SEND', s, 'proto');
           s.new_handshake = 1;
         }
       }
@@ -1064,7 +1086,7 @@ const srv: ServerConfig = {
           data[i + 1] === p.WILL &&
           data[i + 2] === p.ECHO
         ) {
-          srv.log('IAC WILL ECHO <- IAC WONT ECHO');
+          srv.logInfo('IAC WILL ECHO <- IAC WONT ECHO', s, 'proto');
           // set a flag to avoid logging the next message (maybe passwords)
           s.password_mode = true;
           s.echo_negotiated = 1;
@@ -1080,7 +1102,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.SGA
         ) {
           writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.SGA]));
-          srv.log('IAC WILL SGA <- IAC WONT SGA');
+          srv.logInfo('IAC WILL SGA <- IAC WONT SGA', s, 'proto');
           s.sga_negotiated = 1;
         }
       }
@@ -1094,7 +1116,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.NAWS
         ) {
           writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.NAWS]));
-          srv.log('IAC WILL SGA <- IAC WONT NAWS');
+          srv.logInfo('IAC WILL NAWS <- IAC WONT NAWS', s, 'proto');
           s.naws_negotiated = 1;
         }
       }
@@ -1108,7 +1130,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.CHARSET
         ) {
           writeTelnet(s, p.WILL_CHARSET);
-          srv.log('IAC DO CHARSET <- IAC WILL CHARSET', s);
+          srv.logInfo('IAC DO CHARSET <- IAC WILL CHARSET', s, 'proto');
         }
 
         if (
@@ -1117,7 +1139,7 @@ const srv: ServerConfig = {
           data[i + 2] === p.CHARSET
         ) {
           writeTelnet(s, p.ACCEPT_UTF8);
-          srv.log('UTF-8 negotiated', s);
+          srv.logInfo('UTF-8 negotiated', s, 'proto');
           s.utf8_negotiated = 1;
         }
       }
@@ -1127,7 +1149,7 @@ const srv: ServerConfig = {
       const raw: string[] = [];
       for (let i = 0; i < data.length; i++)
         raw.push(util.format('%d', data[i]));
-      srv.log('raw bin: ' + raw, s);
+      srv.logDebug('raw bin: ' + raw, s, 'proto');
     }
 
     if (!srv.compress || (s.mccp && s.compressed)) {
@@ -1138,7 +1160,7 @@ const srv: ServerConfig = {
     /* Client<->Proxy only Compression */
     zlib.deflateRaw(data, function (err: Error | null, buffer: Buffer) {
       if (err) {
-        srv.log('zlib error: ' + err);
+        srv.logError('zlib error: ' + err, s, 'proto');
         return;
       }
       // Guard: socket may have closed during async compression
@@ -1152,14 +1174,14 @@ const srv: ServerConfig = {
     try {
       const modulePath = srv.path + '/' + f + '?t=' + Date.now();
       await import(modulePath);
-      srv.log('dyn.reload: ' + f);
+      srv.logInfo('dyn.reload: ' + f, undefined, 'init');
     } catch (err) {
-      srv.log('Load error: ' + (err as Error).message);
+      srv.logError('Load error: ' + (err as Error).message, undefined, 'init');
     }
   },
 
   chat: function (s: SocketExtended, req: ChatRequest): void {
-    srv.log('chat: ' + stringify(req), s);
+    srv.logInfo('chat: ' + stringify(req), s, 'chat');
     s.chat = 1;
 
     const ss = server.sockets;
@@ -1246,7 +1268,23 @@ const srv: ServerConfig = {
 
     // Get client info
     const clientInfo = s?.req?.connection?.remoteAddress || '';
-    const clientStr = clientInfo ? `[${clientInfo}] ` : '';
+    const clientStr = clientInfo ? `[${clientInfo}]` : '';
+
+    // Get MUD target info
+    const mudHost = s?.host || (s?.ts ? srv.tn_host : '');
+    const mudPort = s?.port || (s?.ts ? srv.tn_port : 0);
+    const targetStr = mudHost && mudPort ? ` [${mudHost}:${mudPort}]` : '';
+
+    // Get session ID
+    let sidStr = '';
+    try {
+      if (s) {
+        const session = sessionIntegration.sessionManager.findByWebSocket(s);
+        if (session) sidStr = ` [sid:${session.id}]`;
+      }
+    } catch (_err) {
+      // Session lookup may fail during startup/shutdown
+    }
 
     // Get timestamp
     const timestamp = new Date().toISOString();
@@ -1278,7 +1316,9 @@ const srv: ServerConfig = {
 
     // Format context if provided
     const contextStr = context
-      ? ` ${Colors.cyan}[${context}]${Colors.reset}`
+      ? useColors
+        ? `${Colors.cyan}[${context}]${Colors.reset}`
+        : `[${context}]`
       : '';
 
     // Format message
@@ -1299,16 +1339,21 @@ const srv: ServerConfig = {
     }
 
     // Build final output
+    const metaStr = `${clientStr}${targetStr}${sidStr}`;
     const parts: string[] = [];
     if (useColors) {
       parts.push(
         `${Colors.dim}${timestamp}${Colors.reset}`,
         `${levelColor}${levelStr}${Colors.reset}`,
-        `${Colors.bright}${clientStr}${Colors.reset}${contextStr}`,
-        messageStr,
       );
+      if (metaStr) parts.push(`${Colors.bright}${metaStr}${Colors.reset}`);
+      if (contextStr) parts.push(contextStr);
+      parts.push(messageStr);
     } else {
-      parts.push(timestamp, levelStr, `${clientStr}${contextStr}`, messageStr);
+      parts.push(timestamp, levelStr);
+      if (metaStr) parts.push(metaStr);
+      if (contextStr) parts.push(contextStr);
+      parts.push(messageStr);
     }
 
     // eslint-disable-next-line no-console
@@ -1346,7 +1391,7 @@ const srv: ServerConfig = {
   },
 
   die: function (core?: boolean): void {
-    srv.log('Dying gracefully in 3 sec.');
+    srv.logWarn('Dying gracefully in 3 sec.', undefined, 'init');
     srv.open = false;
 
     // Clean up timers
@@ -1404,16 +1449,16 @@ const srv: ServerConfig = {
     });
 
     srv.initT(s);
-    srv.log('(rs): new connection');
+    srv.logInfo('new connection', s, 'ws');
   },
 
   forward: function (s: SocketExtended, d: Buffer): void {
     if (s.ts) {
       if (s.debug) {
         if (s.password_mode) {
-          srv.log('forward: **** (omitted)', s);
+          srv.logDebug('forward: **** (omitted)', s, 'ws');
         } else {
-          srv.log('forward: ' + d, s);
+          srv.logDebug('forward: ' + d, s, 'ws');
         }
       }
 
