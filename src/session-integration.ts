@@ -50,6 +50,15 @@ export class SessionIntegration {
   config: SessionIntegrationConfig;
   private retryInterval: ReturnType<typeof setInterval> | null = null;
 
+  private log(msg: string, ip?: string, sessionId?: string): void {
+    const parts = [new Date().toISOString(), '[session]'];
+    if (ip) parts.push(`[${ip}]`);
+    if (sessionId) parts.push(`[sid:${sessionId}]`);
+    parts.push(msg);
+    // eslint-disable-next-line no-console
+    console.log(parts.join(' '));
+  }
+
   constructor(config: Partial<SessionIntegrationConfig> = {}) {
     this.config = {
       sessions: {
@@ -85,12 +94,8 @@ export class SessionIntegration {
       this.triggerMatcher.cleanupOldEntries();
     }, 60 * 1000);
 
-    // Log startup
-    // eslint-disable-next-line no-console
-    console.log(
-      '[session-integration] Initialized with buffer size: ' +
-        this.config.buffer.sizeKB +
-        'KB',
+    this.log(
+      'Initialized with buffer size: ' + this.config.buffer.sizeKB + 'KB',
     );
   }
 
@@ -151,6 +156,8 @@ export class SessionIntegration {
   ): Promise<void> {
     const ip = socket.req?.connection?.remoteAddress || 'unknown';
 
+    this.log(`connect request to ${msg.host}:${msg.port}`, ip);
+
     // Check connection limits
     if (msg.deviceToken) {
       const limits = this.sessionManager.enforceConnectionLimits(
@@ -158,6 +165,10 @@ export class SessionIntegration {
         ip,
       );
       if (!limits.allowed) {
+        this.log(
+          `connect rejected: ${limits.reason || 'Connection limit exceeded'}`,
+          ip,
+        );
         this.sendError(
           socket,
           'rate_limited',
@@ -198,6 +209,8 @@ export class SessionIntegration {
     };
     socket.sendUTF(JSON.stringify(response));
 
+    this.log(`session created for ${msg.host}:${msg.port}`, ip, session.id);
+
     // Connect to MUD
     try {
       await session.connect();
@@ -219,6 +232,7 @@ export class SessionIntegration {
         this.sessionManager.removeSession(session.id);
       });
     } catch (err) {
+      this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
       this.sendError(socket, 'connection_failed', (err as Error).message);
       this.sessionManager.removeSession(session.id);
     }
@@ -228,8 +242,16 @@ export class SessionIntegration {
    * Handle resume request - reattach to existing session
    */
   private handleResume(socket: SocketExtended, msg: ResumeRequest): void {
+    const ip = socket.req?.connection?.remoteAddress || 'unknown';
+    this.log(
+      `resume request for session ${msg.sessionId} from seq ${msg.lastSeq}`,
+      ip,
+      msg.sessionId,
+    );
+
     // Validate token
     if (!this.sessionManager.validateToken(msg.sessionId, msg.token)) {
+      this.log('resume rejected: invalid token', ip, msg.sessionId);
       this.sendError(
         socket,
         'invalid_resume',
@@ -241,12 +263,14 @@ export class SessionIntegration {
     // Get session
     const session = this.sessionManager.get(msg.sessionId);
     if (!session) {
+      this.log('resume rejected: session not found', ip, msg.sessionId);
       this.sendError(socket, 'invalid_resume', 'Session not found');
       return;
     }
 
     // Check if session timed out
     if (session.isTimedOut(this.config.sessions.timeoutHours)) {
+      this.log('resume rejected: session expired', ip, msg.sessionId);
       this.sessionManager.removeSession(msg.sessionId);
       this.sendError(socket, 'session_expired', 'Session has expired');
       return;
@@ -280,6 +304,12 @@ export class SessionIntegration {
         socket.sendUTF(JSON.stringify(response));
       }
     }
+
+    this.log(
+      `resume successful, replayed ${chunks.length} chunks`,
+      ip,
+      msg.sessionId,
+    );
   }
 
   /**
@@ -345,10 +375,10 @@ export class SessionIntegration {
         this.notificationManager
           .sendNotification(session.deviceToken, match, session.id)
           .catch((err) => {
-            // eslint-disable-next-line no-console
-            console.error(
-              '[session-integration] Failed to send notification:',
-              err,
+            this.log(
+              'Failed to send notification: ' + err,
+              undefined,
+              session.id,
             );
           });
       }
@@ -400,12 +430,14 @@ export class SessionIntegration {
   handleSocketClose(socket: SocketExtended): void {
     const session = this.sessionManager.findByWebSocket(socket);
     if (session) {
+      const ip = socket.req?.connection?.remoteAddress || 'unknown';
+      this.log('client detached from session', ip, session.id);
+
       // Detach instead of terminate
       this.sessionManager.detachWebSocket(socket);
 
       // Decrement IP count
-      const ip = socket.req?.connection?.remoteAddress;
-      if (ip) {
+      if (ip && ip !== 'unknown') {
         this.sessionManager.decrementIPCount(ip);
       }
     }
