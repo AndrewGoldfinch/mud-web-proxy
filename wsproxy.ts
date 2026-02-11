@@ -45,6 +45,7 @@ import type { Socket } from 'net';
 import type { Server as HttpServer } from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
 
+import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 
 // Log levels enum
@@ -328,6 +329,368 @@ const loadChatLog = async (): Promise<ChatEntry[]> => {
   }
 };
 
+// Diagnostic data gathering
+const getDiagnosticData = () => {
+  const mem = process.memoryUsage();
+  const uptimeSeconds = process.uptime();
+  const sessionStats = sessionIntegration.getStats();
+  const allSessions = sessionIntegration.sessionManager.getAllSessions();
+
+  const sessions = allSessions.map((session) => {
+    const meta = session.getMetadata();
+    return {
+      sessionId: meta.sessionId.slice(0, 8) + '...',
+      mudHost: meta.mudHost,
+      mudPort: meta.mudPort,
+      telnetConnected: meta.telnetConnected,
+      clientConnected: meta.clientConnected,
+      clientCount: meta.clientCount,
+      createdAt: new Date(meta.createdAt).toISOString(),
+      lastClientConnection: meta.lastClientConnection
+        ? new Date(meta.lastClientConnection).toISOString()
+        : null,
+      windowSize: `${meta.windowWidth}x${meta.windowHeight}`,
+      bufferStats: meta.bufferStats,
+    };
+  });
+
+  const sockets = server.sockets.map((s) => ({
+    remoteAddress: s.req?.connection?.remoteAddress || 'unknown',
+    host: s.host || null,
+    port: s.port || null,
+    name: s.name || null,
+    client: s.client || null,
+    compressed: s.compressed,
+    protocols: {
+      mccp: !!s.mccp_negotiated,
+      mxp: !!s.mxp_negotiated,
+      gmcp: !!s.gmcp_negotiated,
+      utf8: !!s.utf8_negotiated,
+      msdp: !!s.msdp_negotiated,
+      sga: !!s.sga_negotiated,
+      naws: !!s.naws_negotiated,
+      echo: !!s.echo_negotiated,
+    },
+    hasTelnet: !!s.ts,
+    passwordMode: !!s.password_mode,
+  }));
+
+  return {
+    server: {
+      version: PACKAGE_VERSION,
+      uptime: uptimeSeconds,
+      uptimeFormatted: formatUptime(uptimeSeconds),
+      nodeVersion: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      hostname: os.hostname(),
+      pid: process.pid,
+      defaultHost: srv.tn_host,
+      defaultPort: srv.tn_port,
+      wsPort: srv.ws_port,
+      onlyAllowDefaultServer: ONLY_ALLOW_DEFAULT_SERVER,
+      open: srv.open,
+    },
+    memory: {
+      rss: mem.rss,
+      heapUsed: mem.heapUsed,
+      heapTotal: mem.heapTotal,
+      external: mem.external,
+      rssFormatted: formatBytes(mem.rss),
+      heapUsedFormatted: formatBytes(mem.heapUsed),
+      heapTotalFormatted: formatBytes(mem.heapTotal),
+      externalFormatted: formatBytes(mem.external),
+    },
+    connections: {
+      websockets: server.sockets.length,
+      ...sessionStats.sessions,
+    },
+    notifications: sessionStats.notifications,
+    sessions,
+    sockets,
+    timestamp: new Date().toISOString(),
+  };
+};
+
+const formatUptime = (seconds: number): string => {
+  const d = Math.floor(seconds / 86400);
+  const h = Math.floor((seconds % 86400) / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = Math.floor(seconds % 60);
+  const parts: string[] = [];
+  if (d > 0) parts.push(`${d}d`);
+  if (h > 0) parts.push(`${h}h`);
+  if (m > 0) parts.push(`${m}m`);
+  parts.push(`${s}s`);
+  return parts.join(' ');
+};
+
+const formatBytes = (bytes: number): string => {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+};
+
+const generateDiagnosticHTML = (): string => {
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mud-web-proxy diagnostic</title>
+<style>
+  :root {
+    --bg: #0d1117; --surface: #161b22; --border: #30363d;
+    --text: #e6edf3; --text-dim: #8b949e; --accent: #58a6ff;
+    --green: #3fb950; --yellow: #d29922; --red: #f85149;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    background: var(--bg); color: var(--text);
+    font-size: 14px; line-height: 1.5; padding: 20px;
+  }
+  h1 { font-size: 18px; margin-bottom: 4px; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 1px;
+    color: var(--accent); margin-bottom: 8px; border-bottom: 1px solid var(--border);
+    padding-bottom: 4px;
+  }
+  .header {
+    display: flex; justify-content: space-between; align-items: baseline;
+    margin-bottom: 16px; border-bottom: 2px solid var(--border); padding-bottom: 8px;
+  }
+  .header-meta { font-size: 12px; color: var(--text-dim); }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .card {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 6px; padding: 12px;
+  }
+  .stat-row { display: flex; justify-content: space-between; padding: 3px 0; }
+  .stat-label { color: var(--text-dim); }
+  .stat-value { font-weight: bold; }
+  .badge {
+    display: inline-block; padding: 1px 6px; border-radius: 3px;
+    font-size: 12px; font-weight: bold;
+  }
+  .badge-green { background: rgba(63,185,80,0.2); color: var(--green); }
+  .badge-yellow { background: rgba(210,153,34,0.2); color: var(--yellow); }
+  .badge-red { background: rgba(248,81,73,0.2); color: var(--red); }
+  table {
+    width: 100%; border-collapse: collapse; font-size: 13px;
+  }
+  th {
+    text-align: left; padding: 6px 8px; border-bottom: 2px solid var(--border);
+    color: var(--text-dim); font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.5px;
+  }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--border); }
+  tr:hover td { background: rgba(88,166,255,0.05); }
+  .protocols span {
+    display: inline-block; margin: 1px 2px; padding: 0 4px;
+    border-radius: 3px; font-size: 11px;
+  }
+  .proto-on { background: rgba(63,185,80,0.15); color: var(--green); }
+  .proto-off { background: rgba(139,148,158,0.1); color: var(--text-dim); opacity: 0.5; }
+  .refresh-bar {
+    position: fixed; top: 0; left: 0; right: 0; height: 2px;
+    background: var(--border); z-index: 100;
+  }
+  .refresh-bar-inner {
+    height: 100%; background: var(--accent); width: 0%;
+    transition: width 1s linear;
+  }
+  .empty { color: var(--text-dim); font-style: italic; padding: 12px; text-align: center; }
+  @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
+</style>
+</head>
+<body>
+<div class="refresh-bar"><div class="refresh-bar-inner" id="progress"></div></div>
+
+<div class="header">
+  <div>
+    <h1>mud-web-proxy diagnostic</h1>
+    <span class="header-meta" id="meta"></span>
+  </div>
+  <div class="header-meta">
+    auto-refresh: <strong>5s</strong> |
+    <span id="status">loading...</span>
+  </div>
+</div>
+
+<div class="grid">
+  <div class="card">
+    <h2>Server</h2>
+    <div id="server-info"></div>
+  </div>
+  <div class="card">
+    <h2>Memory</h2>
+    <div id="memory-info"></div>
+  </div>
+  <div class="card">
+    <h2>Connections</h2>
+    <div id="connections-info"></div>
+  </div>
+  <div class="card">
+    <h2>Notifications</h2>
+    <div id="notifications-info"></div>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <h2>Active Sessions</h2>
+  <div id="sessions-table"></div>
+</div>
+
+<div class="card">
+  <h2>WebSocket Connections</h2>
+  <div id="sockets-table"></div>
+</div>
+
+<script>
+const REFRESH_MS = 5000;
+let timer = 0;
+
+function badge(val, trueClass, falseClass) {
+  trueClass = trueClass || 'badge-green';
+  falseClass = falseClass || 'badge-red';
+  return '<span class="badge ' + (val ? trueClass : falseClass) + '">' +
+    (val ? 'yes' : 'no') + '</span>';
+}
+
+function statRow(label, value) {
+  return '<div class="stat-row"><span class="stat-label">' + label +
+    '</span><span class="stat-value">' + value + '</span></div>';
+}
+
+function renderServer(d) {
+  var s = d.server;
+  document.getElementById('meta').textContent =
+    'v' + s.version + ' | node ' + s.nodeVersion + ' | pid ' + s.pid;
+  document.getElementById('server-info').innerHTML =
+    statRow('Uptime', s.uptimeFormatted) +
+    statRow('Hostname', s.hostname) +
+    statRow('Platform', s.platform + '/' + s.arch) +
+    statRow('WS Port', s.wsPort) +
+    statRow('Default MUD', s.defaultHost + ':' + s.defaultPort) +
+    statRow('Restrict Server', badge(s.onlyAllowDefaultServer, 'badge-yellow', 'badge-green')) +
+    statRow('Accepting', badge(s.open));
+}
+
+function renderMemory(d) {
+  var m = d.memory;
+  var pct = ((m.heapUsed / m.heapTotal) * 100).toFixed(1);
+  document.getElementById('memory-info').innerHTML =
+    statRow('RSS', m.rssFormatted) +
+    statRow('Heap Used', m.heapUsedFormatted + ' (' + pct + '%)') +
+    statRow('Heap Total', m.heapTotalFormatted) +
+    statRow('External', m.externalFormatted);
+}
+
+function renderConnections(d) {
+  var c = d.connections;
+  document.getElementById('connections-info').innerHTML =
+    statRow('WebSockets', c.websockets) +
+    statRow('Total Sessions', c.totalSessions) +
+    statRow('Connected', '<span class="badge badge-green">' + c.connectedSessions + '</span>') +
+    statRow('Disconnected', c.disconnectedSessions > 0 ?
+      '<span class="badge badge-yellow">' + c.disconnectedSessions + '</span>' :
+      c.disconnectedSessions) +
+    statRow('Unique Devices', c.uniqueDevices) +
+    statRow('Unique IPs', c.uniqueIPs);
+}
+
+function renderNotifications(d) {
+  var n = d.notifications;
+  document.getElementById('notifications-info').innerHTML =
+    statRow('Enabled', badge(n.enabled)) +
+    statRow('Configured', badge(n.configured)) +
+    statRow('Token Valid', badge(n.tokenValid)) +
+    statRow('Pending', n.pendingNotifications);
+}
+
+function renderSessions(d) {
+  var el = document.getElementById('sessions-table');
+  if (!d.sessions.length) { el.innerHTML = '<div class="empty">No active sessions</div>'; return; }
+  var html = '<table><tr><th>ID</th><th>MUD</th><th>Telnet</th><th>Clients</th><th>Created</th><th>Buffer</th></tr>';
+  d.sessions.forEach(function(s) {
+    html += '<tr>' +
+      '<td>' + s.sessionId + '</td>' +
+      '<td>' + s.mudHost + ':' + s.mudPort + '</td>' +
+      '<td>' + badge(s.telnetConnected) + '</td>' +
+      '<td>' + s.clientCount + '</td>' +
+      '<td>' + new Date(s.createdAt).toLocaleString() + '</td>' +
+      '<td>' + (s.bufferStats ? s.bufferStats.chunks + ' chunks / ' +
+        formatBytes(s.bufferStats.sizeBytes) : '-') + '</td>' +
+      '</tr>';
+  });
+  el.innerHTML = html + '</table>';
+}
+
+function renderSockets(d) {
+  var el = document.getElementById('sockets-table');
+  if (!d.sockets.length) { el.innerHTML = '<div class="empty">No WebSocket connections</div>'; return; }
+  var html = '<table><tr><th>Remote</th><th>MUD</th><th>User</th><th>Client</th><th>Telnet</th><th>Protocols</th></tr>';
+  d.sockets.forEach(function(s) {
+    var protos = '';
+    Object.keys(s.protocols).forEach(function(p) {
+      protos += '<span class="' + (s.protocols[p] ? 'proto-on' : 'proto-off') + '">' + p + '</span>';
+    });
+    html += '<tr>' +
+      '<td>' + s.remoteAddress + '</td>' +
+      '<td>' + (s.host ? s.host + ':' + s.port : '-') + '</td>' +
+      '<td>' + (s.name || '-') + '</td>' +
+      '<td>' + (s.client || '-') + '</td>' +
+      '<td>' + badge(s.hasTelnet) + '</td>' +
+      '<td class="protocols">' + protos + '</td>' +
+      '</tr>';
+  });
+  el.innerHTML = html + '</table>';
+}
+
+function formatBytes(b) {
+  if (!b) return '0 B';
+  var k = 1024, s = ['B','KB','MB','GB'];
+  var i = Math.floor(Math.log(b) / Math.log(k));
+  return parseFloat((b / Math.pow(k, i)).toFixed(1)) + ' ' + s[i];
+}
+
+function refresh() {
+  fetch('/diagnostic/api')
+    .then(function(r) { return r.json(); })
+    .then(function(d) {
+      renderServer(d);
+      renderMemory(d);
+      renderConnections(d);
+      renderNotifications(d);
+      renderSessions(d);
+      renderSockets(d);
+      document.getElementById('status').innerHTML =
+        '<span class="badge badge-green">live</span> ' +
+        new Date(d.timestamp).toLocaleTimeString();
+    })
+    .catch(function() {
+      document.getElementById('status').innerHTML =
+        '<span class="badge badge-red">error</span>';
+    });
+}
+
+function tick() {
+  timer += 1000;
+  var pct = (timer / REFRESH_MS) * 100;
+  document.getElementById('progress').style.width = pct + '%';
+  if (timer >= REFRESH_MS) { timer = 0; refresh(); }
+}
+
+refresh();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>`;
+};
+
 interface ServerConfig {
   path: string;
   ws_port: number;
@@ -544,7 +907,7 @@ const srv: ServerConfig = {
       srv.logInfo('server listening: port ' + srv.ws_port, undefined, 'init');
     });
 
-    // Add health check endpoint
+    // Add HTTP endpoints
     webserver.on('request', (req: IncomingMessage, res: ServerResponse) => {
       if (req.url === '/health') {
         const stats = sessionIntegration.getStats();
@@ -557,6 +920,12 @@ const srv: ServerConfig = {
             ...stats,
           }),
         );
+      } else if (req.url === '/diagnostic') {
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        res.end(generateDiagnosticHTML());
+      } else if (req.url === '/diagnostic/api') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(getDiagnosticData()));
       }
     });
 
