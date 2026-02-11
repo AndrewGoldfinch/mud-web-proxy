@@ -1,0 +1,22 @@
+name: Deploy mud-web-proxy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to droplet
+        uses: appleboy/ssh-action@v1
+        with:
+          host: mud-proxy.kingfrat.com
+          username: deploy
+          key: ${{ secrets.DEPLOY_SSH_KEY }}
+          script: |
+            cd /opt/mud-proxy
+            git pull origin main
+            bun install --production
+            bun run build
+            pm2 restart mud-web-proxy
