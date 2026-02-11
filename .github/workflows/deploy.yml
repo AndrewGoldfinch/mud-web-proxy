@@ -15,8 +15,10 @@ jobs:
           username: deploy
           key: ${{ secrets.DEPLOY_SSH_KEY }}
           script: |
+            export PATH="$HOME/.bun/bin:$HOME/.npm-global/bin:$PATH"
             cd /opt/mud-proxy
             git pull origin main
             bun install --production
             bun run build
+
             pm2 restart mud-web-proxy
