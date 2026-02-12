@@ -138,6 +138,9 @@ export class SessionIntegration {
         case 'naws':
           this.handleNAWS(socket, clientMsg);
           return 1;
+        case 'disconnect':
+          this.handleDisconnect(socket);
+          return 1;
         default:
           return legacyHandler(socket, data);
       }
@@ -361,6 +364,47 @@ export class SessionIntegration {
       ]);
       socket.ts.write(buf);
     }
+  }
+
+  /**
+   * Handle disconnect request - close session and telnet connection
+   */
+  private handleDisconnect(socket: SocketExtended): void {
+    const ip =
+      socket.remoteAddress ||
+      socket.req?.connection?.remoteAddress ||
+      'unknown';
+
+    const session = this.sessionManager.findByWebSocket(socket);
+    if (!session) {
+      this.sendError(socket, 'invalid_request', 'No session found');
+      return;
+    }
+
+    const sessionId = session.id;
+    this.log('disconnect request', ip, sessionId);
+
+    // Close the telnet connection and clean up session
+    session.close();
+    this.sessionManager.removeSession(sessionId);
+
+    // Send ack to client
+    const response = {
+      type: 'disconnected',
+      sessionId,
+    };
+    try {
+      socket.sendUTF(JSON.stringify(response));
+    } catch (_err) {
+      // Socket might be closed
+    }
+
+    // Decrement IP count
+    if (ip && ip !== 'unknown') {
+      this.sessionManager.decrementIPCount(ip);
+    }
+
+    this.log('session disconnected and removed', ip, sessionId);
   }
 
   /**

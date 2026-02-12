@@ -119,11 +119,16 @@ export interface NAWSRequest {
   height: number;
 }
 
+export interface DisconnectRequest {
+  type: 'disconnect';
+}
+
 export type ClientMessage =
   | ConnectRequest
   | ResumeRequest
   | InputRequest
-  | NAWSRequest;
+  | NAWSRequest
+  | DisconnectRequest;
 
 /**
  * Proxy → Client message types
@@ -159,11 +164,17 @@ export interface ErrorResponse {
   message: string;
 }
 
+export interface DisconnectedResponse {
+  type: 'disconnected';
+  sessionId: string;
+}
+
 export type ProxyMessage =
   | SessionResponse
   | DataResponse
   | GMCPResponse
-  | ErrorResponse;
+  | ErrorResponse
+  | DisconnectedResponse;
 
 /**
  * APNS configuration
