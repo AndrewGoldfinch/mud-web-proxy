@@ -1829,8 +1829,6 @@ const srv: ServerConfig = {
 
 // Initialize async
 const init = async () => {
-  process.stdin.resume();
-
   process
     .on('SIGINT', () => {
       srv.log('Got SIGINT.');
