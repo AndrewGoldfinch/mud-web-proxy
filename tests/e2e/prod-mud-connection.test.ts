@@ -229,7 +229,7 @@ describe('Production Proxy — Aardwolf MUD', () => {
     }
   }, 20000);
 
-  it('should close cleanly', () => {
+  it('should disconnect and tear down session', async () => {
     if (!connection) {
       // Nothing to close
       return;
@@ -241,8 +241,19 @@ describe('Production Proxy — Aardwolf MUD', () => {
     );
     expect(errors.length).toBe(0);
 
-    // Close should not throw
+    // Send disconnect and wait for ack
+    const disconnected = await connection.disconnect();
+    expect(disconnected).toBe(true);
+
+    // Verify we received the disconnected response
+    const disconnectMsg = connection.getMessages().find(
+      (m) => m.type === 'disconnected',
+    );
+    expect(disconnectMsg).toBeDefined();
+    expect((disconnectMsg!.data as { sessionId: string }).sessionId).toBeDefined();
+
+    // Close the WebSocket
     connection.close();
     connection = null;
-  });
+  }, 10000);
 });

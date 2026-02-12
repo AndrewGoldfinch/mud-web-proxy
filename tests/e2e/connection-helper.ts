@@ -457,6 +457,41 @@ export class E2EConnection {
   }
 
   /**
+   * Send disconnect message and wait for ack before closing
+   */
+  async disconnect(timeoutMs: number = 5000): Promise<boolean> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return false;
+    }
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve(false);
+      }, timeoutMs);
+
+      const originalOnMessage = this.ws!.onmessage;
+      this.ws!.onmessage = (event: MessageEvent) => {
+        // Call original handler to record the message
+        if (originalOnMessage) {
+          originalOnMessage.call(this.ws, event);
+        }
+
+        try {
+          const msg = JSON.parse(event.data.toString());
+          if (msg.type === 'disconnected') {
+            clearTimeout(timeout);
+            resolve(true);
+          }
+        } catch (_err) {
+          // Not JSON
+        }
+      };
+
+      this.ws!.send(JSON.stringify({ type: 'disconnect' }));
+    });
+  }
+
+  /**
    * Close connection
    */
   close(): void {
