@@ -658,28 +658,6 @@ describe('Error Handling', () => {
       );
     });
 
-    it('should handle import errors in loadF()', async () => {
-      const filename = 'invalid-file.js';
-
-      const loadF = async (f: string): Promise<void> => {
-        try {
-          const modulePath =
-            '/nonexistent/path/' + f + '?t=' + Date.now();
-          await import(modulePath);
-          srv.log('dyn.reload: ' + f);
-        } catch (err) {
-          srv.log('Load error: ' + (err as Error).message);
-        }
-      };
-
-      await loadF(filename);
-
-      // Should log the load error
-      expect(mockLog).toHaveBeenCalledWith(
-        expect.stringContaining('Load error:'),
-      );
-    });
-
     it('should handle corrupted JSON in chat log', async () => {
       // Test with corrupted JSON content
       const corruptedJSON = '{ invalid json }';

@@ -288,7 +288,6 @@ interface ChatEntry {
 
 let server: ServerState = { sockets: [] };
 let chatlog: ChatEntry[] = [];
-const watcherTimers = new Map<string, NodeJS.Timeout>();
 let chatWriteTimer: NodeJS.Timeout | null = null;
 const debouncedChatWrite = () => {
   if (chatWriteTimer) clearTimeout(chatWriteTimer);
@@ -712,7 +711,6 @@ interface ServerConfig {
   initT: (so: SocketExtended) => void;
   closeSocket: (s: SocketExtended) => void;
   sendClient: (s: SocketExtended, data: Buffer) => void;
-  loadF: (f: string) => Promise<void>;
   chat: (s: SocketExtended, req: ChatRequest) => void;
   chatUpdate: () => void;
   chatCleanup: (t: string) => string;
@@ -998,29 +996,6 @@ const srv: ServerConfig = {
       },
     );
 
-    const watchPath = path.resolve(srv.path, 'wsproxy.ts');
-    if (!fs.existsSync(watchPath)) {
-      srv.logInfo(
-        'wsproxy.ts not found at ' + watchPath + ', skipping watch',
-        undefined,
-        'init',
-      );
-    } else
-      fs.watch(
-        watchPath,
-        function (_event: string, filename: string | Buffer | null) {
-          if (filename === null || typeof filename !== 'string') return;
-          const key = 'update-' + filename;
-          const existing = watcherTimers.get(key);
-          if (existing) clearTimeout(existing);
-          watcherTimers.set(
-            key,
-            setTimeout(function () {
-              srv.loadF(filename);
-            }, 1000),
-          );
-        },
-      );
   },
 
   parse: function (s: SocketExtended, d: Buffer): number {
@@ -1562,16 +1537,6 @@ const srv: ServerConfig = {
     });
   },
 
-  loadF: async function (f: string): Promise<void> {
-    try {
-      const modulePath = srv.path + '/' + f + '?t=' + Date.now();
-      await import(modulePath);
-      srv.logInfo('dyn.reload: ' + f, undefined, 'init');
-    } catch (err) {
-      srv.logError('Load error: ' + (err as Error).message, undefined, 'init');
-    }
-  },
-
   chat: function (s: SocketExtended, req: ChatRequest): void {
     srv.logInfo('chat: ' + stringify(req), s, 'chat');
     s.chat = 1;
@@ -1787,9 +1752,6 @@ const srv: ServerConfig = {
     srv.logWarn('Dying gracefully in 3 sec.', undefined, 'init');
     srv.open = false;
 
-    // Clean up timers
-    for (const timer of watcherTimers.values()) clearTimeout(timer);
-    watcherTimers.clear();
     if (chatWriteTimer) {
       clearTimeout(chatWriteTimer);
       chatWriteTimer = null;

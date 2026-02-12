@@ -1,6 +1,6 @@
 /**
  * Comprehensive tests for Utilities and Helper functions
- * Tests stringify(), loadChatLog(), loadF(), log(), die(), and server initialization
+ * Tests stringify(), loadChatLog(), log(), die(), and server initialization
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
@@ -192,116 +192,6 @@ describe('loadChatLog() function', () => {
     expect(promise).toBeInstanceOf(Promise);
     const result = await promise;
     expect(Array.isArray(result)).toBe(true);
-  });
-});
-
-describe('loadF() dynamic reload', () => {
-  const testDir = '/tmp/test-loadf';
-  let capturedLogMessages: string[] = [];
-
-  beforeEach(() => {
-    capturedLogMessages = [];
-    console.log = (...args: unknown[]) => {
-      capturedLogMessages.push(args.join(' '));
-    };
-  });
-
-  afterEach(() => {
-    console.log = originalConsoleLog;
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
-    }
-  });
-
-  test('should dynamically import a module successfully', async () => {
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(
-      path.join(testDir, 'test.ts'),
-      'export const x = 1 + 1;',
-    );
-
-    const loadF = async function (f: string): Promise<void> {
-      try {
-        const modulePath = testDir + '/' + f + '?t=' + Date.now();
-        await import(modulePath);
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push('Load error: ' + (err as Error).message);
-      }
-    };
-
-    await loadF('test.ts');
-    expect(capturedLogMessages).toContain('dyn.reload: test.ts');
-  });
-
-  test('should handle import errors for non-existent files', async () => {
-    const loadF = async function (f: string): Promise<void> {
-      try {
-        const modulePath = testDir + '/' + f + '?t=' + Date.now();
-        await import(modulePath);
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push('Load error: ' + (err as Error).message);
-      }
-    };
-
-    await loadF('nonexistent.ts');
-    expect(
-      capturedLogMessages.some((msg) => msg.includes('Load error')),
-    ).toBe(true);
-  });
-
-  test('should handle import errors for invalid modules', async () => {
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(
-      path.join(testDir, 'bad.ts'),
-      'throw new Error("Module load failure");',
-    );
-
-    const loadF = async function (f: string): Promise<void> {
-      try {
-        const modulePath = testDir + '/' + f + '?t=' + Date.now();
-        await import(modulePath);
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push('Load error: ' + (err as Error).message);
-      }
-    };
-
-    await loadF('bad.ts');
-    expect(
-      capturedLogMessages.some((msg) => msg.includes('Load error')),
-    ).toBe(true);
-  });
-
-  test('should log success appropriately', async () => {
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(
-      path.join(testDir, 'success.ts'),
-      'export const success = true;',
-    );
-
-    const loadF = async function (f: string): Promise<void> {
-      try {
-        const modulePath = testDir + '/' + f + '?t=' + Date.now();
-        await import(modulePath);
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push('Load error: ' + (err as Error).message);
-      }
-    };
-
-    await loadF('success.ts');
-    expect(capturedLogMessages).toContain('dyn.reload: success.ts');
-    expect(capturedLogMessages.some((msg) => msg.includes('error'))).toBe(
-      false,
-    );
   });
 });
 
