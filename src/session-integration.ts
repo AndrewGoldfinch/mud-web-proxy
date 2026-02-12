@@ -384,11 +384,8 @@ export class SessionIntegration {
     const sessionId = session.id;
     this.log('disconnect request', ip, sessionId);
 
-    // Close the telnet connection and clean up session
-    session.close();
-    this.sessionManager.removeSession(sessionId);
-
-    // Send ack to client
+    // Send ack to client before closing (session.close() terminates
+    // all attached WebSocket clients, so we must send first)
     const response = {
       type: 'disconnected',
       sessionId,
@@ -398,6 +395,10 @@ export class SessionIntegration {
     } catch (_err) {
       // Socket might be closed
     }
+
+    // Close the telnet connection and clean up session
+    session.close();
+    this.sessionManager.removeSession(sessionId);
 
     // Decrement IP count
     if (ip && ip !== 'unknown') {
