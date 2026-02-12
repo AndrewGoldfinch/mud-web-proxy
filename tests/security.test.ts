@@ -274,8 +274,6 @@ const createTestServer = () => {
     parse: function (_s: MockSocketExtended, _d: Buffer): number {
       return 0;
     },
-
-    loadF: function (_f: string): void {},
   };
 
   return srv;
