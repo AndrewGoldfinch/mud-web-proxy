@@ -32,7 +32,6 @@ export interface SocketExtended extends WS {
   echo_negotiated?: number;
   naws_negotiated?: number;
   msdp_negotiated?: number;
-  chat?: number;
   password_mode?: boolean;
   sendUTF: (data: string | Buffer) => void;
   terminate: () => void;

@@ -24,9 +24,6 @@ Usage Notes:
 The server waits to receive { "connect": 1 } to begin connecting to
 a telnet client on behalf of the user, so you have to send it
 even if you are not passing it host and port from the client.
-
-JSON requests with { "chat": 1 } will be intercepted and handled
-by the basic in-proxy chat system.
 */
 
 import util from 'util';
@@ -134,7 +131,6 @@ const PACKAGE_VERSION = '3.0.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
-const CHAT_HISTORY_LIMIT = 300;
 
 /**
  * Resolve the real client IP from proxy headers or the socket.
@@ -221,13 +217,6 @@ interface GMCPConfig {
   portal: string[];
 }
 
-interface ChatRequest {
-  chat?: number;
-  channel?: string;
-  msg?: string;
-  name?: string;
-}
-
 interface ClientRequest {
   host?: string;
   port?: number;
@@ -237,7 +226,6 @@ interface ClientRequest {
   mccp?: boolean;
   utf8?: boolean;
   debug?: boolean;
-  chat?: number;
   connect?: number;
   bin?: number[];
   msdp?: MSDPRequest;
@@ -270,7 +258,6 @@ export interface SocketExtended extends WS {
   echo_negotiated?: number;
   naws_negotiated?: number;
   msdp_negotiated?: number;
-  chat?: number;
   password_mode?: boolean;
   sendUTF: (data: string | Buffer) => void;
   terminate: () => void;
@@ -281,24 +268,7 @@ export interface TelnetSocket extends Socket {
   send: (data: string | Buffer) => void;
 }
 
-interface ChatEntry {
-  date: Date;
-  data: ChatRequest;
-}
-
 let server: ServerState = { sockets: [] };
-let chatlog: ChatEntry[] = [];
-let chatWriteTimer: NodeJS.Timeout | null = null;
-const debouncedChatWrite = () => {
-  if (chatWriteTimer) clearTimeout(chatWriteTimer);
-  chatWriteTimer = setTimeout(() => {
-    fs.promises
-      .writeFile(path.resolve(__dirname, 'chat.json'), stringify(chatlog))
-      .catch((err) => {
-        srv.logError('Chat write error: ' + err, undefined, 'chat');
-      });
-  }, 1000);
-};
 
 const stringify = function (A: unknown): string {
   const cache = new Set<unknown>();
@@ -310,22 +280,6 @@ const stringify = function (A: unknown): string {
     return v;
   });
   return val ?? '';
-};
-
-// Load chat log asynchronously
-const loadChatLog = async (): Promise<ChatEntry[]> => {
-  try {
-    const data = await fs.promises.readFile(
-      path.resolve(__dirname, 'chat.json'),
-      'utf8',
-    );
-    const parsed = JSON.parse(data);
-    // Ensure we always return an array
-    return Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    srv.logError('Chat log error: ' + err, undefined, 'chat');
-    return [];
-  }
 };
 
 // Diagnostic data gathering
@@ -711,9 +665,6 @@ interface ServerConfig {
   initT: (so: SocketExtended) => void;
   closeSocket: (s: SocketExtended) => void;
   sendClient: (s: SocketExtended, data: Buffer) => void;
-  chat: (s: SocketExtended, req: ChatRequest) => void;
-  chatUpdate: () => void;
-  chatCleanup: (t: string) => string;
   originAllowed: (req?: IncomingMessage) => number;
   log: (
     msg: unknown,
@@ -819,15 +770,6 @@ const srv: ServerConfig = {
     server = {
       sockets: [],
     };
-
-    try {
-      // Load chat log asynchronously
-      chatlog = await loadChatLog();
-      srv.logInfo('Chat log loaded successfully', undefined, 'init');
-    } catch (err) {
-      srv.logError('Error loading chat log: ' + err, undefined, 'init');
-      chatlog = [];
-    }
 
     // Check if TLS is disabled (for testing)
     const USE_TLS = process.env.DISABLE_TLS !== '1';
@@ -995,7 +937,6 @@ const srv: ServerConfig = {
         });
       },
     );
-
   },
 
   parse: function (s: SocketExtended, d: Buffer): number {
@@ -1049,8 +990,6 @@ const srv: ServerConfig = {
     if (req.utf8) s.utf8 = req.utf8;
 
     if (req.debug) s.debug = req.debug;
-
-    if (req.chat) srv.chat(s, req);
 
     if (req.connect) srv.initT(s);
 
@@ -1221,8 +1160,6 @@ const srv: ServerConfig = {
             s.naws_negotiated =
               1;
         }, PROTOCOL_NEGOTIATION_TIMEOUT_MS);
-
-        srv.chatUpdate();
       })
       .on('data', function (data: Buffer) {
         srv.sendClient(s, data);
@@ -1238,7 +1175,6 @@ const srv: ServerConfig = {
       .on('close', function () {
         if (negotiationTimeout) clearTimeout(negotiationTimeout);
         srv.logInfo('telnet socket closed', s, 'telnet');
-        srv.chatUpdate();
         setTimeout(function () {
           srv.closeSocket(s);
         }, SOCKET_CLOSE_DELAY_MS);
@@ -1537,75 +1473,6 @@ const srv: ServerConfig = {
     });
   },
 
-  chat: function (s: SocketExtended, req: ChatRequest): void {
-    srv.logInfo('chat: ' + stringify(req), s, 'chat');
-    s.chat = 1;
-
-    const ss = server.sockets;
-
-    // Ensure chatlog is always an array
-    if (!Array.isArray(chatlog)) {
-      chatlog = [];
-    }
-
-    if (req.channel && req.channel === 'op') {
-      // Create a copy of the last N messages
-      const temp = Array.from(chatlog).slice(-CHAT_HISTORY_LIMIT);
-      const users: string[] = [];
-
-      for (let i = 0; i < ss.length; i++) {
-        if (!ss[i].ts && ss[i].name) continue;
-
-        let u: string;
-        if (ss[i].ts) {
-          // let u = '\x1b<span style="color: #01c8d4"\x1b>' + (ss[i].name||'Guest') + '\x1b</span\x1b>@'+ss[i].host;
-          u = (ss[i].name || 'Guest') + '@' + ss[i].host;
-        } else {
-          u = (ss[i].name || 'Guest') + '@chat';
-        }
-
-        if (users.indexOf(u) === -1) users.push(u);
-      }
-
-      temp.push({
-        date: new Date(),
-        data: { channel: 'status', name: 'online:', msg: users.join(', ') },
-      });
-
-      let t = stringify(temp);
-      t = this.chatCleanup(t);
-
-      s.send('portal.chatlog ' + t);
-      return;
-    }
-
-    delete req.chat;
-    chatlog.push({ date: new Date(), data: req });
-    req.msg = this.chatCleanup(req.msg!);
-
-    for (let i = 0; i < ss.length; i++) {
-      if (ss[i].chat) ss[i].send('portal.chat ' + stringify(req));
-    }
-
-    debouncedChatWrite();
-  },
-
-  chatUpdate: function (): void {
-    const ss = server.sockets;
-    for (let i = 0; i < ss.length; i++)
-      if (ss[i].chat) srv.chat(ss[i], { channel: 'op' });
-  },
-
-  chatCleanup: function (t: string): string {
-    /* eslint-disable no-control-regex */
-    t = t.replace(/([^\x1b])</g, '$1&lt;');
-    t = t.replace(/([^\x1b])>/g, '$1&gt;');
-    t = t.replace(/\x1b>/g, '>');
-    t = t.replace(/\x1b</g, '<');
-    /* eslint-enable no-control-regex */
-    return t;
-  },
-
   originAllowed: function (req?: IncomingMessage): number {
     const allowedOrigins = process.env.ALLOWED_ORIGINS;
     if (!allowedOrigins) return 1; // backward compatible
@@ -1751,11 +1618,6 @@ const srv: ServerConfig = {
   die: function (core?: boolean): void {
     srv.logWarn('Dying gracefully in 3 sec.', undefined, 'init');
     srv.open = false;
-
-    if (chatWriteTimer) {
-      clearTimeout(chatWriteTimer);
-      chatWriteTimer = null;
-    }
 
     // Shut down session integration (clears intervals, sessions)
     sessionIntegration.shutdown();
