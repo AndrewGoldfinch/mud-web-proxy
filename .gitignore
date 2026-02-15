@@ -4,3 +4,9 @@ privkey.pem
 node_modules/
 dist/
 config/e2e/*.json
+
+# Environment variables (secrets)
+.env.local
+.env.*.local
+!.env.example
+!.env.*

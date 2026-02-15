@@ -4,7 +4,6 @@ import type { IncomingMessage } from 'http';
 import zlib from 'zlib';
 import fs from 'fs';
 import iconv from 'iconv-lite';
-import { minify } from 'uglify-js';
 
 // Type definitions
 interface SocketExtended extends WebSocket {
@@ -193,7 +192,7 @@ const parse = (s: SocketExtended, d: Buffer): number => {
   let req: ClientRequest;
 
   try {
-    req = eval('(' + d.toString() + ')');
+    req = JSON.parse(d.toString());
   } catch (err) {
     srv.log('parse: ' + err);
     return 0;
@@ -656,44 +655,6 @@ describe('Error Handling', () => {
       expect(result).toEqual([]);
       expect(mockLog).toHaveBeenCalledWith(
         expect.stringContaining('Chat log error:'),
-      );
-    });
-
-    it('should handle minification errors in loadF()', () => {
-      const filename = 'invalid-file.js';
-
-      // minify returns an object with error property instead of throwing
-      const result = minify('/nonexistent/path/' + filename);
-      if (result.error) {
-        srv.log(filename);
-        srv.log('Minify/load error: ' + result.error);
-      } else if (result.code) {
-        try {
-          eval(result.code);
-        } catch (err) {
-          srv.log(filename);
-          srv.log('Minify/load error: ' + err);
-        }
-      }
-
-      // Should log either the minify error or the filename
-      expect(mockLog).toHaveBeenCalled();
-    });
-
-    it('should handle eval() errors in dynamic reload', () => {
-      const filename = 'test.js';
-      const invalidCode = 'this is not valid javascript { } [';
-
-      try {
-        eval(invalidCode);
-      } catch (err) {
-        srv.log(filename);
-        srv.log('Minify/load error: ' + err);
-      }
-
-      expect(mockLog).toHaveBeenCalledWith(filename);
-      expect(mockLog).toHaveBeenCalledWith(
-        expect.stringContaining('Minify/load error:'),
       );
     });
 

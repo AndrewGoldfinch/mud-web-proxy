@@ -1,20 +1,28 @@
 /**
  * CircularBuffer - Fixed-size buffer for MUD output with sequence numbering
  *
- * Stores chunks of MUD output with monotonically increasing sequence numbers.
+ * Uses a ring buffer with head/tail pointers for O(1) append and eviction.
  * When buffer reaches capacity, oldest chunks are dropped (wrap-around).
  */
 
 import type { BufferChunk } from './types';
 
+const CHUNK_OVERHEAD_ESTIMATE = 256;
+
 export class CircularBuffer {
-  private chunks: BufferChunk[] = [];
+  private chunks: (BufferChunk | null)[];
+  private head = 0; // index of oldest element
+  private tail = 0; // index of next write position
+  private count = 0;
   private currentSize = 0;
   private readonly maxSize: number;
+  private readonly capacity: number;
   private sequenceCounter = 0;
 
-  constructor(maxSizeBytes: number) {
+  constructor(maxSizeBytes: number, initialCapacity = 1024) {
     this.maxSize = maxSizeBytes;
+    this.capacity = initialCapacity;
+    this.chunks = new Array(initialCapacity).fill(null);
   }
 
   /**
@@ -34,20 +42,32 @@ export class CircularBuffer {
       ...metadata,
     };
 
-    const chunkSize = data.length + 256; // Overhead estimate
+    const chunkSize = data.length + CHUNK_OVERHEAD_ESTIMATE;
 
     // Remove oldest chunks until we have room
-    while (
-      this.currentSize + chunkSize > this.maxSize &&
-      this.chunks.length > 0
-    ) {
-      const oldest = this.chunks.shift();
+    while (this.currentSize + chunkSize > this.maxSize && this.count > 0) {
+      const oldest = this.chunks[this.head];
       if (oldest) {
-        this.currentSize -= oldest.data.length + 256;
+        this.currentSize -= oldest.data.length + CHUNK_OVERHEAD_ESTIMATE;
+        this.chunks[this.head] = null;
       }
+      this.head = (this.head + 1) % this.capacity;
+      this.count--;
     }
 
-    this.chunks.push(chunk);
+    // If buffer is full (all slots used), evict oldest
+    if (this.count === this.capacity) {
+      const oldest = this.chunks[this.head];
+      if (oldest) {
+        this.currentSize -= oldest.data.length + CHUNK_OVERHEAD_ESTIMATE;
+      }
+      this.head = (this.head + 1) % this.capacity;
+      this.count--;
+    }
+
+    this.chunks[this.tail] = chunk;
+    this.tail = (this.tail + 1) % this.capacity;
+    this.count++;
     this.currentSize += chunkSize;
 
     return chunk;
@@ -58,11 +78,15 @@ export class CircularBuffer {
    * Returns empty array if sequence not found (may have been evicted)
    */
   replayFrom(sequence: number): BufferChunk[] {
-    const index = this.chunks.findIndex((chunk) => chunk.sequence >= sequence);
-    if (index === -1) {
-      return [];
+    const result: BufferChunk[] = [];
+    for (let i = 0; i < this.count; i++) {
+      const idx = (this.head + i) % this.capacity;
+      const chunk = this.chunks[idx];
+      if (chunk && chunk.sequence >= sequence) {
+        result.push(chunk);
+      }
     }
-    return this.chunks.slice(index);
+    return result;
   }
 
   /**
@@ -76,10 +100,11 @@ export class CircularBuffer {
    * Get the most recent sequence number in buffer
    */
   getLastSequence(): number {
-    if (this.chunks.length === 0) {
+    if (this.count === 0) {
       return 0;
     }
-    return this.chunks[this.chunks.length - 1].sequence;
+    const lastIdx = (this.tail - 1 + this.capacity) % this.capacity;
+    return this.chunks[lastIdx]?.sequence ?? 0;
   }
 
   /**
@@ -93,19 +118,24 @@ export class CircularBuffer {
    * Get number of chunks in buffer
    */
   getChunkCount(): number {
-    return this.chunks.length;
+    return this.count;
   }
 
   /**
    * Check if a sequence number is still in the buffer
    */
   hasSequence(sequence: number): boolean {
-    if (this.chunks.length === 0) {
+    if (this.count === 0) {
       return false;
     }
+    const oldest = this.chunks[this.head];
+    const lastIdx = (this.tail - 1 + this.capacity) % this.capacity;
+    const newest = this.chunks[lastIdx];
     return (
-      sequence >= this.chunks[0].sequence &&
-      sequence <= this.chunks[this.chunks.length - 1].sequence
+      !!oldest &&
+      !!newest &&
+      sequence >= oldest.sequence &&
+      sequence <= newest.sequence
     );
   }
 
@@ -113,7 +143,10 @@ export class CircularBuffer {
    * Clear all data from buffer
    */
   clear(): void {
-    this.chunks = [];
+    this.chunks = new Array(this.capacity).fill(null);
+    this.head = 0;
+    this.tail = 0;
+    this.count = 0;
     this.currentSize = 0;
   }
 
@@ -128,12 +161,14 @@ export class CircularBuffer {
     oldestSequence: number;
     newestSequence: number;
   } {
+    const oldest =
+      this.count > 0 ? (this.chunks[this.head]?.sequence ?? 0) : 0;
     return {
-      chunks: this.chunks.length,
+      chunks: this.count,
       sizeBytes: this.currentSize,
       maxSizeBytes: this.maxSize,
       currentSequence: this.sequenceCounter,
-      oldestSequence: this.chunks.length > 0 ? this.chunks[0].sequence : 0,
+      oldestSequence: oldest,
       newestSequence: this.getLastSequence(),
     };
   }

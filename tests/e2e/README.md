@@ -35,43 +35,54 @@ Tests use `ws://` (non-TLS) to avoid certificate issues.
 
 ## Setup
 
-### 1. Create Config Files
+### 1. Create Environment Config Files
 
-Copy the example config and create your own:
+Each MUD has its own `.env.{mud}` file for configuration. Bun automatically loads these files.
+
+**Create your local config (for secrets):**
 
 ```bash
-cp config/e2e.example.json config/e2e/aardwolf.json
-cp config/e2e.example.json config/e2e/rom-mud.json
-cp config/e2e.example.json config/e2e/discworld.json
-cp config/e2e.example.json config/e2e/ire-mud.json
-cp config/e2e.example.json config/e2e/raw-telnet.json
+# Copy the example and customize
+cp .env.aardwolf .env.aardwolf.local
+cp .env.achaea .env.achaea.local
+cp .env.discworld .env.discworld.local
+cp .env.ire .env.ire.local
+cp .env.rom .env.rom.local
+cp .env.raw .env.raw.local
 ```
+
+**Note:** `.env.{mud}.local` files are gitignored for security - never commit credentials!
 
 ### 2. Configure Each MUD
 
-Edit each config file with your credentials:
+Edit each `.env.{mud}.local` file with your credentials. Since each file is MUD-specific, variables don't need prefixes:
 
-**config/e2e/aardwolf.json:**
+**.env.aardwolf.local:**
 
-```json
-{
-  "enabled": true,
-  "host": "aardmud.org",
-  "port": 4000,
-  "username": "your_username",
-  "password": "your_password",
-  "character": "YourCharacter",
-  "expectations": {
-    "gmcp": true,
-    "mccp": true,
-    "mxp": false,
-    "msdp": false,
-    "utf8": true,
-    "ansi": true
-  },
-  "testTimeoutMs": 30000,
-  "loginPrompt": "Enter your username:"
-}
+```env
+# Enable this MUD for testing
+ENABLED=true
+
+# Connection settings
+HOST=aardmud.org
+PORT=4000
+
+# Authentication (add to .env.aardwolf.local, not this file!)
+USERNAME=your_username
+PASSWORD=your_password
+CHARACTER=YourCharacter
+
+# Protocol expectations
+EXPECT_GMCP=true
+EXPECT_MCCP=true
+EXPECT_MXP=false
+EXPECT_MSDP=false
+EXPECT_UTF8=true
+EXPECT_ANSI=true
+
+# Test settings
+TIMEOUT_MS=30000
+LOGIN_PROMPT="Enter your username:"
 ```
 
 ### 3. Start the Proxy
@@ -104,14 +115,13 @@ bun run test:e2e:raw
 
 Tests are automatically skipped if:
 
-- Config file doesn't exist
-- `enabled` is set to `false` in config
-- Missing required fields (host, port)
+- Environment variable `ENABLED` is not set or is `false`
+- Missing required fields (`HOST`, `PORT`)
 
 You'll see a message like:
 
 ```
-❌ Skipping Aardwolf E2E tests: Config file not found: config/e2e/aardwolf.json
+❌ Skipping Aardwolf E2E tests: E2E tests disabled (ENABLED not set or false). Create .env.aardwolf.local to enable.
 ```
 
 ### What Tests Verify
@@ -153,21 +163,28 @@ You'll see a message like:
 
 ## Configuration Options
 
-| Field           | Required | Description                                   |
-| --------------- | -------- | --------------------------------------------- |
-| `enabled`       | Yes      | Set to `true` to run tests                    |
-| `host`          | Yes      | MUD server hostname                           |
-| `port`          | Yes      | MUD server port                               |
-| `username`      | No       | Your MUD username                             |
-| `password`      | No       | Your MUD password                             |
-| `character`     | No       | Character name                                |
-| `expectations`  | Yes      | Protocol expectations (gmcp, mccp, etc.)      |
-| `testTimeoutMs` | No       | Test timeout in milliseconds (default: 30000) |
-| `loginPrompt`   | No       | Text to wait for at login                     |
+Since each MUD has its own `.env.{mud}` file, variables don't need prefixes:
+
+| Variable       | Required | Description                                   |
+| -------------- | -------- | --------------------------------------------- |
+| `ENABLED`      | Yes      | Set to `true` to run tests                    |
+| `HOST`         | Yes      | MUD server hostname                           |
+| `PORT`         | Yes      | MUD server port                               |
+| `USERNAME`     | No       | Your MUD username                             |
+| `PASSWORD`     | No       | Your MUD password                             |
+| `CHARACTER`    | No       | Character name                                |
+| `EXPECT_GMCP`  | Yes      | Expect GMCP support                           |
+| `EXPECT_MCCP`  | Yes      | Expect MCCP support                           |
+| `EXPECT_MXP`   | Yes      | Expect MXP support                            |
+| `EXPECT_MSDP`  | Yes      | Expect MSDP support                           |
+| `EXPECT_UTF8`  | Yes      | Expect UTF-8 support                          |
+| `EXPECT_ANSI`  | Yes      | Expect ANSI color support                     |
+| `TIMEOUT_MS`   | No       | Test timeout in milliseconds (default: 30000) |
+| `LOGIN_PROMPT` | No       | Text to wait for at login                     |
 
 ## Security Notes
 
-- Config files are in `.gitignore` - **never commit credentials**
+- `.env.{mud}.local` files are in `.gitignore` - **never commit credentials**
 - Passwords are only used for testing, not stored
 - Tests only verify connection/auth flow, not gameplay
 - Credentials pass through to MUD servers directly
@@ -176,19 +193,20 @@ You'll see a message like:
 
 ### Tests timeout
 
-- Increase `testTimeoutMs` in config
+- Increase `TIMEOUT_MS` in config
 - Check proxy is running: `bun dev`
 - Verify MUD server is reachable
 
-### "Config file not found"
+### "E2E tests disabled"
 
-- Create the config file in `config/e2e/`
-- Ensure filename matches MUD name (e.g., `aardwolf.json`)
+- Create the `.env.{mud}.local` file
+- Set `ENABLED=true` in the file
+- Ensure all required fields are set
 
 ### "Connection failed"
 
 - Check proxy is running on correct port
-- Verify `E2E_PROXY_URL` environment variable
+- Verify `HOST` and `PORT` are correct
 - Check firewall/proxy settings
 
 ### Protocol not negotiating
@@ -203,8 +221,24 @@ You'll see a message like:
 2. Copy template from existing test
 3. Update `MUD_NAME` constant
 4. Add tests for your MUD's specific features
-5. Create config: `config/e2e/your-mud.json`
+5. Create config: `.env.your-mud` and `.env.your-mud.local`
 6. Add npm script to `package.json`
+
+Example `.env.your-mud`:
+
+```env
+ENABLED=true
+HOST=your-mud.com
+PORT=4000
+EXPECT_GMCP=true
+EXPECT_MCCP=false
+EXPECT_MXP=true
+EXPECT_MSDP=false
+EXPECT_UTF8=true
+EXPECT_ANSI=true
+TIMEOUT_MS=30000
+LOGIN_PROMPT="Login:"
+```
 
 ## CI/CD Integration
 
@@ -225,3 +259,25 @@ To enable in CI, set environment variables and ensure proxy is running:
   env:
     E2E_PROXY_URL: ws://localhost:6200
 ```
+
+## Migration from Prefixed Format
+
+If you were using the old prefixed format (e.g., `AARDWOLF_ENABLED`), simply remove the prefixes:
+
+**Old format:**
+
+```env
+AARDWOLF_ENABLED=true
+AARDWOLF_HOST=aardmud.org
+AARDWOLF_PORT=4000
+```
+
+**New format:**
+
+```env
+ENABLED=true
+HOST=aardmud.org
+PORT=4000
+```
+
+Since each MUD has its own `.env.{mud}` file, the prefix is unnecessary and redundant.

@@ -11,6 +11,7 @@
 
 import net from 'net';
 import crypto from 'crypto';
+import { WebSocket } from 'ws';
 import type {
   BufferChunk,
   ProcessedData,
@@ -168,8 +169,7 @@ export class Session {
   broadcastToClients(data: string): void {
     for (const client of this.clients) {
       try {
-        if (client.readyState === 1) {
-          // WebSocket.OPEN
+        if (client.readyState === WebSocket.OPEN) {
           client.send(data);
         }
       } catch (_err) {
@@ -190,7 +190,11 @@ export class Session {
     try {
       this.telnet.write(data);
       return true;
-    } catch (_err) {
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        `[session] sendToMud failed for ${this.mudHost}:${this.mudPort}: ${err}`,
+      );
       return false;
     }
   }

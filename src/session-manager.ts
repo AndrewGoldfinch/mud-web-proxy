@@ -10,6 +10,7 @@
  * - Validate session tokens
  */
 
+import { timingSafeEqual } from 'crypto';
 import { Session } from './session';
 import type { SocketExtended } from './types';
 
@@ -93,7 +94,12 @@ export class SessionManager {
     if (!session) {
       return false;
     }
-    return session.authToken === token;
+    const expected = Buffer.from(session.authToken);
+    const actual = Buffer.from(token);
+    if (expected.length !== actual.length) {
+      return false;
+    }
+    return timingSafeEqual(expected, actual);
   }
 
   /**
@@ -181,9 +187,16 @@ export class SessionManager {
     // Check device limit
     const deviceSessions = this.deviceSessions.get(deviceToken);
     if (deviceSessions && deviceSessions.size >= this.config.maxPerDevice) {
-      // Remove oldest session
+      // Notify and remove oldest session
       const oldest = this.getOldestSession(deviceToken);
       if (oldest) {
+        // Notify attached clients before eviction
+        const evictionMsg = JSON.stringify({
+          type: 'error',
+          code: 'session_evicted',
+          message: 'Session replaced by a newer connection',
+        });
+        oldest.broadcastToClients(evictionMsg);
         this.removeSession(oldest.id);
       }
     }

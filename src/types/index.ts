@@ -2,9 +2,9 @@
  * Type definitions for MUDBasher session persistence proxy
  */
 
-import type { Socket } from 'net';
 import type { IncomingMessage } from 'http';
 import type { WebSocket as WS } from 'ws';
+import type { Socket } from 'net';
 
 /**
  * Extended WebSocket type with our custom properties
@@ -12,7 +12,7 @@ import type { WebSocket as WS } from 'ws';
  */
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
-  ts?: Socket;
+  ts?: TelnetSocket;
   host?: string;
   port?: number;
   ttype: string[];
@@ -32,7 +32,6 @@ export interface SocketExtended extends WS {
   echo_negotiated?: number;
   naws_negotiated?: number;
   msdp_negotiated?: number;
-  chat?: number;
   password_mode?: boolean;
   sendUTF: (data: string | Buffer) => void;
   terminate: () => void;
@@ -119,11 +118,16 @@ export interface NAWSRequest {
   height: number;
 }
 
+export interface DisconnectRequest {
+  type: 'disconnect';
+}
+
 export type ClientMessage =
   | ConnectRequest
   | ResumeRequest
   | InputRequest
-  | NAWSRequest;
+  | NAWSRequest
+  | DisconnectRequest;
 
 /**
  * Proxy → Client message types
@@ -159,11 +163,17 @@ export interface ErrorResponse {
   message: string;
 }
 
+export interface DisconnectedResponse {
+  type: 'disconnected';
+  sessionId: string;
+}
+
 export type ProxyMessage =
   | SessionResponse
   | DataResponse
   | GMCPResponse
-  | ErrorResponse;
+  | ErrorResponse
+  | DisconnectedResponse;
 
 /**
  * APNS configuration

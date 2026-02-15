@@ -1,12 +1,11 @@
 /**
  * Comprehensive tests for Utilities and Helper functions
- * Tests stringify(), loadChatLog(), loadF(), log(), die(), and server initialization
+ * Tests stringify(), loadChatLog(), log(), die(), and server initialization
  */
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import fs from 'fs';
 import path from 'path';
-import { minify } from 'uglify-js';
 
 // Store original functions
 const originalConsoleLog = console.log;
@@ -193,119 +192,6 @@ describe('loadChatLog() function', () => {
     expect(promise).toBeInstanceOf(Promise);
     const result = await promise;
     expect(Array.isArray(result)).toBe(true);
-  });
-});
-
-describe('loadF() dynamic reload', () => {
-  const testDir = '/tmp/test-loadf';
-  let capturedLogMessages: string[] = [];
-
-  beforeEach(() => {
-    capturedLogMessages = [];
-    console.log = (...args: unknown[]) => {
-      capturedLogMessages.push(args.join(' '));
-    };
-  });
-
-  afterEach(() => {
-    console.log = originalConsoleLog;
-    if (fs.existsSync(testDir)) {
-      fs.rmSync(testDir, { recursive: true, force: true });
-    }
-  });
-
-  test('should minify and evaluate code successfully', () => {
-    const testFile = path.join(testDir, 'test.js');
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(testFile, 'const x = 1 + 1;');
-
-    const loadF = function (f: string): void {
-      try {
-        const fl = minify(path.join(testDir, f)).code;
-        eval(fl + '');
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
-      }
-    };
-
-    loadF('test.js');
-    expect(capturedLogMessages).toContain('dyn.reload: test.js');
-  });
-
-  test('should handle minification errors', () => {
-    const testFile = path.join(testDir, 'bad.js');
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(testFile, 'function { syntax error }');
-
-    const loadF = function (f: string): void {
-      try {
-        const fl = minify(path.join(testDir, f)).code;
-        if (!fl) {
-          throw new Error('Minification failed');
-        }
-        eval(fl + '');
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
-      }
-    };
-
-    loadF('bad.js');
-    expect(capturedLogMessages).toContain('bad.js');
-    expect(
-      capturedLogMessages.some((msg) => msg.includes('Minify/load error')),
-    ).toBe(true);
-  });
-
-  test('should handle eval errors in minified code', () => {
-    // Test the error handling path directly
-    const loadF = function (f: string): void {
-      try {
-        // Simulate an error during evaluation
-        throw new Error('Eval error');
-      } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
-      }
-    };
-
-    loadF('eval-error.js');
-    expect(capturedLogMessages).toContain('eval-error.js');
-    expect(
-      capturedLogMessages.some((msg) => msg.includes('Minify/load error')),
-    ).toBe(true);
-  });
-
-  test('should log success and errors appropriately', () => {
-    const testFile = path.join(testDir, 'success.js');
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
-    fs.writeFileSync(testFile, 'const success = true;');
-
-    const loadF = function (f: string): void {
-      try {
-        const fl = minify(path.join(testDir, f)).code;
-        eval(fl + '');
-        capturedLogMessages.push('dyn.reload: ' + f);
-      } catch (err) {
-        capturedLogMessages.push(f);
-        capturedLogMessages.push('Minify/load error: ' + err);
-      }
-    };
-
-    loadF('success.js');
-    expect(capturedLogMessages).toContain('dyn.reload: success.js');
-    expect(capturedLogMessages.some((msg) => msg.includes('error'))).toBe(
-      false,
-    );
   });
 });
 
@@ -612,20 +498,20 @@ describe('Server initialization', () => {
     fs.rmSync(testDir, { recursive: true, force: true });
   });
 
-  test('should set up file watching on wsproxy.js', () => {
+  test('should set up file watching on wsproxy.ts', () => {
     const testDir = '/tmp/test-watch';
     if (!fs.existsSync(testDir)) {
       fs.mkdirSync(testDir, { recursive: true });
     }
 
-    fs.writeFileSync(path.join(testDir, 'wsproxy.js'), '// test file');
+    fs.writeFileSync(path.join(testDir, 'wsproxy.ts'), '// test file');
 
     // Verify file exists
-    expect(fs.existsSync(path.join(testDir, 'wsproxy.js'))).toBe(true);
+    expect(fs.existsSync(path.join(testDir, 'wsproxy.ts'))).toBe(true);
 
     // Simulate file change
-    fs.writeFileSync(path.join(testDir, 'wsproxy.js'), '// updated content');
-    expect(fs.readFileSync(path.join(testDir, 'wsproxy.js'), 'utf8')).toBe(
+    fs.writeFileSync(path.join(testDir, 'wsproxy.ts'), '// updated content');
+    expect(fs.readFileSync(path.join(testDir, 'wsproxy.ts'), 'utf8')).toBe(
       '// updated content',
     );
 

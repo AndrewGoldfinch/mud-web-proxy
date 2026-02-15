@@ -11,18 +11,18 @@
   ],
   "main": "dist/wsproxy.js",
   "scripts": {
-    "build": "tsc",
+    "build": "esbuild wsproxy.ts --bundle --platform=node --format=esm --outfile=dist/wsproxy.js --packages=external",
     "dev": "bun wsproxy.ts",
     "start": "bun dist/wsproxy.js",
     "test": "bun test --coverage",
     "test:unit": "bun test tests/*.test.ts --coverage",
     "test:e2e": "bun test tests/e2e/**/*.test.ts",
-    "test:e2e:aardwolf": "bun test tests/e2e/aardwolf.test.ts",
-    "test:e2e:achaea": "bun test tests/e2e/achaea.test.ts",
-    "test:e2e:rom": "bun test tests/e2e/rom-mud.test.ts",
-    "test:e2e:discworld": "bun test tests/e2e/discworld.test.ts",
-    "test:e2e:ire": "bun test tests/e2e/ire-mud.test.ts",
-    "test:e2e:raw": "bun test tests/e2e/raw-telnet.test.ts",
+    "test:e2e:aardwolf": "bun --env-file=.env.aardwolf test tests/e2e/aardwolf.test.ts",
+    "test:e2e:achaea": "bun --env-file=.env.achaea test tests/e2e/achaea.test.ts",
+    "test:e2e:rom": "bun --env-file=.env.rom test tests/e2e/rom-mud.test.ts",
+    "test:e2e:discworld": "bun --env-file=.env.discworld test tests/e2e/discworld.test.ts",
+    "test:e2e:ire": "bun --env-file=.env.ire test tests/e2e/ire-mud.test.ts",
+    "test:e2e:raw": "bun --env-file=.env.raw test tests/e2e/raw-telnet.test.ts",
     "test:mock": "bun tests/e2e/run-mock-tests.ts",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
@@ -45,6 +45,7 @@
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
+    "esbuild": "^0.27.3",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsonc": "^2.21.0",
@@ -53,11 +54,11 @@
     "jsonc-eslint-parser": "^2.4.2",
     "prettier": "^3.8.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.54.0"
+    "typescript-eslint": "^8.54.0",
+    "uglify-js": "^3.19.3"
   },
   "dependencies": {
     "iconv-lite": "^0.6.3",
-    "uglify-js": "^3.19.3",
     "ws": "^8.19.0"
   }
 }
