@@ -97,6 +97,7 @@ export interface ConnectRequest {
   apiKey?: string;
   width?: number;
   height?: number;
+  debug?: boolean;
 }
 
 export interface ResumeRequest {

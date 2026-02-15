@@ -125,6 +125,14 @@ export class SessionIntegration {
 
       const clientMsg = parsed;
 
+      if (socket.debug) {
+        // Redact sensitive fields before logging
+        const sanitized = { ...parsed };
+        if ('token' in sanitized) sanitized.token = '***';
+        if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
+        this.log(`client msg: ${JSON.stringify(sanitized)}`, socket.remoteAddress);
+      }
+
       switch (clientMsg.type) {
         case 'connect':
           this.handleConnect(socket, clientMsg);
@@ -163,6 +171,9 @@ export class SessionIntegration {
       'unknown';
 
     this.log(`connect request to ${msg.host}:${msg.port}`, ip);
+
+    // Enable per-client debug logging if requested
+    if (msg.debug) socket.debug = msg.debug;
 
     // Check connection limits
     if (msg.deviceToken) {
