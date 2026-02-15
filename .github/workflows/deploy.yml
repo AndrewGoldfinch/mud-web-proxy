@@ -20,5 +20,4 @@ jobs:
             git pull origin main
             bun install --production
             bun run build
-
             pm2 restart mud-web-proxy
