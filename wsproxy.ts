@@ -217,20 +217,6 @@ interface GMCPConfig {
   portal: string[];
 }
 
-interface ClientRequest {
-  host?: string;
-  port?: number;
-  ttype?: string;
-  name?: string;
-  client?: string;
-  mccp?: boolean;
-  utf8?: boolean;
-  debug?: boolean;
-  connect?: number;
-  bin?: number[];
-  msdp?: MSDPRequest;
-}
-
 interface MSDPRequest {
   key?: string;
   val?: string | string[];
@@ -942,80 +928,24 @@ const srv: ServerConfig = {
   parse: function (s: SocketExtended, d: Buffer): number {
     if (d[0] !== '{'.charCodeAt(0)) return 0;
 
-    // Try new session-aware message format first
     try {
       const msg = d.toString();
       const parsed = JSON.parse(msg);
       if (parsed && parsed.type) {
-        // New format with type field - handle via session integration
-        // Session integration will handle connect, resume, input, naws
-        // Returns 1 if handled, 0 if should fall through
-        const handled = sessionIntegration.parseNewMessage(s, d, () => 0);
+        const handled = sessionIntegration.parseNewMessage(s, d);
         if (handled) return 1;
+      } else if (parsed) {
+        srv.logError(
+          'Ignoring message without type field: ' + msg,
+          s,
+          'parse',
+        );
       }
     } catch (_err) {
-      // Not new format, fall through to legacy
+      // Invalid JSON, forward to MUD
     }
 
-    let req: ClientRequest;
-
-    try {
-      req = JSON.parse(d.toString());
-    } catch (err) {
-      srv.logWarn('parse: ' + err, s, 'parse');
-      return 0;
-    }
-
-    if (s.debug) {
-      srv.logDebug('client msg: ' + JSON.stringify(req), s, 'parse');
-    }
-
-    if (req.host) {
-      s.host = req.host;
-      srv.logInfo('Target host set to ' + s.host, s, 'parse');
-    }
-
-    if (req.port) {
-      s.port = req.port;
-      srv.logInfo('Target port set to ' + s.port, s, 'parse');
-    }
-
-    if (req.ttype) {
-      s.ttype = [req.ttype];
-      srv.logInfo('Client ttype set to ' + s.ttype, s, 'parse');
-    }
-
-    if (req.name) s.name = req.name;
-
-    if (req.client) s.client = req.client;
-
-    if (req.mccp) s.mccp = req.mccp;
-
-    if (req.utf8) s.utf8 = req.utf8;
-
-    if (req.debug) s.debug = req.debug;
-
-    if (req.connect) srv.initT(s);
-
-    if (req.bin && s.ts) {
-      try {
-        srv.logInfo('Attempt binary send: ' + req.bin, s, 'parse');
-        s.ts.send(Buffer.from(req.bin));
-      } catch (ex) {
-        srv.logError(ex, s, 'parse');
-      }
-    }
-
-    if (req.msdp && s.ts) {
-      try {
-        srv.logInfo('Attempt msdp send: ' + stringify(req.msdp), s, 'parse');
-        srv.sendMSDP(s, req.msdp);
-      } catch (ex) {
-        srv.logError(ex, s, 'parse');
-      }
-    }
-
-    return 1;
+    return 0;
   },
 
   sendTTYPE: function (s: SocketExtended, msg: string): void {
