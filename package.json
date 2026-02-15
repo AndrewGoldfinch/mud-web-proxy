@@ -11,7 +11,7 @@
   ],
   "main": "dist/wsproxy.js",
   "scripts": {
-    "build": "tsc",
+    "build": "esbuild wsproxy.ts --bundle --platform=node --format=esm --outfile=dist/wsproxy.js --packages=external",
     "dev": "bun wsproxy.ts",
     "start": "bun dist/wsproxy.js",
     "test": "bun test --coverage",
@@ -42,10 +42,10 @@
     "@eslint/js": "^9.39.2",
     "@types/node": "^25.2.1",
     "@types/uglify-js": "^3.17.5",
-    "uglify-js": "^3.19.3",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.54.0",
     "@typescript-eslint/parser": "^8.54.0",
+    "esbuild": "^0.27.3",
     "eslint": "^9.39.2",
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsonc": "^2.21.0",
@@ -54,7 +54,8 @@
     "jsonc-eslint-parser": "^2.4.2",
     "prettier": "^3.8.1",
     "typescript": "^5.9.3",
-    "typescript-eslint": "^8.54.0"
+    "typescript-eslint": "^8.54.0",
+    "uglify-js": "^3.19.3"
   },
   "dependencies": {
     "iconv-lite": "^0.6.3",
