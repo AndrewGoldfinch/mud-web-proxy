@@ -966,6 +966,10 @@ const srv: ServerConfig = {
       return 0;
     }
 
+    if (s.debug) {
+      srv.logDebug('client msg: ' + JSON.stringify(req), s, 'parse');
+    }
+
     if (req.host) {
       s.host = req.host;
       srv.logInfo('Target host set to ' + s.host, s, 'parse');
