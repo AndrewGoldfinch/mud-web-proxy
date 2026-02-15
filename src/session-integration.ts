@@ -342,7 +342,7 @@ export class SessionIntegration {
       return;
     }
 
-    session.sendToMud(msg.text + '\r\n');
+    session.sendToMud(msg.text);
   }
 
   /**
