@@ -100,27 +100,23 @@ export class SessionIntegration {
   }
 
   /**
-   * Parse new-style client messages (connect, resume, input, naws)
-   * Returns true if message was handled (new format), false otherwise
+   * Parse new-style client messages (connect, resume, input, naws, disconnect)
+   * Returns true if message was handled, false otherwise
    */
-  parseNewMessage(
-    socket: SocketExtended,
-    data: Buffer,
-    legacyHandler: (s: SocketExtended, d: Buffer) => number,
-  ): number {
+  parseNewMessage(socket: SocketExtended, data: Buffer): boolean {
     try {
       const msg = data.toString();
 
       // Check if it's JSON (starts with {)
       if (msg.trim()[0] !== '{') {
-        return legacyHandler(socket, data);
+        return false;
       }
 
       const parsed = JSON.parse(msg) as ClientMessage;
 
       // Only handle messages with type field
       if (!('type' in parsed)) {
-        return legacyHandler(socket, data);
+        return false;
       }
 
       const clientMsg = parsed;
@@ -139,25 +135,25 @@ export class SessionIntegration {
       switch (clientMsg.type) {
         case 'connect':
           this.handleConnect(socket, clientMsg);
-          return 1;
+          return true;
         case 'resume':
           this.handleResume(socket, clientMsg);
-          return 1;
+          return true;
         case 'input':
           this.handleInput(socket, clientMsg);
-          return 1;
+          return true;
         case 'naws':
           this.handleNAWS(socket, clientMsg);
-          return 1;
+          return true;
         case 'disconnect':
           this.handleDisconnect(socket);
-          return 1;
+          return true;
         default:
-          return legacyHandler(socket, data);
+          return false;
       }
     } catch (_err) {
-      // Not valid JSON or new format, fall back to legacy
-      return legacyHandler(socket, data);
+      // Not valid JSON or new format
+      return false;
     }
   }
 
@@ -342,6 +338,9 @@ export class SessionIntegration {
     const session = this.sessionManager.findByWebSocket(socket);
     if (!session) {
       // Legacy mode - forward to existing telnet socket
+      if (socket.ts) {
+        socket.ts.send(msg.text);
+      }
       return;
     }
 
@@ -449,7 +448,7 @@ export class SessionIntegration {
       }
     }
 
-    // Process with legacy sendClient
+    // Buffer and forward to clients
     // This will be called from wsproxy.ts and handle protocol negotiation
     // Then we buffer and forward
 

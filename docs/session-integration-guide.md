@@ -142,12 +142,20 @@ Modify `srv.parse`:
 
 ```typescript
 parse: function (s: SocketExtended, d: Buffer): number {
-  // Try new message format first
-  const handled = sessionIntegration.parseNewMessage(s, d, legacyParse);
-  if (handled) return 1;
+  if (d[0] !== '{'.charCodeAt(0)) return 0;
 
-  // Fall back to legacy parsing
-  return legacyParse(s, d);
+  try {
+    const msg = d.toString();
+    const parsed = JSON.parse(msg);
+    if (parsed && parsed.type) {
+      const handled = sessionIntegration.parseNewMessage(s, d);
+      if (handled) return 1;
+    }
+  } catch (_err) {
+    // Invalid JSON, forward to MUD
+  }
+
+  return 0;
 },
 ```
 
@@ -285,17 +293,16 @@ ws.send(
 - Verify lastSeq parameter in resume
 - Check if sequence is still in buffer (may have been evicted)
 
-## Migration from Legacy
+## Migration Guide
 
-The session integration is backward compatible:
+The session integration requires the new message format:
 
-- Messages without `type` field use legacy parsing
-- Existing connections work unchanged
-- New features opt-in via new message format
+- Messages must have a `type` field: `connect`, `resume`, `input`, `naws`, or `disconnect`
+- Messages without a `type` field are forwarded directly to the MUD server
 
-To fully migrate:
+To migrate:
 
 1. Deploy updated proxy
-2. Update iOS client to use new message format
-3. Add APNS configuration
+2. Update client to use new message format with `type` field
+3. Add APNS configuration (optional)
 4. Test session persistence and notifications
