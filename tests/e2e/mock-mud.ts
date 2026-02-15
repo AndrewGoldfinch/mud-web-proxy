@@ -881,6 +881,9 @@ if (import.meta.main) {
       server = new MockMUDServer({ port, type: 'generic' });
   }
 
+  // Override port from CLI argument
+  (server as any).config.port = port;
+
   await server.start();
   console.log(`Mock MUD running. Press Ctrl+C to stop.`);
 
