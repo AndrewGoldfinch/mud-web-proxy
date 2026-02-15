@@ -130,7 +130,10 @@ export class SessionIntegration {
         const sanitized = { ...parsed };
         if ('token' in sanitized) sanitized.token = '***';
         if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
-        this.log(`client msg: ${JSON.stringify(sanitized)}`, socket.remoteAddress);
+        this.log(
+          `client msg: ${JSON.stringify(sanitized)}`,
+          socket.remoteAddress,
+        );
       }
 
       switch (clientMsg.type) {
