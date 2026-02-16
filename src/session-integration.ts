@@ -229,18 +229,18 @@ export class SessionIntegration {
 
     // Connect to MUD
     try {
-      await session.connect();
-
-      // Set up data handler
+      // Set up data and close handlers BEFORE connecting so no initial
+      // MUD output (welcome banners, login prompts) is lost.
       session.onData((data: Buffer) => {
         this.processMudData(session, socket, data);
       });
 
-      // Set up close handler
       session.onClose(() => {
         this.sendError(socket, 'connection_failed', 'MUD connection closed');
         this.sessionManager.removeSession(session.id);
       });
+
+      await session.connect();
 
       // Set up error handler
       session.onError((err: Error) => {
