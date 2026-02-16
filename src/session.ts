@@ -87,13 +87,17 @@ export class Session {
       };
 
       const tryPlain = () => {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[session] TLS failed, falling back to plain TCP for ${this.mudHost}:${this.mudPort}`,
+        );
         try {
           this.telnet = net.createConnection(
             this.mudPort,
             this.mudHost,
           ) as TelnetSocket;
 
-          this.setupTelnetHandlers(reject);
+          this.setupTelnetHandlers(reject, true);
         } catch (err) {
           reject(err);
         }
@@ -102,10 +106,13 @@ export class Session {
       tryTLS();
 
       this.telnet?.on('error', (err: Error) => {
+        const errMsg = err.message.toLowerCase();
         if (
           !settled &&
           (err.message.includes('ECONNREFUSED') ||
-            err.message.includes('TLS') ||
+            errMsg.includes('tls') ||
+            errMsg.includes('ssl') ||
+            errMsg.includes('certificate') ||
             err.message.includes('ECONNRESET'))
         ) {
           tryPlain();
@@ -114,7 +121,10 @@ export class Session {
     });
   }
 
-  private setupTelnetHandlers(reject: (err: Error) => void): void {
+  private setupTelnetHandlers(
+    reject: (err: Error) => void,
+    isFallback = false,
+  ): void {
     if (!this.telnet) return;
 
     this.telnet.send = (data: string | Buffer) => {
@@ -143,7 +153,9 @@ export class Session {
       if (this.onErrorCallback) {
         this.onErrorCallback(err);
       }
-      reject(err);
+      if (!isFallback) {
+        reject(err);
+      }
     });
   }
 
