@@ -162,6 +162,11 @@ export class Session {
     this.telnet.on('data', (data: Buffer) => {
       if (this.onDataCallback) {
         this.onDataCallback(data);
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[session] [sid:${this.id.substring(0, 8)}] DATA DROPPED: ${data.length} bytes (no onDataCallback)`,
+        );
       }
     });
 
@@ -238,15 +243,29 @@ export class Session {
    * Send data to all attached WebSocket clients
    */
   broadcastToClients(data: string): void {
+    const clientCount = this.clients.size;
+    let sentCount = 0;
     for (const client of this.clients) {
       try {
         if (client.readyState === WebSocket.OPEN) {
           client.send(data);
+          sentCount++;
+        } else {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[session] [sid:${this.id.substring(0, 8)}] broadcastToClients: client readyState=${client.readyState}, not OPEN (${WebSocket.OPEN})`,
+          );
         }
       } catch (_err) {
         // Client disconnected, remove it
         this.clients.delete(client);
       }
+    }
+    if (clientCount > 0 && sentCount === 0) {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[session] [sid:${this.id.substring(0, 8)}] broadcastToClients: WARNING: ${clientCount} clients but 0 sent`,
+      );
     }
     this.clientConnected = this.clients.size > 0;
   }
