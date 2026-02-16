@@ -10,6 +10,7 @@
  */
 
 import net from 'net';
+import tls from 'tls';
 import crypto from 'crypto';
 import { WebSocket } from 'ws';
 import type {
@@ -64,49 +65,85 @@ export class Session {
 
   /**
    * Connect to MUD server via telnet
+   * Auto-detects SSL: tries TLS first, falls back to plain TCP
    * Returns a promise that resolves when connected or rejects on error
    */
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
-      try {
-        this.telnet = net.createConnection(
-          this.mudPort,
-          this.mudHost,
-        ) as TelnetSocket;
+      let settled = false;
 
-        // Add send method for compatibility
-        this.telnet.send = (data: string | Buffer) => {
-          this.telnet?.write(data);
-        };
+      const tryTLS = () => {
+        try {
+          this.telnet = tls.connect(this.mudPort, this.mudHost, {}, () => {
+            this.telnetConnected = true;
+            settled = true;
+            resolve();
+          }) as unknown as TelnetSocket;
 
-        this.telnet.on('connect', () => {
-          this.telnetConnected = true;
-          resolve();
-        });
-
-        this.telnet.on('data', (data: Buffer) => {
-          if (this.onDataCallback) {
-            this.onDataCallback(data);
-          }
-        });
-
-        this.telnet.on('close', () => {
-          this.telnetConnected = false;
-          if (this.onCloseCallback) {
-            this.onCloseCallback();
-          }
-        });
-
-        this.telnet.on('error', (err: Error) => {
-          this.telnetConnected = false;
-          if (this.onErrorCallback) {
-            this.onErrorCallback(err);
-          }
+          this.setupTelnetHandlers(reject);
+        } catch (err) {
           reject(err);
-        });
-      } catch (err) {
-        reject(err);
+        }
+      };
+
+      const tryPlain = () => {
+        try {
+          this.telnet = net.createConnection(
+            this.mudPort,
+            this.mudHost,
+          ) as TelnetSocket;
+
+          this.setupTelnetHandlers(reject);
+        } catch (err) {
+          reject(err);
+        }
+      };
+
+      tryTLS();
+
+      this.telnet?.on('error', (err: Error) => {
+        if (
+          !settled &&
+          (err.message.includes('ECONNREFUSED') ||
+            err.message.includes('TLS') ||
+            err.message.includes('ECONNRESET'))
+        ) {
+          tryPlain();
+        }
+      });
+    });
+  }
+
+  private setupTelnetHandlers(reject: (err: Error) => void): void {
+    if (!this.telnet) return;
+
+    this.telnet.send = (data: string | Buffer) => {
+      this.telnet?.write(data);
+    };
+
+    this.telnet.on('connect', () => {
+      this.telnetConnected = true;
+    });
+
+    this.telnet.on('data', (data: Buffer) => {
+      if (this.onDataCallback) {
+        this.onDataCallback(data);
       }
+    });
+
+    this.telnet.on('close', () => {
+      this.telnetConnected = false;
+      if (this.onCloseCallback) {
+        this.onCloseCallback();
+      }
+    });
+
+    this.telnet.on('error', (err: Error) => {
+      this.telnetConnected = false;
+      if (this.onErrorCallback) {
+        this.onErrorCallback(err);
+      }
+      reject(err);
     });
   }
 
