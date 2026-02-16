@@ -337,10 +337,6 @@ export class SessionIntegration {
   private handleInput(socket: SocketExtended, msg: InputRequest): void {
     const session = this.sessionManager.findByWebSocket(socket);
     if (!session) {
-      // Legacy mode - forward to existing telnet socket
-      if (socket.ts) {
-        socket.ts.send(msg.text);
-      }
       return;
     }
 
