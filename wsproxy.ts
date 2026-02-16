@@ -160,7 +160,7 @@ export const writeTelnet = (
 };
 
 interface ServerState {
-  sockets: SocketExtended[];
+  sockets: Set<SocketExtended>;
 }
 
 interface ProtocolConstants {
@@ -254,7 +254,7 @@ export interface TelnetSocket extends Socket {
   send: (data: string | Buffer) => void;
 }
 
-let server: ServerState = { sockets: [] };
+let server: ServerState = { sockets: new Set() };
 
 const stringify = function (A: unknown): string {
   const cache = new Set<unknown>();
@@ -293,7 +293,7 @@ const getDiagnosticData = () => {
     };
   });
 
-  const sockets = server.sockets.map((s) => ({
+  const sockets = Array.from(server.sockets).map((s) => ({
     remoteAddress: s.req?.connection?.remoteAddress || 'unknown',
     host: s.host || null,
     port: s.port || null,
@@ -341,7 +341,7 @@ const getDiagnosticData = () => {
       externalFormatted: formatBytes(mem.external),
     },
     connections: {
-      websockets: server.sockets.length,
+      websockets: server.sockets.size,
       ...sessionStats.sessions,
     },
     notifications: sessionStats.notifications,
@@ -754,7 +754,7 @@ const srv: ServerConfig = {
     );
 
     server = {
-      sockets: [],
+      sockets: new Set(),
     };
 
     // Check if TLS is disabled (for testing)
@@ -899,9 +899,9 @@ const srv: ServerConfig = {
         extendedSocket.sendUTF = extendedSocket.send.bind(extendedSocket);
         extendedSocket.terminate = () => extendedSocket.close();
 
-        server.sockets.push(extendedSocket);
+        server.sockets.add(extendedSocket);
         srv.logInfo(
-          'connection count: ' + server.sockets.length,
+          'connection count: ' + server.sockets.size,
           extendedSocket,
           'ws',
         );
@@ -1130,11 +1130,10 @@ const srv: ServerConfig = {
       sessionIntegration.handleSocketClose(s);
 
       // Remove from socket list
-      const i = server.sockets.indexOf(s);
-      if (i !== -1) server.sockets.splice(i, 1);
+      server.sockets.delete(s);
 
       srv.logInfo('peer detached from session', s, 'ws');
-      srv.logInfo('active sockets: ' + server.sockets.length, s, 'ws');
+      srv.logInfo('active sockets: ' + server.sockets.size, s, 'ws');
       return;
     }
 
@@ -1148,8 +1147,7 @@ const srv: ServerConfig = {
       s.terminate();
     }
 
-    const i = server.sockets.indexOf(s);
-    if (i !== -1) server.sockets.splice(i, 1);
+    server.sockets.delete(s);
 
     srv.logInfo('closing socket', s, 'ws');
 
@@ -1159,228 +1157,244 @@ const srv: ServerConfig = {
         s as unknown as { socket: { terminate: () => void } }
       ).socket.terminate();
 
-    srv.logInfo('active sockets: ' + server.sockets.length, s, 'ws');
+    srv.logInfo('active sockets: ' + server.sockets.size, s, 'ws');
   },
 
   sendClient: function (s: SocketExtended, data: Buffer): void {
     const p = srv.prt;
 
-    if (s.mccp && !s.mccp_negotiated && !s.compressed) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.WILL &&
-          data[i + 2] === p.MCCP2
-        ) {
-          setTimeout(function () {
-            srv.logInfo('IAC DO MCCP2', s, 'proto');
-            writeTelnet(s, p.DO_MCCP);
-          }, MCCP_NEGOTIATION_DELAY_MS);
-        } else if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.SB &&
-          data[i + 2] === p.MCCP2
-        ) {
-          if (i) srv.sendClient(s, data.slice(0, i));
+    // Skip all negotiation loops when every protocol is settled
+    const negotiationDone =
+      (!s.mccp || s.mccp_negotiated || s.compressed) &&
+      !s.ttype.length &&
+      s.gmcp_negotiated &&
+      s.msdp_negotiated &&
+      s.mxp_negotiated &&
+      s.new_negotiated &&
+      s.new_handshake &&
+      s.echo_negotiated &&
+      s.sga_negotiated &&
+      s.naws_negotiated &&
+      s.utf8_negotiated;
 
-          data = data.slice(i + 5);
-          s.compressed = 1;
-          srv.logInfo('MCCP compression started', s, 'proto');
+    if (!negotiationDone) {
+      if (s.mccp && !s.mccp_negotiated && !s.compressed) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.WILL &&
+            data[i + 2] === p.MCCP2
+          ) {
+            setTimeout(function () {
+              srv.logInfo('IAC DO MCCP2', s, 'proto');
+              writeTelnet(s, p.DO_MCCP);
+            }, MCCP_NEGOTIATION_DELAY_MS);
+          } else if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.SB &&
+            data[i + 2] === p.MCCP2
+          ) {
+            if (i) srv.sendClient(s, data.slice(0, i));
 
-          if (!data.length) return;
+            data = data.slice(i + 5);
+            s.compressed = 1;
+            srv.logInfo('MCCP compression started', s, 'proto');
+
+            if (!data.length) return;
+          }
         }
       }
-    }
 
-    if (s.ttype.length) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.DO &&
-          data[i + 2] === p.TTYPE
-        ) {
-          srv.logInfo('IAC DO TTYPE <- IAC FIRST TTYPE', s, 'proto');
-          srv.sendTTYPE(s, s.ttype.shift()!);
-        } else if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.SB &&
-          data[i + 2] === p.TTYPE &&
-          data[i + 3] === p.REQUEST
-        ) {
-          srv.logInfo('IAC SB TTYPE <- IAC NEXT TTYPE', s, 'proto');
-          srv.sendTTYPE(s, s.ttype.shift()!);
+      if (s.ttype.length) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.DO &&
+            data[i + 2] === p.TTYPE
+          ) {
+            srv.logInfo('IAC DO TTYPE <- IAC FIRST TTYPE', s, 'proto');
+            srv.sendTTYPE(s, s.ttype.shift()!);
+          } else if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.SB &&
+            data[i + 2] === p.TTYPE &&
+            data[i + 3] === p.REQUEST
+          ) {
+            srv.logInfo('IAC SB TTYPE <- IAC NEXT TTYPE', s, 'proto');
+            srv.sendTTYPE(s, s.ttype.shift()!);
+          }
         }
       }
-    }
 
-    if (!s.gmcp_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          (data[i + 1] === p.DO || data[i + 1] === p.WILL) &&
-          data[i + 2] === p.GMCP
-        ) {
-          srv.logInfo('IAC DO GMCP', s, 'proto');
+      if (!s.gmcp_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            (data[i + 1] === p.DO || data[i + 1] === p.WILL) &&
+            data[i + 2] === p.GMCP
+          ) {
+            srv.logInfo('IAC DO GMCP', s, 'proto');
 
-          if (data[i + 1] === p.DO) writeTelnet(s, p.WILL_GMCP);
-          else writeTelnet(s, p.DO_GMCP);
+            if (data[i + 1] === p.DO) writeTelnet(s, p.WILL_GMCP);
+            else writeTelnet(s, p.DO_GMCP);
 
-          srv.logInfo('IAC DO GMCP <- IAC WILL GMCP', s, 'proto');
+            srv.logInfo('IAC DO GMCP <- IAC WILL GMCP', s, 'proto');
 
-          s.gmcp_negotiated = 1;
+            s.gmcp_negotiated = 1;
 
-          for (let t = 0; t < srv.gmcp.portal.length; t++) {
-            if (t === 0 && s.client) {
-              srv.sendGMCP(s, 'client ' + s.client);
-              continue;
+            for (let t = 0; t < srv.gmcp.portal.length; t++) {
+              if (t === 0 && s.client) {
+                srv.sendGMCP(s, 'client ' + s.client);
+                continue;
+              }
+
+              srv.sendGMCP(s, srv.gmcp.portal[t]);
             }
 
-            srv.sendGMCP(s, srv.gmcp.portal[t]);
+            srv.sendGMCP(s, 'client_ip ' + s.remoteAddress);
+          }
+        }
+      }
+
+      if (!s.msdp_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.WILL &&
+            data[i + 2] === p.MSDP
+          ) {
+            writeTelnet(s, p.DO_MSDP);
+            srv.logInfo('IAC WILL MSDP <- IAC DO MSDP', s, 'proto');
+            srv.sendMSDPPair(s, 'CLIENT_ID', s.client || 'mudportal.com');
+            srv.sendMSDPPair(s, 'CLIENT_VERSION', '1.0');
+            srv.sendMSDPPair(s, 'CLIENT_IP', s.remoteAddress);
+            srv.sendMSDPPair(s, 'XTERM_256_COLORS', '1');
+            srv.sendMSDPPair(s, 'MXP', '1');
+            srv.sendMSDPPair(s, 'UTF_8', '1');
+            s.msdp_negotiated = 1;
+          }
+        }
+      }
+
+      if (!s.mxp_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.DO &&
+            data[i + 2] === p.MXP
+          ) {
+            writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.MXP]));
+            srv.logInfo('IAC DO MXP <- IAC WILL MXP', s, 'proto');
+            s.mxp_negotiated = 1;
+          } else if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.WILL &&
+            data[i + 2] === p.MXP
+          ) {
+            writeTelnet(s, Buffer.from([p.IAC, p.DO, p.MXP]));
+            srv.logInfo('IAC WILL MXP <- IAC DO MXP', s, 'proto');
+            s.mxp_negotiated = 1;
+          }
+        }
+      }
+
+      if (!s.new_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.DO &&
+            data[i + 2] === p.NEW
+          ) {
+            writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.NEW]));
+            srv.logInfo('IAC WILL NEW-ENV', s, 'proto');
+            s.new_negotiated = 1;
+          }
+        }
+      } else if (!s.new_handshake) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.SB &&
+            data[i + 2] === p.NEW &&
+            data[i + 3] === p.REQUEST
+          ) {
+            writeTelnet(s, Buffer.from([p.IAC, p.SB, p.NEW, p.IS, p.IS]));
+            writeTelnet(s, 'IPADDRESS');
+            writeTelnet(s, Buffer.from([p.REQUEST]));
+            writeTelnet(s, s.remoteAddress);
+            writeTelnet(s, Buffer.from([p.IAC, p.SE]));
+            srv.logInfo('IAC NEW-ENV IP VAR SEND', s, 'proto');
+            s.new_handshake = 1;
+          }
+        }
+      }
+
+      if (!s.echo_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.WILL &&
+            data[i + 2] === p.ECHO
+          ) {
+            srv.logInfo('IAC WILL ECHO <- IAC WONT ECHO', s, 'proto');
+            // set a flag to avoid logging the next message (maybe passwords)
+            s.password_mode = true;
+            s.echo_negotiated = 1;
+          }
+        }
+      }
+
+      if (!s.sga_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.WILL &&
+            data[i + 2] === p.SGA
+          ) {
+            writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.SGA]));
+            srv.logInfo('IAC WILL SGA <- IAC WONT SGA', s, 'proto');
+            s.sga_negotiated = 1;
+          }
+        }
+      }
+
+      if (!s.naws_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.WILL &&
+            data[i + 2] === p.NAWS
+          ) {
+            writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.NAWS]));
+            srv.logInfo('IAC WILL NAWS <- IAC WONT NAWS', s, 'proto');
+            s.naws_negotiated = 1;
+          }
+        }
+      }
+
+      if (!s.utf8_negotiated) {
+        for (let i = 0; i < data.length; i++) {
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.DO &&
+            data[i + 2] === p.CHARSET
+          ) {
+            writeTelnet(s, p.WILL_CHARSET);
+            srv.logInfo('IAC DO CHARSET <- IAC WILL CHARSET', s, 'proto');
           }
 
-          srv.sendGMCP(s, 'client_ip ' + s.remoteAddress);
+          if (
+            data[i] === p.IAC &&
+            data[i + 1] === p.SB &&
+            data[i + 2] === p.CHARSET
+          ) {
+            writeTelnet(s, p.ACCEPT_UTF8);
+            srv.logInfo('UTF-8 negotiated', s, 'proto');
+            s.utf8_negotiated = 1;
+          }
         }
       }
-    }
-
-    if (!s.msdp_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.WILL &&
-          data[i + 2] === p.MSDP
-        ) {
-          writeTelnet(s, p.DO_MSDP);
-          srv.logInfo('IAC WILL MSDP <- IAC DO MSDP', s, 'proto');
-          srv.sendMSDPPair(s, 'CLIENT_ID', s.client || 'mudportal.com');
-          srv.sendMSDPPair(s, 'CLIENT_VERSION', '1.0');
-          srv.sendMSDPPair(s, 'CLIENT_IP', s.remoteAddress);
-          srv.sendMSDPPair(s, 'XTERM_256_COLORS', '1');
-          srv.sendMSDPPair(s, 'MXP', '1');
-          srv.sendMSDPPair(s, 'UTF_8', '1');
-          s.msdp_negotiated = 1;
-        }
-      }
-    }
-
-    if (!s.mxp_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.DO &&
-          data[i + 2] === p.MXP
-        ) {
-          writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.MXP]));
-          srv.logInfo('IAC DO MXP <- IAC WILL MXP', s, 'proto');
-          s.mxp_negotiated = 1;
-        } else if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.WILL &&
-          data[i + 2] === p.MXP
-        ) {
-          writeTelnet(s, Buffer.from([p.IAC, p.DO, p.MXP]));
-          srv.logInfo('IAC WILL MXP <- IAC DO MXP', s, 'proto');
-          s.mxp_negotiated = 1;
-        }
-      }
-    }
-
-    if (!s.new_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.DO &&
-          data[i + 2] === p.NEW
-        ) {
-          writeTelnet(s, Buffer.from([p.IAC, p.WILL, p.NEW]));
-          srv.logInfo('IAC WILL NEW-ENV', s, 'proto');
-          s.new_negotiated = 1;
-        }
-      }
-    } else if (!s.new_handshake) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.SB &&
-          data[i + 2] === p.NEW &&
-          data[i + 3] === p.REQUEST
-        ) {
-          writeTelnet(s, Buffer.from([p.IAC, p.SB, p.NEW, p.IS, p.IS]));
-          writeTelnet(s, 'IPADDRESS');
-          writeTelnet(s, Buffer.from([p.REQUEST]));
-          writeTelnet(s, s.remoteAddress);
-          writeTelnet(s, Buffer.from([p.IAC, p.SE]));
-          srv.logInfo('IAC NEW-ENV IP VAR SEND', s, 'proto');
-          s.new_handshake = 1;
-        }
-      }
-    }
-
-    if (!s.echo_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.WILL &&
-          data[i + 2] === p.ECHO
-        ) {
-          srv.logInfo('IAC WILL ECHO <- IAC WONT ECHO', s, 'proto');
-          // set a flag to avoid logging the next message (maybe passwords)
-          s.password_mode = true;
-          s.echo_negotiated = 1;
-        }
-      }
-    }
-
-    if (!s.sga_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.WILL &&
-          data[i + 2] === p.SGA
-        ) {
-          writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.SGA]));
-          srv.logInfo('IAC WILL SGA <- IAC WONT SGA', s, 'proto');
-          s.sga_negotiated = 1;
-        }
-      }
-    }
-
-    if (!s.naws_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.WILL &&
-          data[i + 2] === p.NAWS
-        ) {
-          writeTelnet(s, Buffer.from([p.IAC, p.WONT, p.NAWS]));
-          srv.logInfo('IAC WILL NAWS <- IAC WONT NAWS', s, 'proto');
-          s.naws_negotiated = 1;
-        }
-      }
-    }
-
-    if (!s.utf8_negotiated) {
-      for (let i = 0; i < data.length; i++) {
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.DO &&
-          data[i + 2] === p.CHARSET
-        ) {
-          writeTelnet(s, p.WILL_CHARSET);
-          srv.logInfo('IAC DO CHARSET <- IAC WILL CHARSET', s, 'proto');
-        }
-
-        if (
-          data[i] === p.IAC &&
-          data[i + 1] === p.SB &&
-          data[i + 2] === p.CHARSET
-        ) {
-          writeTelnet(s, p.ACCEPT_UTF8);
-          srv.logInfo('UTF-8 negotiated', s, 'proto');
-          s.utf8_negotiated = 1;
-        }
-      }
-    }
+    } // end if (!negotiationDone)
 
     if (srv.debug) {
       const raw: string[] = [];
@@ -1556,18 +1570,13 @@ const srv: ServerConfig = {
     // Shut down session integration (clears intervals, sessions)
     sessionIntegration.shutdown();
 
-    const ss = server.sockets;
-
-    for (let i = 0; i < ss.length; i++) {
+    for (const sock of server.sockets) {
       /* inform clients so they can hop to another instance faster */
-      if (
-        ss[i] &&
-        (ss[i] as unknown as { write: (msg: string) => void }).write
-      )
-        (ss[i] as unknown as { write: (msg: string) => void }).write(
+      if (sock && (sock as unknown as { write: (msg: string) => void }).write)
+        (sock as unknown as { write: (msg: string) => void }).write(
           'Proxy server is going down...',
         );
-      setTimeout(srv.closeSocket, 10, ss[i]);
+      setTimeout(srv.closeSocket, 10, sock);
     }
 
     setTimeout(
@@ -1585,7 +1594,7 @@ const srv: ServerConfig = {
       return;
     }
 
-    server.sockets.push(s);
+    server.sockets.add(s);
 
     s.on('data', function (d: Buffer) {
       srv.forward(s, d);

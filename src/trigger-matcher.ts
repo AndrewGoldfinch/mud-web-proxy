@@ -220,6 +220,13 @@ export class TriggerMatcher {
   }
 
   /**
+   * Remove all state for a session (call on session removal)
+   */
+  clearSession(sessionId: string): void {
+    this.rateLimits.delete(sessionId);
+  }
+
+  /**
    * Get rate limit stats for a session
    */
   getRateLimitStats(sessionId: string): {
@@ -245,7 +252,7 @@ export class TriggerMatcher {
   /**
    * Clean up old rate limit entries
    */
-  cleanupOldEntries(maxAgeHours: number = 48): number {
+  cleanupOldEntries(maxAgeHours: number = 4): number {
     const now = Date.now();
     const maxAgeMs = maxAgeHours * 60 * 60 * 1000;
     const toDelete: string[] = [];

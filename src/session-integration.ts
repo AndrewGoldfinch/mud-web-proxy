@@ -100,6 +100,14 @@ export class SessionIntegration {
   }
 
   /**
+   * Remove a session and clean up its rate limit state
+   */
+  private removeSessionAndCleanup(sessionId: string): void {
+    this.notificationManager.cleanupSession(sessionId);
+    this.removeSessionAndCleanup(sessionId);
+  }
+
+  /**
    * Parse new-style client messages (connect, resume, input, naws, disconnect)
    * Returns true if message was handled, false otherwise
    */
@@ -242,7 +250,7 @@ export class SessionIntegration {
 
       session.onClose(() => {
         this.sendError(socket, 'connection_failed', 'MUD connection closed');
-        this.sessionManager.removeSession(session.id);
+        this.removeSessionAndCleanup(session.id);
       });
 
       await session.connect();
@@ -250,12 +258,12 @@ export class SessionIntegration {
       // Set up error handler
       session.onError((err: Error) => {
         this.sendError(socket, 'connection_failed', err.message);
-        this.sessionManager.removeSession(session.id);
+        this.removeSessionAndCleanup(session.id);
       });
     } catch (err) {
       this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
       this.sendError(socket, 'connection_failed', (err as Error).message);
-      this.sessionManager.removeSession(session.id);
+      this.removeSessionAndCleanup(session.id);
     }
   }
 
@@ -295,7 +303,7 @@ export class SessionIntegration {
     // Check if session timed out
     if (session.isTimedOut(this.config.sessions.timeoutHours)) {
       this.log('resume rejected: session expired', ip, msg.sessionId);
-      this.sessionManager.removeSession(msg.sessionId);
+      this.removeSessionAndCleanup(msg.sessionId);
       this.sendError(socket, 'session_expired', 'Session has expired');
       return;
     }
@@ -390,7 +398,7 @@ export class SessionIntegration {
 
     // Close the telnet connection and clean up session
     session.close();
-    this.sessionManager.removeSession(sessionId);
+    this.removeSessionAndCleanup(sessionId);
 
     // Decrement IP count
     if (ip && ip !== 'unknown') {

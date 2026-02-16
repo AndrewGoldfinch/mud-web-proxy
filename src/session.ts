@@ -33,6 +33,7 @@ export class Session {
 
   telnet: TelnetSocket | null = null;
   telnetConnected = false;
+  private closing = false;
 
   clients: Set<SocketExtended> = new Set();
   clientConnected = false;
@@ -69,6 +70,8 @@ export class Session {
    * Returns a promise that resolves when connected or rejects on error
    */
   async connect(): Promise<void> {
+    this.closing = false;
+
     return new Promise((resolve, reject) => {
       let settled = false;
       let triedPlain = false;
@@ -86,9 +89,32 @@ export class Session {
         );
       };
 
+      const abortIfClosing = (socket: TelnetSocket): boolean => {
+        if (!this.closing) return false;
+        socket.removeAllListeners();
+        socket.destroy();
+        if (this.telnet === socket) {
+          this.telnet = null;
+        }
+        if (!settled) {
+          settled = true;
+          reject(new Error('Session closed during connect'));
+        }
+        return true;
+      };
+
       const tryPlain = () => {
         if (triedPlain) return;
         triedPlain = true;
+
+        if (this.closing) {
+          if (!settled) {
+            settled = true;
+            reject(new Error('Session closed during connect'));
+          }
+          return;
+        }
+
         // eslint-disable-next-line no-console
         console.log(
           `[session] TLS failed, falling back to plain TCP for ${this.mudHost}:${this.mudPort}`,
@@ -102,15 +128,17 @@ export class Session {
         }
 
         try {
-          this.telnet = net.createConnection(
+          const plainSocket = net.createConnection(
             this.mudPort,
             this.mudHost,
             () => {
+              if (abortIfClosing(plainSocket)) return;
               this.telnetConnected = true;
               settled = true;
               resolve();
             },
           ) as TelnetSocket;
+          this.telnet = plainSocket;
 
           this.setupTelnetHandlers((err: Error) => {
             if (!settled) reject(err);
@@ -121,16 +149,13 @@ export class Session {
       };
 
       try {
-        this.telnet = tls.connect(
-          this.mudPort,
-          this.mudHost,
-          {},
-          () => {
-            this.telnetConnected = true;
-            settled = true;
-            resolve();
-          },
-        ) as unknown as TelnetSocket;
+        const tlsSocket = tls.connect(this.mudPort, this.mudHost, {}, () => {
+          if (abortIfClosing(tlsSocket)) return;
+          this.telnetConnected = true;
+          settled = true;
+          resolve();
+        }) as unknown as TelnetSocket;
+        this.telnet = tlsSocket;
 
         this.setupTelnetHandlers((err: Error) => {
           if (settled) return;
@@ -146,9 +171,7 @@ export class Session {
     });
   }
 
-  private setupTelnetHandlers(
-    onConnectError: (err: Error) => void,
-  ): void {
+  private setupTelnetHandlers(onConnectError: (err: Error) => void): void {
     if (!this.telnet) return;
 
     this.telnet.send = (data: string | Buffer) => {
@@ -245,6 +268,7 @@ export class Session {
   broadcastToClients(data: string): void {
     const clientCount = this.clients.size;
     let sentCount = 0;
+    const failedClients: SocketExtended[] = [];
     for (const client of this.clients) {
       try {
         if (client.readyState === WebSocket.OPEN) {
@@ -257,9 +281,12 @@ export class Session {
           );
         }
       } catch (_err) {
-        // Client disconnected, remove it
-        this.clients.delete(client);
+        // Client disconnected, remove after iteration
+        failedClients.push(client);
       }
+    }
+    for (const client of failedClients) {
+      this.clients.delete(client);
     }
     if (clientCount > 0 && sentCount === 0) {
       // eslint-disable-next-line no-console
@@ -378,6 +405,8 @@ export class Session {
    * Gracefully close the session
    */
   close(): void {
+    this.closing = true;
+
     // Close all WebSocket clients
     for (const client of this.clients) {
       try {

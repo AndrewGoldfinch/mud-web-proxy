@@ -18,6 +18,7 @@ export class CircularBuffer {
   private readonly maxSize: number;
   private readonly capacity: number;
   private sequenceCounter = 0;
+  private sequenceIndex: Map<number, number> = new Map();
 
   constructor(maxSizeBytes: number, initialCapacity = 1024) {
     this.maxSize = maxSizeBytes;
@@ -49,6 +50,7 @@ export class CircularBuffer {
       const oldest = this.chunks[this.head];
       if (oldest) {
         this.currentSize -= oldest.data.length + CHUNK_OVERHEAD_ESTIMATE;
+        this.sequenceIndex.delete(oldest.sequence);
         this.chunks[this.head] = null;
       }
       this.head = (this.head + 1) % this.capacity;
@@ -60,12 +62,14 @@ export class CircularBuffer {
       const oldest = this.chunks[this.head];
       if (oldest) {
         this.currentSize -= oldest.data.length + CHUNK_OVERHEAD_ESTIMATE;
+        this.sequenceIndex.delete(oldest.sequence);
       }
       this.head = (this.head + 1) % this.capacity;
       this.count--;
     }
 
     this.chunks[this.tail] = chunk;
+    this.sequenceIndex.set(chunk.sequence, this.tail);
     this.tail = (this.tail + 1) % this.capacity;
     this.count++;
     this.currentSize += chunkSize;
@@ -74,15 +78,43 @@ export class CircularBuffer {
   }
 
   /**
-   * Get all chunks from a specific sequence number onward
-   * Returns empty array if sequence not found (may have been evicted)
+   * Get all chunks from a specific sequence number onward.
+   * Uses sequenceIndex for O(1) lookup of the starting position.
+   * Falls back to returning all chunks from head if the sequence was evicted.
    */
   replayFrom(sequence: number): BufferChunk[] {
+    if (this.count === 0) {
+      return [];
+    }
+
+    // Find the starting offset within the ring buffer
+    let startOffset = 0;
+    const arrayIdx = this.sequenceIndex.get(sequence);
+    if (arrayIdx !== undefined) {
+      // O(1) lookup: convert array index to offset from head
+      startOffset = (arrayIdx - this.head + this.capacity) % this.capacity;
+    } else {
+      // Sequence was evicted or doesn't exist — find first chunk >= sequence
+      let found = false;
+      for (let i = 0; i < this.count; i++) {
+        const idx = (this.head + i) % this.capacity;
+        const chunk = this.chunks[idx];
+        if (chunk && chunk.sequence >= sequence) {
+          startOffset = i;
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        return [];
+      }
+    }
+
     const result: BufferChunk[] = [];
-    for (let i = 0; i < this.count; i++) {
+    for (let i = startOffset; i < this.count; i++) {
       const idx = (this.head + i) % this.capacity;
       const chunk = this.chunks[idx];
-      if (chunk && chunk.sequence >= sequence) {
+      if (chunk) {
         result.push(chunk);
       }
     }
@@ -148,6 +180,7 @@ export class CircularBuffer {
     this.tail = 0;
     this.count = 0;
     this.currentSize = 0;
+    this.sequenceIndex.clear();
   }
 
   /**
