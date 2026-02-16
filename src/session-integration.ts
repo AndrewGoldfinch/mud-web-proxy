@@ -409,17 +409,19 @@ export class SessionIntegration {
   }
 
   /**
-   * Process MUD data - buffer and forward to clients
+   * Process MUD data - strip telnet, buffer, and forward to clients
    */
   private processMudData(
     session: Session,
     _socket: SocketExtended,
     data: Buffer,
   ): void {
+    // Run through telnet parser to strip IAC sequences and extract GMCP
+    const result = session.telnetParser.process(data);
+
     // Check for notifications when no clients connected
-    if (!session.hasClients()) {
-      // Convert buffer to string for pattern matching
-      const text = data.toString('utf8');
+    if (!session.hasClients() && result.text.length > 0) {
+      const text = result.text.toString('utf8');
       const match = this.notificationManager.processOutput(text, session.id);
 
       if (match && session.deviceToken) {
@@ -435,24 +437,47 @@ export class SessionIntegration {
       }
     }
 
-    // Buffer and forward to clients
-    // This will be called from wsproxy.ts and handle protocol negotiation
-    // Then we buffer and forward
+    // Buffer and forward GMCP messages
+    for (const gmcp of result.gmcpMessages) {
+      let gmcpData: object;
+      try {
+        gmcpData = gmcp.data ? JSON.parse(gmcp.data) : {};
+      } catch {
+        gmcpData = { raw: gmcp.data };
+      }
 
-    // Buffer the raw data
-    const processed: ProcessedData = {
-      data,
-      type: 'data',
-    };
-    const chunk = session.bufferOutput(processed);
+      const processed: ProcessedData = {
+        data: Buffer.from(gmcp.data || '', 'utf8'),
+        type: 'gmcp',
+        gmcpPackage: gmcp.package,
+        gmcpData,
+      };
+      const chunk = session.bufferOutput(processed);
 
-    // Forward to all attached clients
-    const response = {
-      type: 'data',
-      seq: chunk.sequence,
-      payload: data.toString('base64'),
-    };
-    session.broadcastToClients(JSON.stringify(response));
+      const response = {
+        type: 'gmcp',
+        seq: chunk.sequence,
+        package: gmcp.package,
+        data: gmcpData,
+      };
+      session.broadcastToClients(JSON.stringify(response));
+    }
+
+    // Buffer and forward clean text (skip if empty — pure negotiation chunk)
+    if (result.text.length > 0) {
+      const processed: ProcessedData = {
+        data: result.text,
+        type: 'data',
+      };
+      const chunk = session.bufferOutput(processed);
+
+      const response = {
+        type: 'data',
+        seq: chunk.sequence,
+        payload: result.text.toString('base64'),
+      };
+      session.broadcastToClients(JSON.stringify(response));
+    }
   }
 
   /**

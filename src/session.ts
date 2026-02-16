@@ -21,6 +21,7 @@ import type {
   Trigger,
 } from './types';
 import { CircularBuffer } from './circular-buffer';
+import { TelnetParser } from './telnet-parser';
 
 export class Session {
   id: string;
@@ -46,6 +47,8 @@ export class Session {
   windowWidth = 80;
   windowHeight = 24;
 
+  telnetParser: TelnetParser;
+
   private onDataCallback: ((data: Buffer) => void) | null = null;
   private onCloseCallback: (() => void) | null = null;
   private onErrorCallback: ((err: Error) => void) | null = null;
@@ -62,6 +65,7 @@ export class Session {
     this.mudHost = host;
     this.mudPort = port;
     this.buffer = new CircularBuffer(bufferSizeBytes);
+    this.telnetParser = new TelnetParser(this);
   }
 
   /**
