@@ -104,7 +104,7 @@ export class SessionIntegration {
    */
   private removeSessionAndCleanup(sessionId: string): void {
     this.notificationManager.cleanupSession(sessionId);
-    this.removeSessionAndCleanup(sessionId);
+    this.sessionManager.removeSession(sessionId);
   }
 
   /**
