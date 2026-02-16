@@ -240,11 +240,6 @@ export class SessionIntegration {
       // Set up data and close handlers BEFORE connecting so no initial
       // MUD output (welcome banners, login prompts) is lost.
       session.onData((data: Buffer) => {
-        this.log(
-          `MUD data received: ${data.length} bytes, clients=${session.getClientCount()}, wsReady=${socket.readyState}`,
-          ip,
-          session.id,
-        );
         this.processMudData(session, socket, data);
       });
 

@@ -44,9 +44,9 @@ const MSDP_VAL = 2;
 enum State {
   TEXT,
   IAC,
-  NEGOTIATION,       // After WILL/WONT/DO/DONT, waiting for option byte
-  SUBNEG,            // Collecting subnegotiation data until IAC SE
-  SUBNEG_IAC,        // Saw IAC inside subneg, waiting for SE or escaped IAC
+  NEGOTIATION, // After WILL/WONT/DO/DONT, waiting for option byte
+  SUBNEG, // Collecting subnegotiation data until IAC SE
+  SUBNEG_IAC, // Saw IAC inside subneg, waiting for SE or escaped IAC
 }
 
 export interface GmcpMessage {
@@ -61,8 +61,8 @@ export interface TelnetParseResult {
 
 export class TelnetParser {
   private state = State.TEXT;
-  private negotiationCmd = 0;  // WILL/WONT/DO/DONT that started current negotiation
-  private subnegOption = 0;    // Option code for current subnegotiation
+  private negotiationCmd = 0; // WILL/WONT/DO/DONT that started current negotiation
+  private subnegOption = 0; // Option code for current subnegotiation
   private subnegBuffer: number[] = [];
 
   // Negotiation state tracking
@@ -158,7 +158,11 @@ export class TelnetParser {
         case State.SUBNEG_IAC:
           if (byte === SE) {
             // End of subnegotiation
-            this.handleSubnegotiation(this.subnegOption, this.subnegBuffer, gmcpMessages);
+            this.handleSubnegotiation(
+              this.subnegOption,
+              this.subnegBuffer,
+              gmcpMessages,
+            );
             this.state = State.TEXT;
           } else if (byte === IAC) {
             // Escaped IAC inside subneg
@@ -222,18 +226,18 @@ export class TelnetParser {
           this.sendMSDPPair('CLIENT_ID', 'MUDBasher');
           this.sendMSDPPair('CLIENT_VERSION', '1.0');
           this.sendMSDPPair('XTERM_256_COLORS', '1');
-          this.sendMSDPPair('MXP', '1');
           this.sendMSDPPair('UTF_8', '1');
         }
         break;
 
       case MXP:
+        // Refuse MXP — client doesn't render it and markup leaks into text
         if (!this.mxpNegotiated) {
           this.mxpNegotiated = true;
           if (cmd === DO) {
-            this.writeToMud(Buffer.from([IAC, WILL, MXP]));
+            this.writeToMud(Buffer.from([IAC, WONT, MXP]));
           } else if (cmd === WILL) {
-            this.writeToMud(Buffer.from([IAC, DO, MXP]));
+            this.writeToMud(Buffer.from([IAC, DONT, MXP]));
           }
         }
         break;
@@ -341,7 +345,9 @@ export class TelnetParser {
           const valSep = Buffer.from([REQUEST]);
           const ipAddr = Buffer.from('0.0.0.0', 'ascii');
           const end = Buffer.from([IAC, SE]);
-          this.writeToMud(Buffer.concat([ipBuf, varName, valSep, ipAddr, end]));
+          this.writeToMud(
+            Buffer.concat([ipBuf, varName, valSep, ipAddr, end]),
+          );
         }
         break;
 
@@ -372,9 +378,8 @@ export class TelnetParser {
    * Send the next terminal type in the queue
    */
   private sendNextTtype(): void {
-    const ttype = this.ttypeQueue.length > 0
-      ? this.ttypeQueue.shift()!
-      : 'MUDBasher';
+    const ttype =
+      this.ttypeQueue.length > 0 ? this.ttypeQueue.shift()! : 'MUDBasher';
 
     // IAC SB TTYPE IS <name> IAC SE
     const nameBytes = Buffer.from(ttype, 'ascii');
