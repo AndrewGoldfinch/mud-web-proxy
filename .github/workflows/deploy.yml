@@ -2,7 +2,7 @@ name: Deploy mud-web-proxy
 
 on:
   push:
-    branches: [main]
+    branches: [develop]
 
 jobs:
   deploy:
@@ -17,7 +17,7 @@ jobs:
           script: |
             export PATH="$HOME/.bun/bin:$HOME/.npm-global/bin:$PATH"
             cd /opt/mud-proxy
-            git pull origin main
+            git pull origin develop
             bun install --production
             bun run build
             pm2 restart mud-web-proxy
