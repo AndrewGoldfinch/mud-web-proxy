@@ -224,6 +224,28 @@ export class Session {
   updateWindowSize(width: number, height: number): void {
     this.windowWidth = width;
     this.windowHeight = height;
+    this.sendNAWS();
+  }
+
+  /**
+   * Send NAWS telnet sequence to MUD
+   */
+  sendNAWS(): void {
+    if (!this.telnet || !this.telnetConnected) {
+      return;
+    }
+    const buf = Buffer.from([
+      255, // IAC
+      250, // SB
+      31, // NAWS
+      (this.windowWidth >> 8) & 0xff,
+      this.windowWidth & 0xff,
+      (this.windowHeight >> 8) & 0xff,
+      this.windowHeight & 0xff,
+      255, // IAC
+      240, // SE
+    ]);
+    this.telnet.write(buf);
   }
 
   /**

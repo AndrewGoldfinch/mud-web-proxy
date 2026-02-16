@@ -351,28 +351,6 @@ export class SessionIntegration {
     if (session) {
       session.updateWindowSize(msg.width, msg.height);
     }
-
-    // Also send NAWS to MUD if connected
-    if (socket.ts) {
-      const p = {
-        IAC: 255,
-        SB: 250,
-        NAWS: 31,
-        SE: 240,
-      };
-      const buf = Buffer.from([
-        p.IAC,
-        p.SB,
-        p.NAWS,
-        (msg.width >> 8) & 0xff,
-        msg.width & 0xff,
-        (msg.height >> 8) & 0xff,
-        msg.height & 0xff,
-        p.IAC,
-        p.SE,
-      ]);
-      socket.ts.write(buf);
-    }
   }
 
   /**
