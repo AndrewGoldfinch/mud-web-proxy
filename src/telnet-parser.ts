@@ -75,6 +75,7 @@ export class TelnetParser {
   private sgaNegotiated = false;
   private nawsNegotiated = false;
   private charsetNegotiated = false;
+  private negotiationLoggedOnce = false;
 
   passwordMode = false;
 
@@ -82,9 +83,11 @@ export class TelnetParser {
   private ttypeQueue: string[] = [];
 
   private readonly session: Session;
+  private readonly sessionIdShort: string;
 
   constructor(session: Session) {
     this.session = session;
+    this.sessionIdShort = session.id.substring(0, 8);
     // Set up terminal type queue like the old wsproxy
     this.ttypeQueue = ['MUDBasher', 'XTERM-256color', 'MTTS 141'];
   }
@@ -169,6 +172,15 @@ export class TelnetParser {
       }
     }
 
+    // Log a one-time summary once negotiation options have been seen
+    if (!this.negotiationLoggedOnce && this.hasAnyNegotiation()) {
+      this.negotiationLoggedOnce = true;
+      // eslint-disable-next-line no-console
+      console.log(
+        `[telnet] [sid:${this.sessionIdShort}] negotiated: ${this.negotiationSummary()}`,
+      );
+    }
+
     return {
       text: Buffer.from(textBytes),
       gmcpMessages,
@@ -179,10 +191,6 @@ export class TelnetParser {
    * Handle 3-byte negotiation: IAC WILL/WONT/DO/DONT <option>
    */
   private handleNegotiation(cmd: number, option: number): void {
-    const cmdName = cmd === WILL ? 'WILL' : cmd === WONT ? 'WONT' : cmd === DO ? 'DO' : 'DONT';
-    // eslint-disable-next-line no-console
-    console.log(`[telnet] ${cmdName} ${this.optionName(option)}`);
-
     switch (option) {
       case GMCP:
         if (!this.gmcpNegotiated) {
@@ -241,8 +249,6 @@ export class TelnetParser {
         if (cmd === WILL && !this.echoNegotiated) {
           this.echoNegotiated = true;
           this.passwordMode = true;
-          // eslint-disable-next-line no-console
-          console.log('[telnet] Password mode enabled');
         } else if (cmd === WONT) {
           this.passwordMode = false;
         }
@@ -323,8 +329,6 @@ export class TelnetParser {
           response[response.length - 2] = IAC;
           response[response.length - 1] = SE;
           this.writeToMud(response);
-          // eslint-disable-next-line no-console
-          console.log('[telnet] CHARSET accepted UTF-8');
         }
         break;
 
@@ -338,8 +342,6 @@ export class TelnetParser {
           const ipAddr = Buffer.from('0.0.0.0', 'ascii');
           const end = Buffer.from([IAC, SE]);
           this.writeToMud(Buffer.concat([ipBuf, varName, valSep, ipAddr, end]));
-          // eslint-disable-next-line no-console
-          console.log('[telnet] NEW-ENV sent IPADDRESS');
         }
         break;
 
@@ -364,8 +366,6 @@ export class TelnetParser {
         data: raw.substring(spaceIdx + 1),
       });
     }
-    // eslint-disable-next-line no-console
-    console.log(`[telnet] GMCP: ${gmcpMessages[gmcpMessages.length - 1].package}`);
   }
 
   /**
@@ -384,8 +384,6 @@ export class TelnetParser {
     // Also send WILL TTYPE first
     this.writeToMud(Buffer.from([IAC, WILL, TTYPE]));
     this.writeToMud(Buffer.concat([header, nameBytes, footer]));
-    // eslint-disable-next-line no-console
-    console.log(`[telnet] TTYPE sent: ${ttype}`);
   }
 
   /**
@@ -396,8 +394,6 @@ export class TelnetParser {
     const body = Buffer.from(msg, 'utf8');
     const end = Buffer.from([IAC, SE]);
     this.writeToMud(Buffer.concat([start, body, end]));
-    // eslint-disable-next-line no-console
-    console.log(`[telnet] GMCP sent: ${msg}`);
   }
 
   /**
@@ -419,22 +415,28 @@ export class TelnetParser {
     this.session.sendToMud(data);
   }
 
-  /**
-   * Human-readable option name for logging
-   */
-  private optionName(option: number): string {
-    const names: Record<number, string> = {
-      [ECHO]: 'ECHO',
-      [SGA]: 'SGA',
-      [TTYPE]: 'TTYPE',
-      [NAWS]: 'NAWS',
-      [NEW_ENV]: 'NEW-ENV',
-      [CHARSET]: 'CHARSET',
-      [MSDP]: 'MSDP',
-      [MCCP2]: 'MCCP2',
-      [MXP]: 'MXP',
-      [GMCP]: 'GMCP',
-    };
-    return names[option] || `OPT(${option})`;
+  private hasAnyNegotiation(): boolean {
+    return (
+      this.gmcpNegotiated ||
+      this.ttypeNegotiated ||
+      this.echoNegotiated ||
+      this.sgaNegotiated ||
+      this.nawsNegotiated ||
+      this.charsetNegotiated
+    );
+  }
+
+  private negotiationSummary(): string {
+    const opts: string[] = [];
+    if (this.gmcpNegotiated) opts.push('GMCP');
+    if (this.ttypeNegotiated) opts.push('TTYPE');
+    if (this.msdpNegotiated) opts.push('MSDP');
+    if (this.mxpNegotiated) opts.push('MXP');
+    if (this.newEnvNegotiated) opts.push('NEW-ENV');
+    if (this.echoNegotiated) opts.push('ECHO');
+    if (this.sgaNegotiated) opts.push('SGA');
+    if (this.nawsNegotiated) opts.push('NAWS');
+    if (this.charsetNegotiated) opts.push('CHARSET');
+    return opts.join(', ');
   }
 }
