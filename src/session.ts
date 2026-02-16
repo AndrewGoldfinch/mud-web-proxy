@@ -153,7 +153,15 @@ export class Session {
       if (this.onErrorCallback) {
         this.onErrorCallback(err);
       }
-      if (!isFallback) {
+      const errMsg = err.message.toLowerCase();
+      const isSSLError =
+        errMsg.includes('tls') ||
+        errMsg.includes('ssl') ||
+        errMsg.includes('certificate') ||
+        errMsg.includes('packet length');
+      if (isFallback) {
+        reject(err);
+      } else if (!isSSLError) {
         reject(err);
       }
     });
