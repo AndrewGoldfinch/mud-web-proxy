@@ -71,59 +71,83 @@ export class Session {
   async connect(): Promise<void> {
     return new Promise((resolve, reject) => {
       let settled = false;
+      let triedPlain = false;
 
-      const tryTLS = () => {
-        try {
-          this.telnet = tls.connect(this.mudPort, this.mudHost, {}, () => {
-            this.telnetConnected = true;
-            settled = true;
-            resolve();
-          }) as unknown as TelnetSocket;
-
-          this.setupTelnetHandlers(reject);
-        } catch (err) {
-          reject(err);
-        }
+      const isSSLError = (err: Error): boolean => {
+        const msg = err.message.toLowerCase();
+        return (
+          msg.includes('tls') ||
+          msg.includes('ssl') ||
+          msg.includes('certificate') ||
+          msg.includes('packet length') ||
+          msg.includes('wrong version number') ||
+          msg.includes('econnreset') ||
+          msg.includes('econnrefused')
+        );
       };
 
       const tryPlain = () => {
+        if (triedPlain) return;
+        triedPlain = true;
         // eslint-disable-next-line no-console
         console.log(
           `[session] TLS failed, falling back to plain TCP for ${this.mudHost}:${this.mudPort}`,
         );
+
+        // Destroy the old TLS socket to prevent stale handlers
+        if (this.telnet) {
+          this.telnet.removeAllListeners();
+          this.telnet.destroy();
+          this.telnet = null;
+        }
+
         try {
           this.telnet = net.createConnection(
             this.mudPort,
             this.mudHost,
+            () => {
+              this.telnetConnected = true;
+              settled = true;
+              resolve();
+            },
           ) as TelnetSocket;
 
-          this.setupTelnetHandlers(reject, true);
+          this.setupTelnetHandlers((err: Error) => {
+            if (!settled) reject(err);
+          });
         } catch (err) {
-          reject(err);
+          if (!settled) reject(err as Error);
         }
       };
 
-      tryTLS();
+      try {
+        this.telnet = tls.connect(
+          this.mudPort,
+          this.mudHost,
+          {},
+          () => {
+            this.telnetConnected = true;
+            settled = true;
+            resolve();
+          },
+        ) as unknown as TelnetSocket;
 
-      this.telnet?.on('error', (err: Error) => {
-        const errMsg = err.message.toLowerCase();
-        if (
-          !settled &&
-          (err.message.includes('ECONNREFUSED') ||
-            errMsg.includes('tls') ||
-            errMsg.includes('ssl') ||
-            errMsg.includes('certificate') ||
-            err.message.includes('ECONNRESET'))
-        ) {
-          tryPlain();
-        }
-      });
+        this.setupTelnetHandlers((err: Error) => {
+          if (settled) return;
+          if (isSSLError(err)) {
+            tryPlain();
+          } else {
+            reject(err);
+          }
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
   private setupTelnetHandlers(
-    reject: (err: Error) => void,
-    isFallback = false,
+    onConnectError: (err: Error) => void,
   ): void {
     if (!this.telnet) return;
 
@@ -153,17 +177,7 @@ export class Session {
       if (this.onErrorCallback) {
         this.onErrorCallback(err);
       }
-      const errMsg = err.message.toLowerCase();
-      const isSSLError =
-        errMsg.includes('tls') ||
-        errMsg.includes('ssl') ||
-        errMsg.includes('certificate') ||
-        errMsg.includes('packet length');
-      if (isFallback) {
-        reject(err);
-      } else if (!isSSLError) {
-        reject(err);
-      }
+      onConnectError(err);
     });
   }
 
