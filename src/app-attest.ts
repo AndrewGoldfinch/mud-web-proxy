@@ -26,3 +26,37 @@ export function validateAndConsumeNonce(nonce: string): boolean {
 export function _resetNoncesForTesting(): void {
   challenges.clear();
 }
+
+// ---------- authData parsing ----------
+
+export interface AttestationAuthData {
+  rpIdHash: Buffer;
+  flags: number;
+  signCount: number;
+  aaguid: Buffer;
+  credId: Buffer;
+}
+
+export interface AssertionAuthData {
+  rpIdHash: Buffer;
+  flags: number;
+  signCount: number;
+}
+
+export function parseAttestationAuthData(authData: Buffer): AttestationAuthData {
+  const rpIdHash = Buffer.from(authData.subarray(0, 32));
+  const flags = authData[32];
+  const signCount = authData.readUInt32BE(33);
+  const aaguid = Buffer.from(authData.subarray(37, 53));
+  const credIdLen = authData.readUInt16BE(53);
+  const credId = Buffer.from(authData.subarray(55, 55 + credIdLen));
+  return { rpIdHash, flags, signCount, aaguid, credId };
+}
+
+export function parseAssertionAuthData(authData: Buffer): AssertionAuthData {
+  return {
+    rpIdHash: Buffer.from(authData.subarray(0, 32)),
+    flags: authData[32],
+    signCount: authData.readUInt32BE(33),
+  };
+}
