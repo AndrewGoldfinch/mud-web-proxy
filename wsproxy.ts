@@ -779,10 +779,31 @@ const srv: ServerConfig = {
     ) {
       const cert = fs.readFileSync(path.resolve(__dirname, 'cert.pem'));
       const key = fs.readFileSync(path.resolve(__dirname, 'privkey.pem'));
-      webserver = https.createServer({
-        cert: cert,
-        key: key,
-      });
+      const tlsOptions: https.ServerOptions = { cert, key };
+      const clientCaPath = process.env.MTLS_CLIENT_CA_PATH;
+      if (clientCaPath) {
+        try {
+          const clientCa = fs.readFileSync(path.resolve(clientCaPath));
+          tlsOptions.requestCert = true;
+          tlsOptions.rejectUnauthorized = false; // checked manually in connection handler
+          tlsOptions.ca = clientCa;
+          srv.logInfo(
+            'mTLS client certificate verification enabled',
+            undefined,
+            'init',
+          );
+        } catch (err) {
+          srv.logWarn(
+            'Could not load client CA from ' +
+              clientCaPath +
+              ': ' +
+              (err as Error).message,
+            undefined,
+            'init',
+          );
+        }
+      }
+      webserver = https.createServer(tlsOptions);
 
       // Parse and log certificate info
       try {
