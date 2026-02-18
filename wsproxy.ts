@@ -51,6 +51,7 @@ import {
   verifyAttestation,
   loadAttestedKeys,
   saveAttestedKeys,
+  debouncedSaveAttestedKeys,
   setAttestedKey,
   verifyAssertion,
   getAttestedKey,
@@ -900,8 +901,19 @@ const srv: ServerConfig = {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ nonce, expires: Date.now() + 60_000 }));
       } else if (req.method === 'POST' && req.url === '/attest/register') {
+        const MAX_BODY_SIZE = 65_536; // 64 KB — Apple attestation objects are a few KB
+        let bodySize = 0;
         const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('data', (chunk: Buffer) => {
+          bodySize += chunk.length;
+          if (bodySize > MAX_BODY_SIZE) {
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Request body too large' }));
+            req.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
         req.on('end', () => {
           void (async () => {
             try {
@@ -1049,7 +1061,7 @@ const srv: ServerConfig = {
               const keysPath =
                 process.env.ATTESTED_KEYS_PATH ||
                 path.resolve(__dirname, 'config/attested-keys.json');
-              saveAttestedKeys(keysPath);
+              debouncedSaveAttestedKeys(keysPath);
               srv.logInfo(
                 'App Attest verified for keyId ' + keyId,
                 undefined,

@@ -1,4 +1,9 @@
-import { randomBytes, createHash, X509Certificate, createVerify } from 'crypto';
+import {
+  randomBytes,
+  createHash,
+  X509Certificate,
+  createVerify,
+} from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -95,14 +100,12 @@ export function extractNonceFromCert(certDer: Buffer): Buffer {
   if (certDer[pos] !== 0x04)
     throw new Error('Expected OCTET STRING after OID');
   pos += 1; // skip tag
-  // Read length (short or long form)
-  let extLen = certDer[pos++];
-  if (extLen & 0x80) {
-    const lenBytes = extLen & 0x7f;
-    extLen = 0;
-    for (let i = 0; i < lenBytes; i++) extLen = (extLen << 8) | certDer[pos++];
+  // Skip past the OCTET STRING length (handle both short and long form DER)
+  const lenByte = certDer[pos++];
+  if (lenByte & 0x80) {
+    const extraBytes = lenByte & 0x7f;
+    for (let i = 0; i < extraBytes; i++) pos++;
   }
-  void extLen; // consumed for position tracking
 
   // Extension value: SEQUENCE { SEQUENCE { OCTET STRING <nonce> } }
   if (certDer[pos] !== 0x30)
@@ -191,9 +194,7 @@ export async function verifyAttestation(
 
   // 2. Validate format
   if (!obj || obj.fmt !== 'apple-appattest') {
-    throw new Error(
-      `Invalid attestation format: ${obj?.fmt ?? 'unknown'}`,
-    );
+    throw new Error(`Invalid attestation format: ${obj?.fmt ?? 'unknown'}`);
   }
 
   const x5c: Buffer[] = obj.attStmt?.x5c;
@@ -220,9 +221,19 @@ export async function verifyAttestation(
     }
   }
   if (!certs[certs.length - 1].verify(rootCert.publicKey)) {
-    throw new Error(
-      'Certificate chain does not terminate at Apple root CA',
-    );
+    throw new Error('Certificate chain does not terminate at Apple root CA');
+  }
+
+  // Verify all certs in chain are currently valid
+  const now = Date.now();
+  for (let i = 0; i < certs.length; i++) {
+    const notBefore = new Date(certs[i].validFrom).getTime();
+    const notAfter = new Date(certs[i].validTo).getTime();
+    if (now < notBefore || now > notAfter) {
+      throw new Error(
+        `Certificate ${i} is not currently valid (valid ${certs[i].validFrom} to ${certs[i].validTo})`,
+      );
+    }
   }
 
   const credCert = certs[0];
@@ -252,7 +263,10 @@ export async function verifyAttestation(
 
   // 7. Verify credId == SHA256(publicKey DER)
   const publicKeyDer = Buffer.from(
-    credCert.publicKey.export({ type: 'spki', format: 'der' }) as unknown as ArrayBuffer,
+    credCert.publicKey.export({
+      type: 'spki',
+      format: 'der',
+    }) as unknown as ArrayBuffer,
   );
   const expectedCredId = createHash('sha256').update(publicKeyDer).digest();
   if (!parsed.credId.equals(expectedCredId)) {
@@ -398,6 +412,21 @@ export function saveAttestedKeys(filePath: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
   fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), 'utf-8');
+}
+
+let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/**
+ * Debounced version of saveAttestedKeys — coalesces rapid saves into one
+ * write after 2 seconds of inactivity. Use this instead of calling
+ * saveAttestedKeys directly from hot paths like the WebSocket connection handler.
+ */
+export function debouncedSaveAttestedKeys(filePath: string): void {
+  if (saveTimer !== null) clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    saveTimer = null;
+    saveAttestedKeys(filePath);
+  }, 2_000);
 }
 
 /** Test helper: clear the in-memory key store. */
