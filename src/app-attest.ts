@@ -1,4 +1,10 @@
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash, X509Certificate } from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import { decode } from 'cbor-x';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------- Nonce store ----------
 
@@ -136,4 +142,143 @@ export function buildAppleNonceDer(nonce: Buffer): Buffer {
     outerSeq,
   ]);
   return Buffer.concat([APPLE_NONCE_OID, extValue]);
+}
+
+// ---------- Apple root CA ----------
+
+const APPLE_ROOT_CA_PATH = path.resolve(
+  __dirname,
+  '../config/apple-app-attest-root-ca.pem',
+);
+
+function loadAppleRootCa(): Buffer | null {
+  try {
+    return fs.readFileSync(APPLE_ROOT_CA_PATH);
+  } catch {
+    return null;
+  }
+}
+
+// ---------- Attestation verification ----------
+
+export interface AttestationInput {
+  keyId: string;
+  attestationBuffer: Buffer;
+  nonce: string; // hex — the challenge the server issued
+  bundleId: string;
+  teamId: string;
+  rootCa?: Buffer; // override for testing
+}
+
+export interface AttestationResult {
+  publicKey: string; // PEM
+  keyId: string;
+}
+
+export async function verifyAttestation(
+  opts: AttestationInput,
+): Promise<AttestationResult> {
+  const { keyId, attestationBuffer, nonce, bundleId, teamId } = opts;
+
+  // 1. Decode CBOR
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let obj: any;
+  try {
+    obj = decode(attestationBuffer);
+  } catch {
+    throw new Error('Failed to decode attestation CBOR');
+  }
+
+  // 2. Validate format
+  if (!obj || obj.fmt !== 'apple-appattest') {
+    throw new Error(
+      `Invalid attestation format: ${obj?.fmt ?? 'unknown'}`,
+    );
+  }
+
+  const x5c: Buffer[] = obj.attStmt?.x5c;
+  const authData = Buffer.isBuffer(obj.authData)
+    ? obj.authData
+    : Buffer.from(obj.authData as Uint8Array);
+
+  if (!x5c || x5c.length < 2) {
+    throw new Error('Missing certificate chain in attestation');
+  }
+
+  // 3. Verify certificate chain against Apple root CA
+  const rootCaPem = opts.rootCa ?? loadAppleRootCa();
+  if (!rootCaPem) {
+    throw new Error('Apple root CA not found at ' + APPLE_ROOT_CA_PATH);
+  }
+
+  const certs = x5c.map((d: Buffer) => new X509Certificate(d));
+  const rootCert = new X509Certificate(rootCaPem);
+
+  for (let i = 0; i < certs.length - 1; i++) {
+    if (!certs[i].verify(certs[i + 1].publicKey)) {
+      throw new Error(`Certificate ${i} not signed by certificate ${i + 1}`);
+    }
+  }
+  if (!certs[certs.length - 1].verify(rootCert.publicKey)) {
+    throw new Error(
+      'Certificate chain does not terminate at Apple root CA',
+    );
+  }
+
+  const credCert = certs[0];
+  const credCertDer = x5c[0];
+
+  // 4. Verify rpIdHash == SHA256(bundleId)
+  const parsed = parseAttestationAuthData(authData);
+  const expectedRpIdHash = createHash('sha256').update(bundleId).digest();
+  if (!parsed.rpIdHash.equals(expectedRpIdHash)) {
+    throw new Error('rpIdHash does not match bundleId');
+  }
+
+  // 5. Verify teamId and bundleId appear in cert subject
+  if (
+    !credCert.subject.includes(teamId) ||
+    !credCert.subject.includes(bundleId)
+  ) {
+    throw new Error(
+      `Certificate subject does not match teamId/bundleId (expected ${teamId}.${bundleId})`,
+    );
+  }
+
+  // 6. Extract public key from credential cert
+  const publicKeyPem = credCert.publicKey
+    .export({ type: 'spki', format: 'pem' })
+    .toString();
+
+  // 7. Verify credId == SHA256(publicKey DER)
+  const publicKeyDer = Buffer.from(
+    credCert.publicKey.export({ type: 'spki', format: 'der' }) as unknown as ArrayBuffer,
+  );
+  const expectedCredId = createHash('sha256').update(publicKeyDer).digest();
+  if (!parsed.credId.equals(expectedCredId)) {
+    throw new Error('credentialId does not match SHA256(publicKey)');
+  }
+
+  // 8. Verify nonce in cert extension
+  const clientDataHash = createHash('sha256')
+    .update(Buffer.from(nonce, 'hex'))
+    .digest();
+  const expectedCertNonce = createHash('sha256')
+    .update(createHash('sha256').update(authData).digest())
+    .update(clientDataHash)
+    .digest();
+  const certNonce = extractNonceFromCert(credCertDer);
+  if (!certNonce.equals(expectedCertNonce)) {
+    throw new Error('Certificate nonce does not match expected value');
+  }
+
+  // 9. Verify keyId == base64(SHA256(publicKey DER))
+  const expectedKeyId = createHash('sha256')
+    .update(publicKeyDer)
+    .digest('base64');
+  if (keyId !== expectedKeyId) {
+    throw new Error('keyId does not match SHA256(publicKey)');
+  }
+
+  return { publicKey: publicKeyPem, keyId };
 }
