@@ -1,4 +1,4 @@
-import { randomBytes, createHash, X509Certificate } from 'crypto';
+import { randomBytes, createHash, X509Certificate, createVerify } from 'crypto';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -281,4 +281,76 @@ export async function verifyAttestation(
   }
 
   return { publicKey: publicKeyPem, keyId };
+}
+
+// ---------- Assertion verification ----------
+
+export interface AssertionInput {
+  assertionBuffer: Buffer;
+  nonce: string; // hex
+  bundleId: string;
+  storedPublicKey: string; // PEM
+  storedSignCount: number;
+}
+
+export interface AssertionResult {
+  newSignCount: number;
+}
+
+export async function verifyAssertion(
+  opts: AssertionInput,
+): Promise<AssertionResult> {
+  const {
+    assertionBuffer,
+    nonce,
+    bundleId,
+    storedPublicKey,
+    storedSignCount,
+  } = opts;
+
+  // 1. Decode CBOR
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let obj: any;
+  try {
+    obj = decode(assertionBuffer);
+  } catch {
+    throw new Error('Failed to decode assertion CBOR');
+  }
+
+  const signature = Buffer.isBuffer(obj.signature)
+    ? obj.signature
+    : Buffer.from(obj.signature as Uint8Array);
+  const authenticatorData = Buffer.isBuffer(obj.authenticatorData)
+    ? obj.authenticatorData
+    : Buffer.from(obj.authenticatorData as Uint8Array);
+
+  // 2. Verify rpIdHash
+  const parsed = parseAssertionAuthData(authenticatorData);
+  const expectedRpIdHash = createHash('sha256').update(bundleId).digest();
+  if (!parsed.rpIdHash.equals(expectedRpIdHash)) {
+    throw new Error('rpIdHash does not match bundleId');
+  }
+
+  // 3. Verify signCount (must be strictly greater than stored)
+  if (parsed.signCount <= storedSignCount) {
+    throw new Error(
+      `signCount must be greater than stored (got ${parsed.signCount}, stored ${storedSignCount})`,
+    );
+  }
+
+  // 4. Verify ECDSA-P256-SHA256 signature
+  // Signed data: SHA256(authenticatorData || SHA256(nonce bytes))
+  const clientDataHash = createHash('sha256')
+    .update(Buffer.from(nonce, 'hex'))
+    .digest();
+  const verifier = createVerify('SHA256');
+  verifier.update(authenticatorData);
+  verifier.update(clientDataHash);
+  const valid = verifier.verify(
+    { key: storedPublicKey, dsaEncoding: 'der' },
+    signature,
+  );
+  if (!valid) throw new Error('Assertion signature verification failed');
+
+  return { newSignCount: parsed.signCount };
 }
