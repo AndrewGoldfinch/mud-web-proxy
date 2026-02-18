@@ -10,3 +10,5 @@ config/e2e/*.json
 .env.*.local
 !.env.example
 !.env.*
+config/attested-keys.json
+config/client-ca/

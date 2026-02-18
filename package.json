@@ -58,6 +58,7 @@
     "uglify-js": "^3.19.3"
   },
   "dependencies": {
+    "cbor-x": "^1.6.0",
     "iconv-lite": "^0.6.3",
     "ws": "^8.19.0"
   }
