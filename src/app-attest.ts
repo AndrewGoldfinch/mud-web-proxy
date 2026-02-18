@@ -354,3 +354,53 @@ export async function verifyAssertion(
 
   return { newSignCount: parsed.signCount };
 }
+
+// ---------- Attested keys store ----------
+
+export interface AttestedKeyEntry {
+  publicKey: string; // PEM
+  signCount: number;
+  registeredAt: string; // ISO timestamp
+}
+
+const attestedKeys = new Map<string, AttestedKeyEntry>();
+
+export function getAttestedKey(keyId: string): AttestedKeyEntry | undefined {
+  return attestedKeys.get(keyId);
+}
+
+export function setAttestedKey(keyId: string, entry: AttestedKeyEntry): void {
+  attestedKeys.set(keyId, entry);
+}
+
+export function updateSignCount(keyId: string, newCount: number): void {
+  const entry = attestedKeys.get(keyId);
+  if (entry) entry.signCount = newCount;
+}
+
+export function loadAttestedKeys(filePath: string): void {
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    const obj = JSON.parse(raw) as Record<string, AttestedKeyEntry>;
+    for (const [keyId, entry] of Object.entries(obj)) {
+      attestedKeys.set(keyId, entry);
+    }
+  } catch {
+    // File doesn't exist or invalid JSON — start fresh
+  }
+}
+
+export function saveAttestedKeys(filePath: string): void {
+  const obj: Record<string, AttestedKeyEntry> = {};
+  for (const [keyId, entry] of attestedKeys) {
+    obj[keyId] = entry;
+  }
+  const dir = path.dirname(filePath);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), 'utf-8');
+}
+
+/** Test helper: clear the in-memory key store. */
+export function _resetKeysForTesting(): void {
+  attestedKeys.clear();
+}
