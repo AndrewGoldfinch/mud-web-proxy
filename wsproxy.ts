@@ -44,6 +44,14 @@ import type { IncomingMessage, ServerResponse } from 'http';
 
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
+import {
+  generateChallenge,
+  validateAndConsumeNonce,
+  verifyAttestation,
+  loadAttestedKeys,
+  saveAttestedKeys,
+  setAttestedKey,
+} from './src/app-attest';
 
 // Log levels enum
 const enum LogLevel {
@@ -829,6 +837,16 @@ const srv: ServerConfig = {
       );
     }
 
+    const attestedKeysPath =
+      process.env.ATTESTED_KEYS_PATH ||
+      path.resolve(__dirname, 'config/attested-keys.json');
+    loadAttestedKeys(attestedKeysPath);
+    srv.logInfo(
+      'Loaded attested keys from ' + attestedKeysPath,
+      undefined,
+      'init',
+    );
+
     webserver.listen(srv.ws_port, function () {
       srv.logInfo('server listening: port ' + srv.ws_port, undefined, 'init');
     });
@@ -852,6 +870,91 @@ const srv: ServerConfig = {
       } else if (req.url === '/diagnostic/api') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(getDiagnosticData()));
+      } else if (req.method === 'GET' && req.url === '/attest/challenge') {
+        const nonce = generateChallenge();
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ nonce, expires: Date.now() + 60_000 }));
+      } else if (req.method === 'POST' && req.url === '/attest/register') {
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', () => {
+          void (async () => {
+            try {
+              const body = JSON.parse(
+                Buffer.concat(chunks).toString('utf-8'),
+              ) as {
+                keyId: string;
+                attestation: string; // base64
+                nonce: string; // hex
+              };
+              if (!body.keyId || !body.attestation || !body.nonce) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({
+                    error: 'Missing keyId, attestation, or nonce',
+                  }),
+                );
+                return;
+              }
+              if (!validateAndConsumeNonce(body.nonce)) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({ error: 'Invalid or expired nonce' }),
+                );
+                return;
+              }
+              const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
+              const teamId = process.env.APPATTEST_TEAM_ID ?? '';
+              if (!bundleId || !teamId) {
+                res.writeHead(500, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({
+                    error: 'Server not configured for App Attest',
+                  }),
+                );
+                return;
+              }
+              const attestationBuffer = Buffer.from(
+                body.attestation,
+                'base64',
+              );
+              const result = await verifyAttestation({
+                keyId: body.keyId,
+                attestationBuffer,
+                nonce: body.nonce,
+                bundleId,
+                teamId,
+              });
+              const keysPath =
+                process.env.ATTESTED_KEYS_PATH ||
+                path.resolve(__dirname, 'config/attested-keys.json');
+              setAttestedKey(result.keyId, {
+                publicKey: result.publicKey,
+                signCount: 0,
+                registeredAt: new Date().toISOString(),
+              });
+              saveAttestedKeys(keysPath);
+              srv.logInfo(
+                'Registered App Attest key: ' + body.keyId,
+                undefined,
+                'auth',
+              );
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ registered: true }));
+            } catch (err) {
+              srv.logWarn(
+                'Attestation registration failed: ' +
+                  (err as Error).message,
+                undefined,
+                'auth',
+              );
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(
+                JSON.stringify({ error: (err as Error).message }),
+              );
+            }
+          })();
+        });
       }
     });
 
