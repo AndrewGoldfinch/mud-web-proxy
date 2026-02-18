@@ -41,6 +41,7 @@ import type { WebSocket as WS, WebSocketServer } from 'ws';
 import type { Socket } from 'net';
 import type { Server as HttpServer } from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
+import type { TLSSocket } from 'tls';
 
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
@@ -51,6 +52,9 @@ import {
   loadAttestedKeys,
   saveAttestedKeys,
   setAttestedKey,
+  verifyAssertion,
+  getAttestedKey,
+  updateSignCount,
 } from './src/app-attest';
 
 // Log levels enum
@@ -898,9 +902,7 @@ const srv: ServerConfig = {
               }
               if (!validateAndConsumeNonce(body.nonce)) {
                 res.writeHead(400, { 'Content-Type': 'application/json' });
-                res.end(
-                  JSON.stringify({ error: 'Invalid or expired nonce' }),
-                );
+                res.end(JSON.stringify({ error: 'Invalid or expired nonce' }));
                 return;
               }
               const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
@@ -943,15 +945,12 @@ const srv: ServerConfig = {
               res.end(JSON.stringify({ registered: true }));
             } catch (err) {
               srv.logWarn(
-                'Attestation registration failed: ' +
-                  (err as Error).message,
+                'Attestation registration failed: ' + (err as Error).message,
                 undefined,
                 'auth',
               );
               res.writeHead(400, { 'Content-Type': 'application/json' });
-              res.end(
-                JSON.stringify({ error: (err as Error).message }),
-              );
+              res.end(JSON.stringify({ error: (err as Error).message }));
             }
           })();
         });
@@ -979,7 +978,7 @@ const srv: ServerConfig = {
 
     wsServer.on(
       'connection',
-      function connection(socket: WS, req: IncomingMessage) {
+      async function connection(socket: WS, req: IncomingMessage) {
         srv.logInfo('new connection', undefined, 'ws');
         if (!srv.open) {
           socket.terminate();
@@ -989,6 +988,75 @@ const srv: ServerConfig = {
         if (!srv.originAllowed(req)) {
           socket.terminate();
           return;
+        }
+
+        // App Attest / mTLS authentication gate
+        if (process.env.REQUIRE_APP_AUTH === 'true') {
+          const keyId = req.headers['x-app-assert-keyid'] as
+            | string
+            | undefined;
+          const assertionB64 = req.headers['x-app-assert-data'] as
+            | string
+            | undefined;
+          const nonce = req.headers['x-app-assert-nonce'] as
+            | string
+            | undefined;
+
+          if (keyId && assertionB64 && nonce) {
+            // App Attest assertion path
+            const storedKey = getAttestedKey(keyId);
+            if (!storedKey) {
+              srv.logWarn(
+                'Rejected: unknown App Attest keyId ' + keyId,
+                undefined,
+                'auth',
+              );
+              socket.terminate();
+              return;
+            }
+            try {
+              const assertionBuffer = Buffer.from(assertionB64, 'base64');
+              const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
+              const assertResult = await verifyAssertion({
+                assertionBuffer,
+                nonce,
+                bundleId,
+                storedPublicKey: storedKey.publicKey,
+                storedSignCount: storedKey.signCount,
+              });
+              updateSignCount(keyId, assertResult.newSignCount);
+              const keysPath =
+                process.env.ATTESTED_KEYS_PATH ||
+                path.resolve(__dirname, 'config/attested-keys.json');
+              saveAttestedKeys(keysPath);
+              srv.logInfo(
+                'App Attest verified for keyId ' + keyId,
+                undefined,
+                'auth',
+              );
+            } catch (err) {
+              srv.logWarn(
+                'App Attest assertion failed: ' + (err as Error).message,
+                undefined,
+                'auth',
+              );
+              socket.terminate();
+              return;
+            }
+          } else {
+            // Fall back to mTLS check
+            const tlsSocket = req.socket as TLSSocket;
+            if (!tlsSocket.authorized) {
+              srv.logWarn(
+                'Rejected: no App Attest assertion and no valid mTLS cert',
+                undefined,
+                'auth',
+              );
+              socket.terminate();
+              return;
+            }
+            srv.logInfo('mTLS fallback accepted', undefined, 'auth');
+          }
         }
 
         const extendedSocket = socket as SocketExtended;
