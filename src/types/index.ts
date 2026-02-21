@@ -33,6 +33,10 @@ export interface SocketExtended extends WS {
   naws_negotiated?: number;
   msdp_negotiated?: number;
   password_mode?: boolean;
+  appAttested?: boolean;
+  appKeyId?: string;
+  appBundleId?: string;
+  appDeviceToken?: string;
   sendUTF: (data: string | Buffer) => void;
   terminate: () => void;
   remoteAddress: string;
@@ -95,6 +99,7 @@ export interface ConnectRequest {
   port: number;
   deviceToken?: string;
   apiKey?: string;
+  appToken?: string;
   width?: number;
   height?: number;
   debug?: boolean;
@@ -106,6 +111,7 @@ export interface ResumeRequest {
   token: string;
   lastSeq: number;
   deviceToken?: string;
+  appToken?: string;
 }
 
 export interface InputRequest {
@@ -123,12 +129,79 @@ export interface DisconnectRequest {
   type: 'disconnect';
 }
 
+/**
+ * App Attest message types
+ */
+export interface ChallengeRequest {
+  type: 'challenge';
+}
+
+export interface ChallengeResponse {
+  type: 'challenge';
+  challenge: string;
+  expiresAt: number;
+}
+
+export interface AttestRequest {
+  type: 'attest';
+  keyId: string;
+  attestation: string;
+  challenge: string;
+  deviceToken?: string;
+}
+
+export interface AttestResponse {
+  type: 'attested';
+  success: boolean;
+  appToken?: string;
+  nextChallenge?: string;
+  error?: string;
+}
+
+export interface AssertionRequest {
+  type: 'assert';
+  keyId: string;
+  assertion: string;
+  challenge: string;
+}
+
+export interface AttestationCacheEntry {
+  keyId: string;
+  publicKey: string;
+  bundleId: string;
+  teamId: string;
+  deviceToken?: string;
+  verifiedAt: number;
+  expiresAt: number;
+}
+
+export interface AppTokenPayload {
+  keyId: string;
+  bundleId: string;
+  deviceToken?: string;
+  iat: number;
+  exp: number;
+}
+
+export interface AppAttestConfig {
+  enabled: boolean;
+  requireInProduction: boolean;
+  teamId: string;
+  bundleId: string;
+  apnsEnvironment: 'sandbox' | 'production';
+  cacheTtlHours: number;
+  challengeTtlSeconds: number;
+}
+
 export type ClientMessage =
   | ConnectRequest
   | ResumeRequest
   | InputRequest
   | NAWSRequest
-  | DisconnectRequest;
+  | DisconnectRequest
+  | ChallengeRequest
+  | AttestRequest
+  | AssertionRequest;
 
 /**
  * Proxy → Client message types
@@ -160,7 +233,11 @@ export interface ErrorResponse {
     | 'rate_limited'
     | 'connection_failed'
     | 'unauthorized'
-    | 'invalid_request';
+    | 'invalid_request'
+    | 'attestation_required'
+    | 'attestation_invalid'
+    | 'attestation_expired'
+    | 'attestation_not_configured';
   message: string;
 }
 
@@ -174,7 +251,9 @@ export type ProxyMessage =
   | DataResponse
   | GMCPResponse
   | ErrorResponse
-  | DisconnectedResponse;
+  | DisconnectedResponse
+  | ChallengeResponse
+  | AttestResponse;
 
 /**
  * APNS configuration
