@@ -14,9 +14,16 @@ Two complementary layers:
 
 1. **Apple App Attest** (production/release builds): Apple cryptographically certifies that a request originates from a genuine, unmodified copy of the specified app. The private key lives in the iOS Secure Enclave and can never be extracted.
 
-2. **Mutual TLS (mTLS) fallback** (simulator/debug builds): A client TLS certificate embedded in the debug app proves the client is a known developer build. Weaker, but sufficient for development since no real users are affected.
+2. **Mutual TLS (mTLS) fallback** (simulator/debug builds only): A client TLS certificate embedded in the debug app proves the client is a known developer build. This fallback is disabled in production and only allowed when explicitly enabled for simulator/debug workflows.
 
-A `REQUIRE_APP_AUTH` env var (default `true`) enables/disables the gate. Set to `false` for local development without certificates.
+A `REQUIRE_APP_AUTH` env var (default `true`) enables/disables the gate. Set to `false` only for local/test workflows.
+
+## Deployment Assumptions (Current Phase)
+
+- Single proxy instance only (no shared nonce/key backend yet)
+- In-memory nonce store is authoritative for replay protection
+- `config/attested-keys.json` is local-node state
+- Horizontal scaling is intentionally out of scope for this phase
 
 ## App Attest Flow
 
@@ -100,7 +107,8 @@ For simulator builds where `DCAppAttestService` is unavailable:
 - A private CA is generated offline (e.g., `openssl req -new -x509 ...`) and stored in `config/client-ca/` (gitignored).
 - A client certificate + private key are generated, signed by the private CA, and bundled into the Xcode project under `#if DEBUG` conditional compilation.
 - The proxy's HTTPS server is configured with `requestCert: true` and `ca: clientCACert`.
-- In the WebSocket connection handler: if no `X-App-Assert-*` headers are present, check `(req.socket as tls.TLSSocket).authorized`. If `true` → allow; otherwise → reject.
+- Fallback is only active when `ALLOW_MTLS_FALLBACK=true` and `NODE_ENV !== "production"`.
+- In the WebSocket **upgrade** path: if no `X-App-Assert-*` headers are present and fallback is active, check `(req.socket as tls.TLSSocket).authorized`. If `true` → allow; otherwise → reject.
 
 ## Attestation Storage
 
@@ -125,7 +133,7 @@ Writes are debounced (similar to chat log persistence already in the codebase).
 | `REQUIRE_APP_AUTH` | `true` | Enable/disable app authentication gate |
 | `APPATTEST_BUNDLE_ID` | — | iOS app bundle ID (e.g. `com.example.mudapp`) |
 | `APPATTEST_TEAM_ID` | — | Apple Developer Team ID (10 chars) |
-| `APPATTEST_ENV` | `production` | `production` or `development` (affects Apple root CA) |
+| `ALLOW_MTLS_FALLBACK` | `false` | Enable mTLS fallback for simulator/debug only; ignored in production |
 | `MTLS_CLIENT_CA_PATH` | — | Path to client CA cert PEM for mTLS fallback |
 | `ATTESTED_KEYS_PATH` | `./config/attested-keys.json` | Where to persist registered key store |
 
@@ -143,17 +151,18 @@ Both endpoints are served on the same HTTPS port as the WebSocket server.
 1. Add `/attest/challenge` and `/attest/register` handlers to the HTTPS server's `request` event.
 2. Add in-memory nonce store (Map<nonce, expiry>), with periodic cleanup of expired entries.
 3. Load `attested-keys.json` at startup (if present).
-4. Add `CBOR` decoding dependency (`cbor` npm package) and attestation verification logic.
-5. In `wsServer.on('connection')`, before accepting:
+4. Add `CBOR` decoding dependency (`cbor-x` package) and attestation verification logic.
+5. In the HTTP `upgrade` path (before WebSocket accept):
    - If `REQUIRE_APP_AUTH` is falsy → allow.
    - If `X-App-Assert-*` headers present → run assertion verification → allow or reject.
-   - Else if mTLS client cert authorized (`req.socket.authorized`) → allow.
+   - Assertion path must validate and consume the nonce (single-use).
+   - Else if mTLS fallback is explicitly enabled (`ALLOW_MTLS_FALLBACK=true`, non-production) and client cert is authorized (`req.socket.authorized`) → allow.
    - Else → terminate with a 401-equivalent close.
 6. Persist key store on each new registration (debounced).
 
 ## Dependencies
 
-- `cbor` — CBOR decoding (attestation/assertion objects are CBOR-encoded)
+- `cbor-x` — CBOR decoding (attestation/assertion objects are CBOR-encoded)
 - Apple App Attest Root CA certificate — bundled in the repo as a static PEM (publicly available)
 
 ## Testing

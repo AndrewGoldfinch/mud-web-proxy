@@ -42,6 +42,10 @@ export class Session {
   buffer: CircularBuffer;
 
   deviceToken?: string;
+  activityPushToken?: string;
+  clientBackgrounded = false;
+  lastBackgroundedAt = 0;
+  lastActivityPushAt = 0;
   notificationTriggers: Trigger[] = [];
 
   windowWidth = 80;
@@ -376,6 +380,19 @@ export class Session {
     this.deviceToken = token;
   }
 
+  setActivityPushToken(token: string): void {
+    this.activityPushToken = token;
+  }
+
+  markClientBackgrounded(): void {
+    this.clientBackgrounded = true;
+    this.lastBackgroundedAt = Date.now();
+  }
+
+  markClientForegrounded(): void {
+    this.clientBackgrounded = false;
+  }
+
   /**
    * Get current buffer sequence number
    */
@@ -449,6 +466,11 @@ export class Session {
       lastClientConnection: this.lastClientConnection,
       mudHost: this.mudHost,
       mudPort: this.mudPort,
+      deviceToken: this.deviceToken,
+      activityPushToken: this.activityPushToken,
+      clientBackgrounded: this.clientBackgrounded,
+      lastBackgroundedAt: this.lastBackgroundedAt,
+      lastActivityPushAt: this.lastActivityPushAt,
       telnetConnected: this.telnetConnected,
       clientConnected: this.clientConnected,
       clientCount: this.clients.size,

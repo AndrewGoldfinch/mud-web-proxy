@@ -12,7 +12,12 @@
 import https from 'https';
 import fs from 'fs';
 import crypto from 'crypto';
-import type { APNSConfig, NotificationPayload, TriggerMatch } from './types';
+import type {
+  APNSConfig,
+  NotificationPayload,
+  TriggerMatch,
+  ActivityContentState,
+} from './types';
 import { TriggerMatcher } from './trigger-matcher';
 
 export interface NotificationManagerConfig {
@@ -172,6 +177,52 @@ export class NotificationManager {
     return this.sendToAPNS(deviceToken, payload);
   }
 
+  async sendSilentPush(
+    deviceToken: string,
+    sessionId: string,
+  ): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
+    const apnsPayload = {
+      aps: {
+        'content-available': 1,
+      },
+      sessionId,
+    };
+
+    return this.sendRawToAPNS(deviceToken, apnsPayload, {
+      pushType: 'background',
+      priority: '5',
+      topic: this.config.apns!.topic,
+    });
+  }
+
+  async sendActivityKitPush(
+    activityPushToken: string,
+    contentState: ActivityContentState,
+  ): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const apnsPayload = {
+      aps: {
+        timestamp: nowSeconds,
+        event: 'update',
+      },
+      'content-state': contentState,
+    };
+
+    return this.sendRawToAPNS(activityPushToken, apnsPayload, {
+      pushType: 'liveactivity',
+      priority: '10',
+      topic: `${this.config.apns!.topic}.push-type.liveactivity`,
+    });
+  }
+
   /**
    * Build notification payload
    */
@@ -226,13 +277,6 @@ export class NotificationManager {
     deviceToken: string,
     payload: NotificationPayload,
   ): Promise<boolean> {
-    const authToken = this.getAuthToken();
-    if (!authToken || !this.config.apns) {
-      return false;
-    }
-
-    const { topic } = this.config.apns;
-
     const apnsPayload = {
       aps: {
         alert: payload.alert,
@@ -241,6 +285,23 @@ export class NotificationManager {
       },
       ...payload.custom,
     };
+
+    return this.sendRawToAPNS(deviceToken, apnsPayload, {
+      pushType: 'alert',
+      priority: '10',
+      topic: this.config.apns!.topic,
+    });
+  }
+
+  private async sendRawToAPNS(
+    deviceToken: string,
+    apnsPayload: Record<string, unknown>,
+    optionsIn: { pushType: string; priority: string; topic: string },
+  ): Promise<boolean> {
+    const authToken = this.getAuthToken();
+    if (!authToken || !this.config.apns) {
+      return false;
+    }
 
     const postData = JSON.stringify(apnsPayload);
 
@@ -253,7 +314,9 @@ export class NotificationManager {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(postData),
         Authorization: `Bearer ${authToken}`,
-        'apns-topic': topic,
+        'apns-topic': optionsIn.topic,
+        'apns-push-type': optionsIn.pushType,
+        'apns-priority': optionsIn.priority,
       },
     };
 

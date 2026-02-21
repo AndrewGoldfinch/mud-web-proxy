@@ -76,6 +76,10 @@ export interface SessionMetadata {
   mudHost: string;
   mudPort: number;
   deviceToken?: string;
+  activityPushToken?: string;
+  clientBackgrounded: boolean;
+  lastBackgroundedAt: number;
+  lastActivityPushAt: number;
   windowWidth: number;
   windowHeight: number;
 }
@@ -112,6 +116,17 @@ export interface ResumeRequest {
   lastSeq: number;
   deviceToken?: string;
   appToken?: string;
+}
+
+export interface ActivityTokenRequest {
+  type: 'activityToken';
+  token: string;
+}
+
+export interface SyncAckRequest {
+  type: 'syncAck';
+  sessionId: string;
+  lastSeq: number;
 }
 
 export interface InputRequest {
@@ -196,6 +211,8 @@ export interface AppAttestConfig {
 export type ClientMessage =
   | ConnectRequest
   | ResumeRequest
+  | ActivityTokenRequest
+  | SyncAckRequest
   | InputRequest
   | NAWSRequest
   | DisconnectRequest
@@ -210,6 +227,7 @@ export interface SessionResponse {
   type: 'session';
   sessionId: string;
   token: string;
+  capabilities?: string[];
 }
 
 export interface DataResponse {
@@ -342,4 +360,12 @@ export interface NotificationPayload {
     sessionId: string;
     type: string;
   };
+}
+
+export interface ActivityContentState {
+  status: 'connected' | 'disconnected';
+  worldName: string;
+  lastOutputSnippet: string;
+  connectedSince: number;
+  lastSyncTime: number;
 }

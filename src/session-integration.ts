@@ -10,9 +10,12 @@ import type { Session } from './session';
 import type { SocketExtended } from './types';
 import { TriggerMatcher } from './trigger-matcher';
 import { NotificationManager } from './notification-manager';
+import { BackgroundPushScheduler } from './background-push-scheduler';
 import type {
   ConnectRequest,
   ResumeRequest,
+  ActivityTokenRequest,
+  SyncAckRequest,
   InputRequest,
   NAWSRequest,
   ClientMessage,
@@ -41,12 +44,21 @@ export interface SessionIntegrationConfig {
     topic: string;
     environment: 'sandbox' | 'production';
   };
+  backgroundPush?: {
+    silentPushIntervalMs?: number;
+    activityPushIntervalMs?: number;
+    activityAckTimeoutMs?: number;
+    fallbackCooldownMs?: number;
+    maxFallbacksPerHour?: number;
+    maxSnippetLength?: number;
+  };
 }
 
 export class SessionIntegration {
   sessionManager: SessionManager;
   triggerMatcher: TriggerMatcher;
   notificationManager: NotificationManager;
+  backgroundPushScheduler: BackgroundPushScheduler;
   config: SessionIntegrationConfig;
   private retryInterval: ReturnType<typeof setInterval> | null = null;
 
@@ -87,6 +99,10 @@ export class SessionIntegration {
       },
       this.triggerMatcher,
     );
+    this.backgroundPushScheduler = new BackgroundPushScheduler(
+      this.notificationManager,
+      this.config.backgroundPush,
+    );
 
     // Start notification retry processor and trigger cleanup
     this.retryInterval = setInterval(() => {
@@ -104,6 +120,7 @@ export class SessionIntegration {
    */
   private removeSessionAndCleanup(sessionId: string): void {
     this.notificationManager.cleanupSession(sessionId);
+    this.backgroundPushScheduler.untrackSession(sessionId);
     this.sessionManager.removeSession(sessionId);
   }
 
@@ -146,6 +163,12 @@ export class SessionIntegration {
           return true;
         case 'resume':
           this.handleResume(socket, clientMsg);
+          return true;
+        case 'activityToken':
+          this.handleActivityToken(socket, clientMsg);
+          return true;
+        case 'syncAck':
+          this.handleSyncAck(socket, clientMsg);
           return true;
         case 'input':
           this.handleInput(socket, clientMsg);
@@ -220,6 +243,8 @@ export class SessionIntegration {
 
     // Attach WebSocket to session
     this.sessionManager.attachWebSocket(session.id, socket);
+    session.markClientForegrounded();
+    this.backgroundPushScheduler.untrackSession(session.id);
 
     if (msg.deviceToken) {
       this.sessionManager.incrementIPCount(ip);
@@ -230,6 +255,7 @@ export class SessionIntegration {
       type: 'session',
       sessionId: session.id,
       token: session.authToken,
+      capabilities: ['activityToken', 'syncAck'],
     };
     socket.sendUTF(JSON.stringify(response));
 
@@ -305,6 +331,8 @@ export class SessionIntegration {
 
     // Attach WebSocket
     this.sessionManager.attachWebSocket(msg.sessionId, socket);
+    session.markClientForegrounded();
+    this.backgroundPushScheduler.untrackSession(msg.sessionId);
 
     // Update device token if provided
     if (msg.deviceToken) {
@@ -337,6 +365,22 @@ export class SessionIntegration {
       ip,
       msg.sessionId,
     );
+  }
+
+  private handleActivityToken(
+    socket: SocketExtended,
+    msg: ActivityTokenRequest,
+  ): void {
+    const session = this.sessionManager.findByWebSocket(socket);
+    if (!session) {
+      return;
+    }
+
+    session.setActivityPushToken(msg.token);
+  }
+
+  private handleSyncAck(_socket: SocketExtended, msg: SyncAckRequest): void {
+    this.backgroundPushScheduler.recordSyncAck(msg.sessionId, msg.lastSeq);
   }
 
   /**
@@ -472,6 +516,14 @@ export class SessionIntegration {
         payload: result.text.toString('base64'),
       };
       session.broadcastToClients(JSON.stringify(response));
+
+      if (!session.hasClients()) {
+        void this.backgroundPushScheduler.onBufferedOutput(
+          session,
+          chunk.sequence,
+          result.text.toString('utf8'),
+        );
+      }
     }
   }
 
@@ -509,6 +561,10 @@ export class SessionIntegration {
 
       // Detach instead of terminate
       this.sessionManager.detachWebSocket(socket);
+      if (!session.hasClients() && session.telnetConnected) {
+        session.markClientBackgrounded();
+        this.backgroundPushScheduler.trackSession(session);
+      }
 
       // Decrement IP count
       if (ip && ip !== 'unknown') {

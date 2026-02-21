@@ -1,12 +1,17 @@
 # iOS App Authentication (App Attest + mTLS) Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Restrict WebSocket connections to the proxy so that only the official iOS app can connect, using Apple App Attest for release builds and mutual TLS for simulator/debug builds.
 
-**Architecture:** A new `src/app-attest.ts` module handles nonce generation, attestation verification (CBOR + X.509 chain), assertion verification (ECDSA), and key persistence. Two new HTTP endpoints (`GET /attest/challenge`, `POST /attest/register`) are added to the existing request handler in `wsproxy.ts`. The WebSocket connection handler checks `X-App-Assert-*` headers before accepting any connection when `REQUIRE_APP_AUTH=true`.
+**Architecture:** A new `src/app-attest.ts` module handles nonce generation, attestation verification (CBOR + X.509 chain), assertion verification (ECDSA), and key persistence. Two new HTTP endpoints (`GET /attest/challenge`, `POST /attest/register`) are added to the existing request handler in `wsproxy.ts`. Authentication checks run in the HTTP `upgrade` path (before WebSocket acceptance), and assertion nonces are validated + consumed (single-use) before signature verification.
 
 **Tech Stack:** Node.js `crypto` module (X509Certificate, createVerify, randomBytes), `cbor-x` (CBOR decoding), Bun test framework.
+
+## Current-Phase Assumptions
+
+- Single proxy instance deployment (no shared Redis/DB state)
+- Nonce replay protection is in-memory per instance
+- `attested-keys.json` is local node state
+- Multi-instance synchronization is out of scope for this phase
 
 ---
 
@@ -615,7 +620,8 @@ export async function verifyAttestation(
     throw new Error('rpIdHash does not match bundleId');
   }
 
-  // 5. Verify teamId in cert subject (cert CN should contain teamId.bundleId)
+  // 5. Verify teamId + bundleId in cert subject (exact attribute parsing preferred)
+  // Minimal check for this phase: both must be present in subject string.
   const expectedCN = `${teamId}.${bundleId}`;
   if (!credCert.subject.includes(teamId) || !credCert.subject.includes(bundleId)) {
     throw new Error(`Certificate subject does not match teamId/bundleId (expected ${expectedCN})`);
@@ -638,7 +644,7 @@ export async function verifyAttestation(
     .update(Buffer.from(nonce, 'hex'))
     .digest();
   const expectedCertNonce = createHash('sha256')
-    .update(createHash('sha256').update(authData).digest())
+    .update(authData)
     .update(clientDataHash)
     .digest();
   const certNonce = extractNonceFromCert(credCertDer);
@@ -1092,6 +1098,20 @@ loadAttestedKeys(attestedKeysPath);
 srv.logInfo(`Loaded attested keys from ${attestedKeysPath}`, undefined, 'init');
 ```
 
+Add a debounced persistence helper in `wsproxy.ts` so key updates do not sync-write on every registration/assertion:
+
+```typescript
+let saveAttestedKeysTimer: NodeJS.Timeout | undefined;
+
+function scheduleSaveAttestedKeys(): void {
+  if (saveAttestedKeysTimer) clearTimeout(saveAttestedKeysTimer);
+  saveAttestedKeysTimer = setTimeout(() => {
+    saveAttestedKeys(attestedKeysPath);
+    saveAttestedKeysTimer = undefined;
+  }, 250);
+}
+```
+
 ### Step 3: Add GET /attest/challenge endpoint
 
 In the `webserver.on('request', ...)` handler, add a new `else if` branch:
@@ -1143,13 +1163,12 @@ Add another `else if` branch:
         bundleId,
         teamId,
       });
-      const keysPath = process.env.ATTESTED_KEYS_PATH || path.resolve(__dirname, 'config/attested-keys.json');
       setAttestedKey(result.keyId, {
         publicKey: result.publicKey,
         signCount: 0,
         registeredAt: new Date().toISOString(),
       });
-      saveAttestedKeys(keysPath);
+      scheduleSaveAttestedKeys();
       srv.logInfo(`Registered App Attest key: ${body.keyId}`, undefined, 'auth');
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ registered: true }));
@@ -1183,12 +1202,13 @@ git commit -m "feat: add /attest/challenge and /attest/register HTTP endpoints"
 **Files:**
 - Modify: `wsproxy.ts`
 
-### Step 1: Add the gate to the connection handler
+### Step 1: Add the gate to the HTTP upgrade handler (before accept)
 
-In `wsServer.on('connection', function connection(socket, req) { ... })`, add the auth check immediately after the `originAllowed` check (around line 886). The gate runs before `extendedSocket` is set up:
+Do auth checks in the HTTP `upgrade` path, before calling `wsServer.handleUpgrade(...)` / `wsServer.emit('connection', ...)`.
+
+This ensures unauthenticated clients are rejected before a WebSocket session is established.
 
 ```typescript
-// App Attest / mTLS authentication gate
 if (process.env.REQUIRE_APP_AUTH === 'true') {
   const keyId = req.headers['x-app-assert-keyid'] as string | undefined;
   const assertionB64 = req.headers['x-app-assert-data'] as string | undefined;
@@ -1196,10 +1216,15 @@ if (process.env.REQUIRE_APP_AUTH === 'true') {
 
   if (keyId && assertionB64 && nonce) {
     // App Attest assertion path
+    if (!validateAndConsumeNonce(nonce)) {
+      srv.logWarn('Rejected: invalid/expired/reused assertion nonce', undefined, 'auth');
+      rejectUpgrade(socket, 401, 'Invalid nonce');
+      return;
+    }
     const storedKey = getAttestedKey(keyId);
     if (!storedKey) {
       srv.logWarn(`Rejected: unknown App Attest keyId ${keyId}`, undefined, 'auth');
-      socket.terminate();
+      rejectUpgrade(socket, 401, 'Unknown key');
       return;
     }
     try {
@@ -1213,49 +1238,51 @@ if (process.env.REQUIRE_APP_AUTH === 'true') {
         storedSignCount: storedKey.signCount,
       });
       updateSignCount(keyId, assertResult.newSignCount);
-      const keysPath = process.env.ATTESTED_KEYS_PATH || path.resolve(__dirname, 'config/attested-keys.json');
-      saveAttestedKeys(keysPath);
+      scheduleSaveAttestedKeys();
       srv.logInfo(`App Attest verified for keyId ${keyId}`, undefined, 'auth');
     } catch (err) {
       srv.logWarn(`App Attest assertion failed: ${(err as Error).message}`, undefined, 'auth');
-      socket.terminate();
+      rejectUpgrade(socket, 401, 'Assertion verification failed');
       return;
     }
   } else {
-    // Fall back to mTLS check
-    import type { TLSSocket } from 'tls';
-    const tlsSocket = req.socket as TLSSocket;
-    if (!tlsSocket.authorized) {
-      srv.logWarn('Rejected: no App Attest assertion and no valid mTLS cert', undefined, 'auth');
-      socket.terminate();
+    // mTLS fallback is simulator/debug only
+    const mtlsAllowed =
+      process.env.ALLOW_MTLS_FALLBACK === 'true' &&
+      process.env.NODE_ENV !== 'production';
+    if (!mtlsAllowed) {
+      srv.logWarn('Rejected: App Attest headers missing and mTLS fallback disabled', undefined, 'auth');
+      rejectUpgrade(socket, 401, 'App authentication required');
       return;
     }
-    srv.logInfo('mTLS fallback accepted', undefined, 'auth');
+
+    const tlsSocket = req.socket as TLSSocket;
+    if (!tlsSocket.authorized) {
+      srv.logWarn('Rejected: invalid mTLS client certificate', undefined, 'auth');
+      rejectUpgrade(socket, 401, 'Invalid client certificate');
+      return;
+    }
+    srv.logInfo('mTLS fallback accepted (non-production)', undefined, 'auth');
   }
 }
 ```
 
-Note: The `connection` callback will need to become `async` for the `await verifyAssertion(...)` call. Change the function signature from:
+### Step 2: Add required helpers/imports for upgrade rejection
 
-```typescript
-function connection(socket: WS, req: IncomingMessage) {
-```
-
-to:
-
-```typescript
-async function connection(socket: WS, req: IncomingMessage) {
-```
-
-### Step 2: Fix the `import type` inside function body
-
-The `import type { TLSSocket }` inside a function body won't work. Instead, add a proper import at the top of the file:
+Add a top-level type import:
 
 ```typescript
 import type { TLSSocket } from 'tls';
 ```
 
-Then remove the inline import type from the connection handler and use `TLSSocket` directly.
+Add a small helper to reject upgrades before WS accept:
+
+```typescript
+function rejectUpgrade(socket: Socket, code: number, message: string): void {
+  socket.write(`HTTP/1.1 ${code} ${message}\r\nConnection: close\r\n\r\n`);
+  socket.destroy();
+}
+```
 
 ### Step 3: Typecheck
 
@@ -1277,7 +1304,7 @@ Expected: All tests pass (they don't go through the auth gate because the WebSoc
 
 ```bash
 git add wsproxy.ts
-git commit -m "feat: add WebSocket connection gate for App Attest + mTLS"
+git commit -m "feat: enforce App Attest in upgrade path with simulator-only mTLS fallback"
 ```
 
 ---
@@ -1289,7 +1316,7 @@ git commit -m "feat: add WebSocket connection gate for App Attest + mTLS"
 
 ### Step 1: Add mTLS options when HTTPS server is created
 
-Find the section in `srv.init()` where `https.createServer(...)` is called (around line 770). Modify it to add mTLS options when `MTLS_CLIENT_CA_PATH` is set:
+Find the section in `srv.init()` where `https.createServer(...)` is called (around line 770). Modify it to add mTLS options when both `MTLS_CLIENT_CA_PATH` and `ALLOW_MTLS_FALLBACK=true` are set.
 
 Change:
 
@@ -1305,13 +1332,16 @@ To:
 ```typescript
 const tlsOptions: import('https').ServerOptions = { cert, key };
 const clientCaPath = process.env.MTLS_CLIENT_CA_PATH;
-if (clientCaPath) {
+const allowMtlsFallback =
+  process.env.ALLOW_MTLS_FALLBACK === 'true' &&
+  process.env.NODE_ENV !== 'production';
+if (clientCaPath && allowMtlsFallback) {
   try {
     const clientCa = fs.readFileSync(path.resolve(clientCaPath));
     tlsOptions.requestCert = true;
     tlsOptions.rejectUnauthorized = false; // We check manually in the connection handler
     tlsOptions.ca = clientCa;
-    srv.logInfo('mTLS client certificate verification enabled', undefined, 'init');
+    srv.logInfo('mTLS fallback enabled for non-production', undefined, 'init');
   } catch (err) {
     srv.logWarn(
       `Could not load client CA from ${clientCaPath}: ${(err as Error).message}`,
@@ -1334,9 +1364,9 @@ Add new env vars to `.env.example`:
 # Apple App Attest
 # APPATTEST_BUNDLE_ID=com.example.yourapp
 # APPATTEST_TEAM_ID=AAABBBCCC1
-# APPATTEST_ENV=production
 
 # mTLS client certificate fallback (for simulator/debug builds)
+# ALLOW_MTLS_FALLBACK=false
 # MTLS_CLIENT_CA_PATH=./config/client-ca/ca.pem
 
 # Path to persist attested keys (default: ./config/attested-keys.json)
@@ -1365,9 +1395,9 @@ git commit -m "feat: add mTLS client cert verification option to HTTPS server"
 **Files:**
 - Check: `tests/e2e/connection-helper.ts` and other E2E tests
 
-### Step 1: Verify REQUIRE_APP_AUTH defaults to off
+### Step 1: Verify test setup disables auth gate explicitly
 
-The gate only runs when `process.env.REQUIRE_APP_AUTH === 'true'`. Since tests don't set this env var, they should pass unmodified.
+`REQUIRE_APP_AUTH` defaults to `true` in this plan. Tests must explicitly disable it unless they are auth-specific.
 
 Run the full test suite:
 
@@ -1375,11 +1405,11 @@ Run the full test suite:
 bun test tests/*.test.ts
 ```
 
-Expected: All existing tests pass.
+Expected: All existing tests pass after test setup explicitly disables auth gate.
 
 ### Step 2: If any test fails due to the auth gate
 
-If tests fail because the gate fires, add `process.env.REQUIRE_APP_AUTH = 'false'` (or ensure it's not `'true'`) to `tests/setup.ts` in the `beforeAll` hook:
+Ensure `process.env.REQUIRE_APP_AUTH = 'false'` in `tests/setup.ts` `beforeAll` hook:
 
 ```typescript
 beforeAll(() => {
@@ -1411,11 +1441,11 @@ git commit -m "feat: iOS app authentication via App Attest + mTLS complete"
 
 | Variable | Default | Required | Description |
 |---|---|---|---|
-| `REQUIRE_APP_AUTH` | `false` | No | Set to `true` to enable the auth gate |
+| `REQUIRE_APP_AUTH` | `true` | No | Set to `false` only for local/test workflows |
 | `APPATTEST_BUNDLE_ID` | — | When auth enabled | iOS bundle ID, e.g. `com.example.mudapp` |
 | `APPATTEST_TEAM_ID` | — | When auth enabled | Apple Developer team ID (10 chars) |
-| `APPATTEST_ENV` | `production` | No | `production` or `development` |
-| `MTLS_CLIENT_CA_PATH` | — | No | PEM path for mTLS client CA |
+| `ALLOW_MTLS_FALLBACK` | `false` | No | Enables simulator/debug mTLS fallback; ignored in production |
+| `MTLS_CLIENT_CA_PATH` | — | When mTLS fallback enabled | PEM path for mTLS client CA |
 | `ATTESTED_KEYS_PATH` | `./config/attested-keys.json` | No | Key store path |
 
 ---

@@ -120,6 +120,20 @@ const sessionIntegration = new SessionIntegration({
       totalPerHour: 10,
     },
   },
+  backgroundPush: {
+    silentPushIntervalMs:
+      Number(process.env.SILENT_PUSH_INTERVAL_MS) || undefined,
+    activityPushIntervalMs:
+      Number(process.env.ACTIVITY_PUSH_INTERVAL_MS) || undefined,
+    activityAckTimeoutMs:
+      Number(process.env.ACTIVITY_PUSH_ACK_TIMEOUT_MS) || undefined,
+    fallbackCooldownMs:
+      Number(process.env.ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS) || undefined,
+    maxFallbacksPerHour:
+      Number(process.env.ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR) || undefined,
+    maxSnippetLength:
+      Number(process.env.ACTIVITY_PUSH_MAX_SNIPPET_LENGTH) || undefined,
+  },
   // APNS config from environment
   apns: process.env.APNS_KEY_PATH
     ? {
