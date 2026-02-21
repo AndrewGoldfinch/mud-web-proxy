@@ -339,9 +339,31 @@ describe('Integration Tests - Full WebSocket-to-Telnet Flow', () => {
 
       await new Promise<void>((resolve, reject) => {
         testSocket.connect(TEST_CONFIG.tnPort, TEST_CONFIG.tnHost, () => {
-          expect(telnetServer.getConnectionCount()).toBeGreaterThan(0);
-          testSocket.destroy();
-          resolve();
+          const start = Date.now();
+          const timeoutMs = 1000;
+
+          const checkConnection = (): void => {
+            if (telnetServer.getConnectionCount() > 0) {
+              expect(telnetServer.getConnectionCount()).toBeGreaterThan(0);
+              testSocket.destroy();
+              resolve();
+              return;
+            }
+
+            if (Date.now() - start >= timeoutMs) {
+              testSocket.destroy();
+              reject(
+                new Error(
+                  'Mock telnet server did not register connection within timeout',
+                ),
+              );
+              return;
+            }
+
+            setTimeout(checkConnection, 10);
+          };
+
+          checkConnection();
         });
 
         testSocket.on('error', (err: Error) => {

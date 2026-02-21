@@ -128,11 +128,13 @@ export function setupTestHooks(): void {
   beforeAll(() => {
     // Global test setup
     process.env.NODE_ENV = 'test';
+    process.env.REQUIRE_APP_AUTH = 'false';
   });
 
   afterAll(() => {
     // Global test teardown
     process.env.NODE_ENV = undefined;
+    process.env.REQUIRE_APP_AUTH = undefined;
   });
 
   beforeEach(() => {

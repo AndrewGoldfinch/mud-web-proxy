@@ -145,6 +145,7 @@ class MockTestRunner {
           TN_PORT: '6301',
           ONLY_ALLOW_DEFAULT_SERVER: 'false',
           DISABLE_TLS: '1',
+          REQUIRE_APP_AUTH: 'false',
         },
         stdio: ['ignore', 'pipe', 'pipe'],
       });

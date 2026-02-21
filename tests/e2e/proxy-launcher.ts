@@ -42,6 +42,7 @@ export async function startTestProxy(
         TN_PORT: extraEnv?.TN_PORT || '4000',
         ONLY_ALLOW_DEFAULT_SERVER: 'false',
         DISABLE_TLS: '1',
+        REQUIRE_APP_AUTH: 'false',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

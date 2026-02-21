@@ -50,7 +50,6 @@ import {
   validateAndConsumeNonce,
   verifyAttestation,
   loadAttestedKeys,
-  saveAttestedKeys,
   debouncedSaveAttestedKeys,
   setAttestedKey,
   verifyAssertion,
@@ -175,6 +174,18 @@ const getClientIP = (req: IncomingMessage): string => {
     }
   }
   return req.socket?.remoteAddress || '';
+};
+
+const rejectUpgrade = (
+  socket: Socket,
+  code: number,
+  message: string,
+): void => {
+  if (socket.destroyed) return;
+  socket.write(
+    `HTTP/1.1 ${code} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
+  );
+  socket.destroy();
 };
 
 export const writeTelnet = (
@@ -796,14 +807,17 @@ const srv: ServerConfig = {
       const key = fs.readFileSync(path.resolve(__dirname, 'privkey.pem'));
       const tlsOptions: https.ServerOptions = { cert, key };
       const clientCaPath = process.env.MTLS_CLIENT_CA_PATH;
-      if (clientCaPath) {
+      const allowMtlsFallback =
+        process.env.ALLOW_MTLS_FALLBACK === 'true' &&
+        process.env.NODE_ENV !== 'production';
+      if (clientCaPath && allowMtlsFallback) {
         try {
           const clientCa = fs.readFileSync(path.resolve(clientCaPath));
           tlsOptions.requestCert = true;
           tlsOptions.rejectUnauthorized = false; // checked manually in connection handler
           tlsOptions.ca = clientCa;
           srv.logInfo(
-            'mTLS client certificate verification enabled',
+            'mTLS fallback enabled for non-production',
             undefined,
             'init',
           );
@@ -982,7 +996,7 @@ const srv: ServerConfig = {
                 signCount: 0,
                 registeredAt: new Date().toISOString(),
               });
-              saveAttestedKeys(keysPath);
+              debouncedSaveAttestedKeys(keysPath);
               srv.logInfo(
                 'Registered App Attest key: ' + body.keyId,
                 undefined,
@@ -1007,7 +1021,7 @@ const srv: ServerConfig = {
     // Create WebSocket server
     try {
       const { WebSocketServer } = await import('ws');
-      wsServer = new WebSocketServer({ server: webserver });
+      wsServer = new WebSocketServer({ noServer: true });
 
       srv.logInfo(
         `WebSocket server initialized (Node.js ${process.version})`,
@@ -1023,22 +1037,20 @@ const srv: ServerConfig = {
       process.exit(1);
     }
 
-    wsServer.on(
-      'connection',
-      async function connection(socket: WS, req: IncomingMessage) {
-        srv.logInfo('new connection', undefined, 'ws');
+    webserver.on('upgrade', (req: IncomingMessage, socket: Socket, head) => {
+      void (async () => {
         if (!srv.open) {
-          socket.terminate();
+          rejectUpgrade(socket, 503, 'Service Unavailable');
           return;
         }
 
         if (!srv.originAllowed(req)) {
-          socket.terminate();
+          rejectUpgrade(socket, 403, 'Forbidden');
           return;
         }
 
-        // App Attest / mTLS authentication gate
-        if (process.env.REQUIRE_APP_AUTH === 'true') {
+        const requireAppAuth = process.env.REQUIRE_APP_AUTH !== 'false';
+        if (requireAppAuth) {
           const keyId = req.headers['x-app-assert-keyid'] as
             | string
             | undefined;
@@ -1050,20 +1062,40 @@ const srv: ServerConfig = {
             | undefined;
 
           if (keyId && assertionB64 && nonce) {
-            // App Attest assertion path
-            const storedKey = getAttestedKey(keyId);
-            if (!storedKey) {
+            if (!validateAndConsumeNonce(nonce)) {
               srv.logWarn(
-                'Rejected: unknown App Attest keyId ' + keyId,
+                'Rejected upgrade: invalid/expired/reused assertion nonce',
                 undefined,
                 'auth',
               );
-              socket.terminate();
+              rejectUpgrade(socket, 401, 'Invalid nonce');
               return;
             }
+
+            const storedKey = getAttestedKey(keyId);
+            if (!storedKey) {
+              srv.logWarn(
+                'Rejected upgrade: unknown App Attest keyId ' + keyId,
+                undefined,
+                'auth',
+              );
+              rejectUpgrade(socket, 401, 'Unknown key');
+              return;
+            }
+
+            const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
+            if (!bundleId) {
+              srv.logWarn(
+                'Rejected upgrade: APPATTEST_BUNDLE_ID is not configured',
+                undefined,
+                'auth',
+              );
+              rejectUpgrade(socket, 500, 'Server misconfigured');
+              return;
+            }
+
             try {
               const assertionBuffer = Buffer.from(assertionB64, 'base64');
-              const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
               const assertResult = await verifyAssertion({
                 assertionBuffer,
                 nonce,
@@ -1072,10 +1104,7 @@ const srv: ServerConfig = {
                 storedSignCount: storedKey.signCount,
               });
               updateSignCount(keyId, assertResult.newSignCount);
-              const keysPath =
-                process.env.ATTESTED_KEYS_PATH ||
-                path.resolve(__dirname, 'config/attested-keys.json');
-              debouncedSaveAttestedKeys(keysPath);
+              debouncedSaveAttestedKeys(attestedKeysPath);
               srv.logInfo(
                 'App Attest verified for keyId ' + keyId,
                 undefined,
@@ -1087,23 +1116,66 @@ const srv: ServerConfig = {
                 undefined,
                 'auth',
               );
-              socket.terminate();
+              rejectUpgrade(socket, 401, 'Assertion verification failed');
               return;
             }
           } else {
-            // Fall back to mTLS check
-            const tlsSocket = req.socket as TLSSocket;
-            if (!tlsSocket.authorized) {
+            const mtlsAllowed =
+              process.env.ALLOW_MTLS_FALLBACK === 'true' &&
+              process.env.NODE_ENV !== 'production';
+            if (!mtlsAllowed) {
               srv.logWarn(
-                'Rejected: no App Attest assertion and no valid mTLS cert',
+                'Rejected upgrade: App Attest headers missing and mTLS fallback disabled',
                 undefined,
                 'auth',
               );
-              socket.terminate();
+              rejectUpgrade(socket, 401, 'App authentication required');
               return;
             }
-            srv.logInfo('mTLS fallback accepted', undefined, 'auth');
+
+            const tlsSocket = req.socket as TLSSocket;
+            if (!tlsSocket.authorized) {
+              srv.logWarn(
+                'Rejected upgrade: invalid mTLS client certificate',
+                undefined,
+                'auth',
+              );
+              rejectUpgrade(socket, 401, 'Invalid client certificate');
+              return;
+            }
+            srv.logInfo(
+              'mTLS fallback accepted (non-production)',
+              undefined,
+              'auth',
+            );
           }
+        }
+
+        wsServer.handleUpgrade(req, socket, head, (upgradedSocket) => {
+          wsServer.emit('connection', upgradedSocket, req);
+        });
+      })().catch((err: unknown) => {
+        srv.logWarn(
+          'Upgrade auth flow failed: ' + (err as Error).message,
+          undefined,
+          'auth',
+        );
+        rejectUpgrade(socket, 401, 'Unauthorized');
+      });
+    });
+
+    wsServer.on(
+      'connection',
+      function connection(socket: WS, req: IncomingMessage) {
+        srv.logInfo('new connection', undefined, 'ws');
+        if (!srv.open) {
+          socket.terminate();
+          return;
+        }
+
+        if (!srv.originAllowed(req)) {
+          socket.terminate();
+          return;
         }
 
         const extendedSocket = socket as SocketExtended;

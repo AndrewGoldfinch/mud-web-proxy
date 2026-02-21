@@ -278,7 +278,7 @@ export async function verifyAttestation(
     .update(Buffer.from(nonce, 'hex'))
     .digest();
   const expectedCertNonce = createHash('sha256')
-    .update(createHash('sha256').update(authData).digest())
+    .update(authData)
     .update(clientDataHash)
     .digest();
   const certNonce = extractNonceFromCert(credCertDer);
