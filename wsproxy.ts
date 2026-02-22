@@ -949,7 +949,19 @@ const srv: ServerConfig = {
       const keySummary = keyIdStr
         ? `${keyIdStr.slice(0, 8)}... (len=${keyIdStr.length})`
         : '<missing>';
-      return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length}`;
+      const assertionHasSpaces = assertionStr.includes(' ');
+      return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length} assertionHasSpaces=${assertionHasSpaces}`;
+    };
+
+    const decodeHeaderBase64 = (value: string): Buffer => {
+      // Some proxies/servers can rewrite '+' to space in header values.
+      const normalized = value
+        .trim()
+        .replace(/ /g, '+')
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+      const padded = normalized + '==='.slice((normalized.length + 3) % 4);
+      return Buffer.from(padded, 'base64');
     };
 
     webserver.listen(srv.ws_port, function () {
@@ -1182,7 +1194,7 @@ const srv: ServerConfig = {
             }
 
             try {
-              const assertionBuffer = Buffer.from(assertionB64, 'base64');
+              const assertionBuffer = decodeHeaderBase64(assertionB64);
               const assertResult = await verifyAssertion({
                 assertionBuffer,
                 nonce,
