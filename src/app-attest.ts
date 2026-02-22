@@ -354,6 +354,7 @@ export interface AttestationInput {
 
 export interface AttestationResult {
   publicKey: string; // PEM
+  alternatePublicKey?: string; // PEM (optional secondary key source)
   keyId: string;
 }
 
@@ -532,7 +533,11 @@ export async function verifyAttestation(
     throw new Error('keyId does not match expected credential identifier');
   }
 
-  return { publicKey: publicKeyPem, keyId };
+  return {
+    publicKey: publicKeyPem,
+    alternatePublicKey: cosePublicKeyPem ?? undefined,
+    keyId,
+  };
 }
 
 // ---------- Assertion verification ----------
@@ -543,6 +548,7 @@ export interface AssertionInput {
   bundleId: string;
   teamId?: string;
   storedPublicKey: string; // PEM
+  alternatePublicKey?: string; // PEM
   storedSignCount: number;
 }
 
@@ -559,6 +565,7 @@ export async function verifyAssertion(
     bundleId,
     teamId,
     storedPublicKey,
+    alternatePublicKey,
     storedSignCount,
   } = opts;
 
@@ -628,7 +635,19 @@ export async function verifyAssertion(
     { name: 'sha256NonceUtf8', value: createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest() },
   );
 
+  const keyCandidates: Array<{ name: string; key: string }> = [
+    { name: 'stored', key: storedPublicKey },
+  ];
+  if (
+    alternatePublicKey &&
+    alternatePublicKey.trim().length > 0 &&
+    alternatePublicKey.trim() !== storedPublicKey.trim()
+  ) {
+    keyCandidates.push({ name: 'alternate', key: alternatePublicKey });
+  }
+
   const verifyWithEncodingAndClientHash = (
+    keyPem: string,
     dsaEncoding: 'der' | 'ieee-p1363',
     clientDataHash: Buffer,
   ): { ok: boolean; error?: string } => {
@@ -637,7 +656,7 @@ export async function verifyAssertion(
       verifier.update(authenticatorData);
       verifier.update(clientDataHash);
       return {
-        ok: verifier.verify({ key: storedPublicKey, dsaEncoding }, signature),
+        ok: verifier.verify({ key: keyPem, dsaEncoding }, signature),
       };
     } catch {
       return { ok: false, error: 'verify-threw' };
@@ -646,25 +665,35 @@ export async function verifyAssertion(
 
   let valid = false;
   const attemptDetails: string[] = [];
-  for (const candidate of candidateClientDataHashes) {
-    const derResult = verifyWithEncodingAndClientHash('der', candidate.value);
-    attemptDetails.push(
-      `${candidate.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
-    );
-    if (derResult.ok) {
-      valid = true;
-      break;
-    }
+  for (const keyCandidate of keyCandidates) {
+    for (const candidate of candidateClientDataHashes) {
+      const derResult = verifyWithEncodingAndClientHash(
+        keyCandidate.key,
+        'der',
+        candidate.value,
+      );
+      attemptDetails.push(
+        `${keyCandidate.name}:${candidate.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+      );
+      if (derResult.ok) {
+        valid = true;
+        break;
+      }
 
-    const p1363Result = verifyWithEncodingAndClientHash(
-      'ieee-p1363',
-      candidate.value,
-    );
-    attemptDetails.push(
-      `${candidate.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
-    );
-    if (p1363Result.ok) {
-      valid = true;
+      const p1363Result = verifyWithEncodingAndClientHash(
+        keyCandidate.key,
+        'ieee-p1363',
+        candidate.value,
+      );
+      attemptDetails.push(
+        `${keyCandidate.name}:${candidate.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+      );
+      if (p1363Result.ok) {
+        valid = true;
+        break;
+      }
+    }
+    if (valid) {
       break;
     }
   }
@@ -682,6 +711,7 @@ export async function verifyAssertion(
 
 export interface AttestedKeyEntry {
   publicKey: string; // PEM
+  alternatePublicKey?: string; // PEM
   signCount: number;
   registeredAt: string; // ISO timestamp
 }

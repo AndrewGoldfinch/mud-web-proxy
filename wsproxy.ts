@@ -1066,6 +1066,7 @@ const srv: ServerConfig = {
                 path.resolve(__dirname, 'config/attested-keys.json');
               setAttestedKey(result.keyId, {
                 publicKey: result.publicKey,
+                alternatePublicKey: result.alternatePublicKey,
                 signCount: 0,
                 registeredAt: new Date().toISOString(),
               });
@@ -1180,6 +1181,7 @@ const srv: ServerConfig = {
                 bundleId,
                 teamId: teamId || undefined,
                 storedPublicKey: storedKey.publicKey,
+                alternatePublicKey: storedKey.alternatePublicKey,
                 storedSignCount: storedKey.signCount,
               });
               updateSignCount(keyId, assertResult.newSignCount);
