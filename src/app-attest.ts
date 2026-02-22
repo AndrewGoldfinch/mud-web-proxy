@@ -512,9 +512,29 @@ export async function verifyAttestation(
     );
   }
 
-  // Use certificate public key as canonical verification key.
-  // App Attest credential identity is anchored to the cert chain.
-  const publicKeyPem = certPublicKeyPem;
+  const keyIdMatchesCertHash = keyId === expectedCredIdFromCert.toString('base64') ||
+    keyId === toBase64Url(expectedCredIdFromCert);
+  const keyIdMatchesCoseHash = !!expectedCredIdFromCose && (
+    keyId === expectedCredIdFromCose.toString('base64') ||
+    keyId === toBase64Url(expectedCredIdFromCose)
+  );
+
+  // Select the canonical stored public key by exact keyId hash match.
+  // This prevents storing a key that cannot validate later assertions.
+  let publicKeyPem = certPublicKeyPem;
+  let alternatePublicKey: string | undefined;
+
+  if (keyIdMatchesCoseHash && cosePublicKeyPem) {
+    publicKeyPem = cosePublicKeyPem;
+    alternatePublicKey = certPublicKeyPem;
+  } else if (keyIdMatchesCertHash) {
+    publicKeyPem = certPublicKeyPem;
+    alternatePublicKey = cosePublicKeyPem ?? undefined;
+  } else {
+    throw new Error(
+      'keyId does not match hash of cert or COSE public key',
+    );
+  }
 
   // 8. Verify nonce in cert extension
   const clientDataHash = createHash('sha256')
@@ -547,7 +567,10 @@ export async function verifyAttestation(
 
   return {
     publicKey: publicKeyPem,
-    alternatePublicKey: cosePublicKeyPem ?? undefined,
+    alternatePublicKey:
+      alternatePublicKey && alternatePublicKey !== publicKeyPem
+        ? alternatePublicKey
+        : undefined,
     keyId,
   };
 }
