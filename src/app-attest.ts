@@ -490,10 +490,14 @@ export async function verifyAssertion(
     .update(Buffer.from(nonce, 'hex'))
     .digest();
   const verifyWithEncoding = (dsaEncoding: 'der' | 'ieee-p1363'): boolean => {
-    const verifier = createVerify('SHA256');
-    verifier.update(authenticatorData);
-    verifier.update(clientDataHash);
-    return verifier.verify({ key: storedPublicKey, dsaEncoding }, signature);
+    try {
+      const verifier = createVerify('SHA256');
+      verifier.update(authenticatorData);
+      verifier.update(clientDataHash);
+      return verifier.verify({ key: storedPublicKey, dsaEncoding }, signature);
+    } catch {
+      return false;
+    }
   };
 
   const validDer = verifyWithEncoding('der');
