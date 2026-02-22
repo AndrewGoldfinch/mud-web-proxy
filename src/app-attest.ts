@@ -519,9 +519,12 @@ export async function verifyAssertion(
         .update(`${teamId}.${bundleId}`)
         .digest()
     : null;
+  const rpMatchesBundle = parsed.rpIdHash.equals(expectedBundleHash);
+  const rpMatchesAppId =
+    !!expectedAppIdHash && parsed.rpIdHash.equals(expectedAppIdHash);
   if (
-    !parsed.rpIdHash.equals(expectedBundleHash) &&
-    !(expectedAppIdHash && parsed.rpIdHash.equals(expectedAppIdHash))
+    !rpMatchesBundle &&
+    !rpMatchesAppId
   ) {
     throw new Error('rpIdHash does not match bundleId or TeamID.BundleID');
   }
@@ -536,25 +539,58 @@ export async function verifyAssertion(
   // 4. Verify ECDSA-P256-SHA256 signature.
   // Signed data: SHA256(authenticatorData || SHA256(nonce bytes)).
   // Accept both DER and IEEE-P1363 signature encodings for compatibility.
-  const clientDataHash = createHash('sha256')
-    .update(Buffer.from(nonce, 'hex'))
-    .digest();
-  const verifyWithEncoding = (dsaEncoding: 'der' | 'ieee-p1363'): boolean => {
+  const nonceBytes = Buffer.from(nonce, 'hex');
+  const candidateClientDataHashes = [
+    createHash('sha256').update(nonceBytes).digest(),
+    nonceBytes,
+  ];
+
+  const verifyWithEncodingAndClientHash = (
+    dsaEncoding: 'der' | 'ieee-p1363',
+    clientDataHash: Buffer,
+  ): { ok: boolean; error?: string } => {
     try {
       const verifier = createVerify('SHA256');
       verifier.update(authenticatorData);
       verifier.update(clientDataHash);
-      return verifier.verify({ key: storedPublicKey, dsaEncoding }, signature);
+      return {
+        ok: verifier.verify({ key: storedPublicKey, dsaEncoding }, signature),
+      };
     } catch {
-      return false;
+      return { ok: false, error: 'verify-threw' };
     }
   };
 
-  const validDer = verifyWithEncoding('der');
-  const validP1363 = validDer ? false : verifyWithEncoding('ieee-p1363');
-  if (!validDer && !validP1363) {
+  let valid = false;
+  const attemptDetails: string[] = [];
+  for (const clientDataHash of candidateClientDataHashes) {
+    const hashMode =
+      clientDataHash.length === nonceBytes.length ? 'rawNonce' : 'sha256Nonce';
+    const derResult = verifyWithEncodingAndClientHash('der', clientDataHash);
+    attemptDetails.push(
+      `${hashMode}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+    );
+    if (derResult.ok) {
+      valid = true;
+      break;
+    }
+
+    const p1363Result = verifyWithEncodingAndClientHash(
+      'ieee-p1363',
+      clientDataHash,
+    );
+    attemptDetails.push(
+      `${hashMode}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+    );
+    if (p1363Result.ok) {
+      valid = true;
+      break;
+    }
+  }
+
+  if (!valid) {
     throw new Error(
-      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length})`,
+      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
     );
   }
 
