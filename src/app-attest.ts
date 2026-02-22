@@ -178,12 +178,40 @@ export function extractNonceFromCert(certDer: Buffer): Buffer {
   const extOctet = readDerTLV(certDer, pos, 0x04);
   const extValue = certDer.subarray(extOctet.valueStart, extOctet.valueEnd);
 
-  // Parse: SEQUENCE { SEQUENCE { OCTET STRING <nonce> } }.
-  const outerSeq = readDerTLV(extValue, 0, 0x30);
-  const innerSeq = readDerTLV(extValue, outerSeq.valueStart, 0x30);
-  const nonceOctet = readDerTLV(extValue, innerSeq.valueStart, 0x04);
+  const isConstructedTag = (tag: number): boolean => (tag & 0x20) === 0x20;
 
-  return Buffer.from(extValue.subarray(nonceOctet.valueStart, nonceOctet.valueEnd));
+  const findNonceOctet = (
+    buf: Buffer,
+    start: number,
+    end: number,
+  ): Buffer | null => {
+    let cursor = start;
+    while (cursor < end) {
+      const tlv = readDerTLV(buf, cursor);
+      if (tlv.tag === 0x04) {
+        const value = Buffer.from(buf.subarray(tlv.valueStart, tlv.valueEnd));
+        if (value.length === 32) {
+          return value;
+        }
+      }
+
+      if (isConstructedTag(tlv.tag)) {
+        const nested = findNonceOctet(buf, tlv.valueStart, tlv.valueEnd);
+        if (nested) {
+          return nested;
+        }
+      }
+      cursor = tlv.next;
+    }
+    return null;
+  };
+
+  const nonce = findNonceOctet(extValue, 0, extValue.length);
+  if (!nonce) {
+    throw new Error('Nonce OCTET STRING not found in extension value');
+  }
+
+  return nonce;
 }
 
 /**
