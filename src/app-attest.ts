@@ -78,8 +78,12 @@ export function parseAttestationAuthData(
     });
     credentialPublicKey = firstValue;
   } catch {
-    // Keep null and let verifier continue with cert key path.
-    credentialPublicKey = null;
+    try {
+      credentialPublicKey = decode(attestedDataTail);
+    } catch {
+      // Keep null and let verifier continue with cert key path.
+      credentialPublicKey = null;
+    }
   }
   return { rpIdHash, flags, signCount, aaguid, credId, credentialPublicKey };
 }
@@ -117,6 +121,17 @@ function getCoseMapValue(
   coseKey: unknown,
   numericKey: number,
 ): unknown {
+  if (
+    typeof coseKey === 'object' &&
+    coseKey !== null &&
+    'value' in (coseKey as Record<string, unknown>)
+  ) {
+    const tagged = (coseKey as { value?: unknown }).value;
+    if (tagged !== undefined && tagged !== coseKey) {
+      return getCoseMapValue(tagged, numericKey);
+    }
+  }
+
   if (coseKey instanceof Map) {
     return coseKey.get(numericKey);
   }
