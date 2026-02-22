@@ -1197,6 +1197,7 @@ const srv: ServerConfig = {
               const assertionBuffer = decodeHeaderBase64(assertionB64);
               const assertResult = await verifyAssertion({
                 assertionBuffer,
+                keyId,
                 nonce,
                 bundleId,
                 teamId: teamId || undefined,
@@ -1227,6 +1228,7 @@ const srv: ServerConfig = {
                   try {
                     await verifyAssertion({
                       assertionBuffer,
+                      keyId: candidate.keyId,
                       nonce,
                       bundleId,
                       teamId: teamId || undefined,

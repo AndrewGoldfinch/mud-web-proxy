@@ -556,6 +556,7 @@ export async function verifyAttestation(
 
 export interface AssertionInput {
   assertionBuffer: Buffer;
+  keyId?: string;
   nonce: string; // hex
   bundleId: string;
   teamId?: string;
@@ -574,6 +575,7 @@ export async function verifyAssertion(
 ): Promise<AssertionResult> {
   const {
     assertionBuffer,
+    keyId,
     nonce,
     bundleId,
     teamId,
@@ -674,6 +676,25 @@ export async function verifyAssertion(
     keyCandidates.push({ name: 'alternate', key: alternatePublicKey });
   }
 
+  const keyIdMatchesAnyCandidate = keyId
+    ? keyCandidates.some((candidate) => {
+        try {
+          const der = Buffer.from(
+            createPublicKey(candidate.key).export({
+              type: 'spki',
+              format: 'der',
+            }) as unknown as ArrayBuffer,
+          );
+          const hash = createHash('sha256').update(der).digest();
+          const b64 = hash.toString('base64');
+          const b64url = toBase64Url(hash);
+          return keyId === b64 || keyId === b64url;
+        } catch {
+          return false;
+        }
+      })
+    : false;
+
   const verifyWithEncodingAndClientHash = (
     keyPem: string,
     dsaEncoding: 'der' | 'ieee-p1363',
@@ -735,7 +756,7 @@ export async function verifyAssertion(
       return { newSignCount: parsed.signCount };
     }
     throw new Error(
-      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
+      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, keyIdMatchesCandidate=${keyIdMatchesAnyCandidate}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
     );
   }
 
