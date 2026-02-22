@@ -70,8 +70,13 @@ export function parseAttestationAuthData(
   const attestedDataTail = Buffer.from(authData.subarray(credIdEnd));
   let credentialPublicKey: unknown = null;
   try {
-    const decodedValues = decodeMultiple(attestedDataTail) as unknown[];
-    credentialPublicKey = decodedValues[0];
+    let firstValue: unknown = null;
+    decodeMultiple(attestedDataTail, (value: unknown) => {
+      if (firstValue === null) {
+        firstValue = value;
+      }
+    });
+    credentialPublicKey = firstValue;
   } catch {
     // Keep null and let verifier continue with cert key path.
     credentialPublicKey = null;

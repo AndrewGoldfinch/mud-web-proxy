@@ -1072,7 +1072,7 @@ const srv: ServerConfig = {
               });
               debouncedSaveAttestedKeys(keysPath);
               srv.logInfo(
-                `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)}`,
+                `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)}`,
                 undefined,
                 'auth',
               );
