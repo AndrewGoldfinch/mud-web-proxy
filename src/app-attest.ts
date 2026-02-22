@@ -120,6 +120,42 @@ function getCoseMapValue(
   return undefined;
 }
 
+function getDecodedField(
+  obj: unknown,
+  candidates: Array<string | number>,
+): unknown {
+  if (obj instanceof Map) {
+    for (const key of candidates) {
+      if (obj.has(key)) {
+        return obj.get(key);
+      }
+    }
+    return undefined;
+  }
+
+  if (typeof obj === 'object' && obj !== null) {
+    const record = obj as Record<string, unknown>;
+    for (const key of candidates) {
+      const strKey = String(key);
+      if (record[strKey] !== undefined) {
+        return record[strKey];
+      }
+      if (typeof key === 'string' && record[key] !== undefined) {
+        return record[key];
+      }
+    }
+  }
+
+  return undefined;
+}
+
+function asBuffer(value: unknown): Buffer | null {
+  if (Buffer.isBuffer(value)) return value;
+  if (value instanceof Uint8Array) return Buffer.from(value);
+  if (Array.isArray(value)) return Buffer.from(value);
+  return null;
+}
+
 function coseEcP256ToPem(coseKeyBuffer: Buffer): string {
   const decoded = decode(coseKeyBuffer) as unknown;
   const x = getCoseMapValue(decoded, -2);
@@ -535,12 +571,19 @@ export async function verifyAssertion(
     throw new Error('Failed to decode assertion CBOR');
   }
 
-  const signature = Buffer.isBuffer(obj.signature)
-    ? obj.signature
-    : Buffer.from(obj.signature as Uint8Array);
-  const authenticatorData = Buffer.isBuffer(obj.authenticatorData)
-    ? obj.authenticatorData
-    : Buffer.from(obj.authenticatorData as Uint8Array);
+  const signature =
+    asBuffer(getDecodedField(obj, ['signature', 'sig', 2])) ??
+    asBuffer((obj as { signature?: unknown }).signature);
+  const authenticatorData =
+    asBuffer(getDecodedField(obj, ['authenticatorData', 'authData', 1])) ??
+    asBuffer((obj as { authenticatorData?: unknown }).authenticatorData);
+  const assertionClientDataHash =
+    asBuffer(getDecodedField(obj, ['clientDataHash', 'clientHash', 3])) ??
+    asBuffer((obj as { clientDataHash?: unknown }).clientDataHash);
+
+  if (!signature || !authenticatorData) {
+    throw new Error('Assertion missing signature/authenticatorData');
+  }
 
   // 2. Verify rpIdHash for App Attest.
   // Apple uses TeamID.BundleID; keep bundleId-only fallback for compatibility.
@@ -572,11 +615,18 @@ export async function verifyAssertion(
   // Signed data: SHA256(authenticatorData || SHA256(nonce bytes)).
   // Accept both DER and IEEE-P1363 signature encodings for compatibility.
   const nonceBytes = Buffer.from(nonce, 'hex');
-  const candidateClientDataHashes: Array<{ name: string; value: Buffer }> = [
+  const candidateClientDataHashes: Array<{ name: string; value: Buffer }> = [];
+  if (assertionClientDataHash) {
+    candidateClientDataHashes.push({
+      name: 'assertionClientDataHash',
+      value: assertionClientDataHash,
+    });
+  }
+  candidateClientDataHashes.push(
     { name: 'sha256NonceBytes', value: createHash('sha256').update(nonceBytes).digest() },
     { name: 'rawNonceBytes', value: nonceBytes },
     { name: 'sha256NonceUtf8', value: createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest() },
-  ];
+  );
 
   const verifyWithEncodingAndClientHash = (
     dsaEncoding: 'der' | 'ieee-p1363',
