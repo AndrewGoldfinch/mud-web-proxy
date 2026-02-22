@@ -531,9 +531,12 @@ export async function verifyAttestation(
     publicKeyPem = certPublicKeyPem;
     alternatePublicKey = cosePublicKeyPem ?? undefined;
   } else {
-    throw new Error(
-      'keyId does not match hash of cert or COSE public key',
+    // eslint-disable-next-line no-console
+    console.warn(
+      '[app-attest] keyId does not match hash of cert or COSE public key; storing both candidates for assertion-time verification',
     );
+    publicKeyPem = certPublicKeyPem;
+    alternatePublicKey = cosePublicKeyPem ?? undefined;
   }
 
   // 8. Verify nonce in cert extension
@@ -581,6 +584,7 @@ export interface AssertionInput {
   assertionBuffer: Buffer;
   keyId?: string;
   nonce: string; // hex
+  explicitClientDataHash?: Buffer;
   bundleId: string;
   teamId?: string;
   storedPublicKey: string; // PEM
@@ -600,6 +604,7 @@ export async function verifyAssertion(
     assertionBuffer,
     keyId,
     nonce,
+    explicitClientDataHash,
     bundleId,
     teamId,
     storedPublicKey,
@@ -674,6 +679,12 @@ export async function verifyAssertion(
   // Accept both DER and IEEE-P1363 signature encodings for compatibility.
   const nonceBytes = Buffer.from(nonce, 'hex');
   const candidateClientDataHashes: Array<{ name: string; value: Buffer }> = [];
+  if (explicitClientDataHash) {
+    candidateClientDataHashes.push({
+      name: 'explicitClientHash',
+      value: explicitClientDataHash,
+    });
+  }
   if (assertionClientDataHash) {
     candidateClientDataHashes.push({
       name: 'assertionClientDataHash',

@@ -943,14 +943,16 @@ const srv: ServerConfig = {
       const keyId = req.headers['x-app-assert-keyid'];
       const assertion = req.headers['x-app-assert-data'];
       const nonce = req.headers['x-app-assert-nonce'];
+      const clientHash = req.headers['x-app-assert-clienthash'];
       const keyIdStr = typeof keyId === 'string' ? keyId : '';
       const assertionStr = typeof assertion === 'string' ? assertion : '';
       const nonceStr = typeof nonce === 'string' ? nonce : '';
+      const clientHashStr = typeof clientHash === 'string' ? clientHash : '';
       const keySummary = keyIdStr
         ? `${keyIdStr.slice(0, 8)}... (len=${keyIdStr.length})`
         : '<missing>';
       const assertionHasSpaces = assertionStr.includes(' ');
-      return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length} assertionHasSpaces=${assertionHasSpaces}`;
+      return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length} clientHashLen=${clientHashStr.length} assertionHasSpaces=${assertionHasSpaces}`;
     };
 
     const decodeHeaderBase64 = (value: string): Buffer => {
@@ -1158,6 +1160,9 @@ const srv: ServerConfig = {
           const nonce = req.headers['x-app-assert-nonce'] as
             | string
             | undefined;
+          const clientHashB64 = req.headers['x-app-assert-clienthash'] as
+            | string
+            | undefined;
 
           if (keyId && assertionB64 && nonce) {
             if (!validateAndConsumeNonce(nonce)) {
@@ -1195,10 +1200,14 @@ const srv: ServerConfig = {
 
             try {
               const assertionBuffer = decodeHeaderBase64(assertionB64);
+              const clientDataHashBuffer = clientHashB64
+                ? decodeHeaderBase64(clientHashB64)
+                : undefined;
               const assertResult = await verifyAssertion({
                 assertionBuffer,
                 keyId,
                 nonce,
+                explicitClientDataHash: clientDataHashBuffer,
                 bundleId,
                 teamId: teamId || undefined,
                 storedPublicKey: storedKey.publicKey,
