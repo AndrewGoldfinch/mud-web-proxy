@@ -412,18 +412,18 @@ export async function verifyAttestation(
   // 6. Extract credential public key from authData COSE key.
   // Assertions are signed by this key.
   const publicKeyPem = coseEcP256ToPem(parsed.credentialPublicKey);
-
-  // 7. Verify credential identifier consistency.
-  // Some valid attestations present keyId as base64/base64url of credId.
-  // Keep SHA256(publicKey) as a compatibility fallback.
-  const publicKeyDer = Buffer.from(
-    credCert.publicKey.export({
+  const credentialPublicKeyDer = Buffer.from(
+    createPublicKey(publicKeyPem).export({
       type: 'spki',
       format: 'der',
     }) as unknown as ArrayBuffer,
   );
+
+  // 7. Verify credential identifier consistency.
+  // Some valid attestations present keyId as base64/base64url of credId.
+  // Keep SHA256(publicKey) as a compatibility fallback.
   const expectedCredIdFromPublicKey = createHash('sha256')
-    .update(publicKeyDer)
+    .update(credentialPublicKeyDer)
     .digest();
   const decodedKeyId = decodeBase64Like(keyId);
   const matchesDecodedKeyId =
