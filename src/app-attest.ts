@@ -463,15 +463,9 @@ export async function verifyAttestation(
     );
   }
 
-  let publicKeyPem = certPublicKeyPem;
-  if (matchesCosePublicKeyHash && cosePublicKeyPem) {
-    publicKeyPem = cosePublicKeyPem;
-  } else if (matchesCertPublicKeyHash) {
-    publicKeyPem = certPublicKeyPem;
-  } else if (cosePublicKeyPem) {
-    // Fallback to COSE key when credId came from keyId and both hashes are unavailable.
-    publicKeyPem = cosePublicKeyPem;
-  }
+  // Use certificate public key as canonical verification key.
+  // App Attest credential identity is anchored to the cert chain.
+  const publicKeyPem = certPublicKeyPem;
 
   // 8. Verify nonce in cert extension
   const clientDataHash = createHash('sha256')
