@@ -1094,7 +1094,7 @@ const srv: ServerConfig = {
               });
               debouncedSaveAttestedKeys(keysPath);
               srv.logInfo(
-                `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)}`,
+                `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)} keySource=${result.keySource} coseExtracted=${result.coseKeyExtracted} keyIdMatchesCose=${result.keyIdMatchesCoseHash} keyIdMatchesCert=${result.keyIdMatchesCertHash}`,
                 undefined,
                 'auth',
               );

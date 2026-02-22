@@ -185,8 +185,18 @@ function asBuffer(value: unknown): Buffer | null {
 }
 
 function coseEcP256ToPem(coseKey: unknown): string {
-  const x = getCoseMapValue(coseKey, -2);
-  const y = getCoseMapValue(coseKey, -3);
+  let normalizedKey = coseKey;
+  // Some decoders may leave the COSE key as an encoded byte string.
+  if (Buffer.isBuffer(normalizedKey) || normalizedKey instanceof Uint8Array) {
+    try {
+      normalizedKey = decode(Buffer.from(normalizedKey));
+    } catch {
+      // Keep original value and fail with a precise error below.
+    }
+  }
+
+  const x = getCoseMapValue(normalizedKey, -2);
+  const y = getCoseMapValue(normalizedKey, -3);
 
   const xBuf = Buffer.isBuffer(x) ? x : x ? Buffer.from(x as Uint8Array) : null;
   const yBuf = Buffer.isBuffer(y) ? y : y ? Buffer.from(y as Uint8Array) : null;
@@ -383,6 +393,10 @@ export interface AttestationResult {
   publicKey: string; // PEM
   alternatePublicKey?: string; // PEM (optional secondary key source)
   keyId: string;
+  keySource: 'cose' | 'cert';
+  keyIdMatchesCertHash: boolean;
+  keyIdMatchesCoseHash: boolean;
+  coseKeyExtracted: boolean;
 }
 
 export async function verifyAttestation(
@@ -485,6 +499,10 @@ export async function verifyAttestation(
     }) as unknown as ArrayBuffer,
   );
   const certCredId = createHash('sha256').update(certPublicKeyDer).digest();
+  const secondaryCertPublicKeyPem =
+    certs.length > 1
+      ? certs[1].publicKey.export({ type: 'spki', format: 'pem' }).toString()
+      : null;
 
   let cosePublicKeyPem: string | null = null;
   let cosePublicKeyDer: Buffer | null = null;
@@ -534,24 +552,31 @@ export async function verifyAttestation(
     keyId === toBase64Url(expectedCredIdFromCose)
   );
 
-  // Select the canonical stored public key by exact keyId hash match.
-  // This prevents storing a key that cannot validate later assertions.
+  // Prefer the credential public key carried in authData (COSE key).
+  // Assertion signatures are produced by that credential key.
   let publicKeyPem = certPublicKeyPem;
   let alternatePublicKey: string | undefined;
-
-  if (keyIdMatchesCoseHash && cosePublicKeyPem) {
+  if (cosePublicKeyPem) {
     publicKeyPem = cosePublicKeyPem;
     alternatePublicKey = certPublicKeyPem;
-  } else if (keyIdMatchesCertHash) {
-    publicKeyPem = certPublicKeyPem;
-    alternatePublicKey = cosePublicKeyPem ?? undefined;
   } else {
+    publicKeyPem = certPublicKeyPem;
+    alternatePublicKey = undefined;
+  }
+
+  if (!keyIdMatchesCoseHash && !keyIdMatchesCertHash) {
     // eslint-disable-next-line no-console
     console.warn(
-      '[app-attest] keyId does not match hash of cert or COSE public key; storing both candidates for assertion-time verification',
+      '[app-attest] keyId does not match hash of cert or COSE public key; storing available candidates for assertion-time verification',
     );
-    publicKeyPem = certPublicKeyPem;
-    alternatePublicKey = cosePublicKeyPem ?? undefined;
+  }
+
+  if (
+    (!alternatePublicKey || alternatePublicKey === publicKeyPem) &&
+    secondaryCertPublicKeyPem &&
+    secondaryCertPublicKeyPem !== publicKeyPem
+  ) {
+    alternatePublicKey = secondaryCertPublicKeyPem;
   }
 
   // 8. Verify nonce in cert extension
@@ -590,6 +615,10 @@ export async function verifyAttestation(
         ? alternatePublicKey
         : undefined,
     keyId,
+    keySource: cosePublicKeyPem ? 'cose' : 'cert',
+    keyIdMatchesCertHash,
+    keyIdMatchesCoseHash,
+    coseKeyExtracted: Boolean(cosePublicKeyPem),
   };
 }
 
