@@ -239,11 +239,18 @@ export async function verifyAttestation(
   const credCert = certs[0];
   const credCertDer = x5c[0];
 
-  // 4. Verify rpIdHash == SHA256(bundleId)
+  // 4. Verify rpIdHash for App Attest.
+  // Apple uses TeamID.BundleID; keep bundleId-only fallback for compatibility.
   const parsed = parseAttestationAuthData(authData);
-  const expectedRpIdHash = createHash('sha256').update(bundleId).digest();
-  if (!parsed.rpIdHash.equals(expectedRpIdHash)) {
-    throw new Error('rpIdHash does not match bundleId');
+  const expectedBundleHash = createHash('sha256').update(bundleId).digest();
+  const expectedAppIdHash = createHash('sha256')
+    .update(`${teamId}.${bundleId}`)
+    .digest();
+  if (
+    !parsed.rpIdHash.equals(expectedBundleHash) &&
+    !parsed.rpIdHash.equals(expectedAppIdHash)
+  ) {
+    throw new Error('rpIdHash does not match bundleId or TeamID.BundleID');
   }
 
   // 5. Verify teamId and bundleId appear in cert subject
@@ -303,6 +310,7 @@ export interface AssertionInput {
   assertionBuffer: Buffer;
   nonce: string; // hex
   bundleId: string;
+  teamId?: string;
   storedPublicKey: string; // PEM
   storedSignCount: number;
 }
@@ -318,6 +326,7 @@ export async function verifyAssertion(
     assertionBuffer,
     nonce,
     bundleId,
+    teamId,
     storedPublicKey,
     storedSignCount,
   } = opts;
@@ -338,11 +347,20 @@ export async function verifyAssertion(
     ? obj.authenticatorData
     : Buffer.from(obj.authenticatorData as Uint8Array);
 
-  // 2. Verify rpIdHash
+  // 2. Verify rpIdHash for App Attest.
+  // Apple uses TeamID.BundleID; keep bundleId-only fallback for compatibility.
   const parsed = parseAssertionAuthData(authenticatorData);
-  const expectedRpIdHash = createHash('sha256').update(bundleId).digest();
-  if (!parsed.rpIdHash.equals(expectedRpIdHash)) {
-    throw new Error('rpIdHash does not match bundleId');
+  const expectedBundleHash = createHash('sha256').update(bundleId).digest();
+  const expectedAppIdHash = teamId
+    ? createHash('sha256')
+        .update(`${teamId}.${bundleId}`)
+        .digest()
+    : null;
+  if (
+    !parsed.rpIdHash.equals(expectedBundleHash) &&
+    !(expectedAppIdHash && parsed.rpIdHash.equals(expectedAppIdHash))
+  ) {
+    throw new Error('rpIdHash does not match bundleId or TeamID.BundleID');
   }
 
   // 3. Verify signCount (must be strictly greater than stored)

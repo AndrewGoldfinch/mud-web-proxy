@@ -1161,6 +1161,7 @@ const srv: ServerConfig = {
             }
 
             const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
+            const teamId = process.env.APPATTEST_TEAM_ID ?? '';
             if (!bundleId) {
               srv.logWarn(
                 'Rejected upgrade: APPATTEST_BUNDLE_ID is not configured',
@@ -1177,6 +1178,7 @@ const srv: ServerConfig = {
                 assertionBuffer,
                 nonce,
                 bundleId,
+                teamId: teamId || undefined,
                 storedPublicKey: storedKey.publicKey,
                 storedSignCount: storedKey.signCount,
               });
