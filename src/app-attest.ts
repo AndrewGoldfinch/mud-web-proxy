@@ -112,35 +112,78 @@ export function extractNonceFromCert(certDer: Buffer): Buffer {
   if (oidIdx === -1)
     throw new Error('Apple nonce OID not found in certificate');
 
+  const readDerLength = (
+    buf: Buffer,
+    offset: number,
+  ): { length: number; next: number } => {
+    const first = buf[offset];
+    if (first === undefined) {
+      throw new Error('Invalid DER length');
+    }
+
+    if ((first & 0x80) === 0) {
+      return { length: first, next: offset + 1 };
+    }
+
+    const byteCount = first & 0x7f;
+    if (byteCount === 0 || byteCount > 4) {
+      throw new Error('Unsupported DER length encoding');
+    }
+
+    if (offset + 1 + byteCount > buf.length) {
+      throw new Error('Truncated DER length');
+    }
+
+    let length = 0;
+    for (let i = 0; i < byteCount; i++) {
+      length = (length << 8) | buf[offset + 1 + i];
+    }
+    return { length, next: offset + 1 + byteCount };
+  };
+
+  const readDerTLV = (
+    buf: Buffer,
+    offset: number,
+    expectedTag?: number,
+  ): { tag: number; valueStart: number; valueEnd: number; next: number } => {
+    const tag = buf[offset];
+    if (tag === undefined) {
+      throw new Error('Unexpected end of DER input');
+    }
+    if (expectedTag !== undefined && tag !== expectedTag) {
+      throw new Error(
+        `Unexpected DER tag 0x${tag.toString(16)}; expected 0x${expectedTag.toString(16)}`,
+      );
+    }
+
+    const { length, next } = readDerLength(buf, offset + 1);
+    const valueStart = next;
+    const valueEnd = valueStart + length;
+    if (valueEnd > buf.length) {
+      throw new Error('DER value exceeds buffer');
+    }
+
+    return { tag, valueStart, valueEnd, next: valueEnd };
+  };
+
   let pos = oidIdx + APPLE_NONCE_OID.length;
 
-  // Skip optional critical BOOLEAN (tag=0x01, length=0x01)
-  if (certDer[pos] === 0x01 && certDer[pos + 1] === 0x01) pos += 3;
-
-  // OCTET STRING wrapping the DER-encoded extension value
-  if (certDer[pos] !== 0x04)
-    throw new Error('Expected OCTET STRING after OID');
-  pos += 1; // skip tag
-  // Skip past the OCTET STRING length (handle both short and long form DER)
-  const lenByte = certDer[pos++];
-  if (lenByte & 0x80) {
-    const extraBytes = lenByte & 0x7f;
-    for (let i = 0; i < extraBytes; i++) pos++;
+  // Optional critical BOOLEAN after extension OID.
+  if (certDer[pos] === 0x01) {
+    const critical = readDerTLV(certDer, pos, 0x01);
+    pos = critical.next;
   }
 
-  // Extension value: SEQUENCE { SEQUENCE { OCTET STRING <nonce> } }
-  if (certDer[pos] !== 0x30)
-    throw new Error('Expected outer SEQUENCE in extension value');
-  pos += 2; // tag + length
-  if (certDer[pos] !== 0x30)
-    throw new Error('Expected inner SEQUENCE in extension value');
-  pos += 2; // tag + length
-  if (certDer[pos] !== 0x04)
-    throw new Error('Expected OCTET STRING for nonce');
-  pos += 1; // skip tag
-  const nonceLen = certDer[pos++];
+  // Extension payload is wrapped as an OCTET STRING.
+  const extOctet = readDerTLV(certDer, pos, 0x04);
+  const extValue = certDer.subarray(extOctet.valueStart, extOctet.valueEnd);
 
-  return Buffer.from(certDer.subarray(pos, pos + nonceLen));
+  // Parse: SEQUENCE { SEQUENCE { OCTET STRING <nonce> } }.
+  const outerSeq = readDerTLV(extValue, 0, 0x30);
+  const innerSeq = readDerTLV(extValue, outerSeq.valueStart, 0x30);
+  const nonceOctet = readDerTLV(extValue, innerSeq.valueStart, 0x04);
+
+  return Buffer.from(extValue.subarray(nonceOctet.valueStart, nonceOctet.valueEnd));
 }
 
 /**
