@@ -1203,6 +1203,7 @@ const srv: ServerConfig = {
               const clientDataHashBuffer = clientHashB64
                 ? decodeHeaderBase64(clientHashB64)
                 : undefined;
+              const previousSignCount = storedKey.signCount;
               const assertResult = await verifyAssertion({
                 assertionBuffer,
                 keyId,
@@ -1218,7 +1219,7 @@ const srv: ServerConfig = {
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);
               srv.logInfo(
-                `App Attest verified keyId=${keyId.slice(0, 8)}... signCount=${storedKey.signCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
+                `App Attest verified keyId=${keyId.slice(0, 8)}... signCount=${previousSignCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
