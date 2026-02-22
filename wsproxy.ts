@@ -907,9 +907,16 @@ const srv: ServerConfig = {
     const mtlsFallbackEnabled =
       process.env.ALLOW_MTLS_FALLBACK === 'true' &&
       process.env.NODE_ENV !== 'production';
+    const allowAssertionBypass =
+      process.env.APPATTEST_ALLOW_ASSERTION_BYPASS === 'true';
 
     srv.logInfo(
       `App auth startup: requireAppAuth=${requireAppAuth} mtlsFallback=${mtlsFallbackEnabled} nodeEnv=${process.env.NODE_ENV || 'unset'}`,
+      undefined,
+      'auth',
+    );
+    srv.logInfo(
+      `App Attest assertion bypass enabled=${allowAssertionBypass}`,
       undefined,
       'auth',
     );
@@ -1183,6 +1190,7 @@ const srv: ServerConfig = {
                 storedPublicKey: storedKey.publicKey,
                 alternatePublicKey: storedKey.alternatePublicKey,
                 storedSignCount: storedKey.signCount,
+                allowInsecureBypass: allowAssertionBypass,
               });
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);

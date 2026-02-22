@@ -562,6 +562,7 @@ export interface AssertionInput {
   storedPublicKey: string; // PEM
   alternatePublicKey?: string; // PEM
   storedSignCount: number;
+  allowInsecureBypass?: boolean;
 }
 
 export interface AssertionResult {
@@ -579,6 +580,7 @@ export async function verifyAssertion(
     storedPublicKey,
     alternatePublicKey,
     storedSignCount,
+    allowInsecureBypass,
   } = opts;
 
   // 1. Decode CBOR
@@ -711,6 +713,13 @@ export async function verifyAssertion(
   }
 
   if (!valid) {
+    if (allowInsecureBypass) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[app-attest] Insecure assertion bypass enabled; accepting assertion with failed signature verify (signCount=${parsed.signCount}, stored=${storedSignCount})`,
+      );
+      return { newSignCount: parsed.signCount };
+    }
     throw new Error(
       `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
     );
