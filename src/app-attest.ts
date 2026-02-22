@@ -3,6 +3,7 @@ import {
   createHash,
   X509Certificate,
   createVerify,
+  verify as cryptoVerify,
   createPublicKey,
 } from 'crypto';
 import fs from 'fs';
@@ -773,47 +774,120 @@ export async function verifyAssertion(
       })
     : false;
 
-  const verifyWithEncodingAndClientHash = (
+  const verifyWithEncodingAndPayload = (
     keyPem: string,
     dsaEncoding: 'der' | 'ieee-p1363',
-    clientDataHash: Buffer,
+    payload: Buffer,
+    mode: 'sha256' | 'raw',
   ): { ok: boolean; error?: string } => {
     try {
+      if (mode === 'raw') {
+        return {
+          ok: cryptoVerify(
+            null,
+            payload,
+            { key: keyPem, dsaEncoding },
+            signature,
+          ),
+        };
+      }
+
       const verifier = createVerify('SHA256');
-      verifier.update(authenticatorData);
-      verifier.update(clientDataHash);
+      verifier.update(payload);
       return {
         ok: verifier.verify({ key: keyPem, dsaEncoding }, signature),
       };
-    } catch {
-      return { ok: false, error: 'verify-threw' };
+    } catch (err) {
+      return {
+        ok: false,
+        error: `verify-threw:${(err as Error).message}`,
+      };
     }
+  };
+
+  const buildPayloadVariants = (
+    clientDataHash: Buffer,
+  ): Array<{ name: string; payload: Buffer; mode: 'sha256' | 'raw' }> => {
+    const authPlusClient = Buffer.concat([authenticatorData, clientDataHash]);
+    const clientPlusAuth = Buffer.concat([clientDataHash, authenticatorData]);
+    return [
+      { name: 'authPlusClient:sha256', payload: authPlusClient, mode: 'sha256' },
+      { name: 'clientPlusAuth:sha256', payload: clientPlusAuth, mode: 'sha256' },
+      { name: 'authPlusClient:raw', payload: authPlusClient, mode: 'raw' },
+      { name: 'clientPlusAuth:raw', payload: clientPlusAuth, mode: 'raw' },
+      {
+        name: 'sha256(authPlusClient):raw',
+        payload: createHash('sha256').update(authPlusClient).digest(),
+        mode: 'raw',
+      },
+      {
+        name: 'sha256(clientPlusAuth):raw',
+        payload: createHash('sha256').update(clientPlusAuth).digest(),
+        mode: 'raw',
+      },
+      { name: 'clientOnly:sha256', payload: clientDataHash, mode: 'sha256' },
+      { name: 'clientOnly:raw', payload: clientDataHash, mode: 'raw' },
+    ];
   };
 
   let valid = false;
   const attemptDetails: string[] = [];
   for (const keyCandidate of keyCandidates) {
     for (const candidate of candidateClientDataHashes) {
-      const derResult = verifyWithEncodingAndClientHash(
+      for (const payloadVariant of buildPayloadVariants(candidate.value)) {
+        const derResult = verifyWithEncodingAndPayload(
+          keyCandidate.key,
+          'der',
+          payloadVariant.payload,
+          payloadVariant.mode,
+        );
+        attemptDetails.push(
+          `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+        );
+        if (derResult.ok) {
+          valid = true;
+          break;
+        }
+
+        const p1363Result = verifyWithEncodingAndPayload(
+          keyCandidate.key,
+          'ieee-p1363',
+          payloadVariant.payload,
+          payloadVariant.mode,
+        );
+        attemptDetails.push(
+          `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+        );
+        if (p1363Result.ok) {
+          valid = true;
+          break;
+        }
+      }
+      if (valid) {
+        break;
+      }
+      const derResult = verifyWithEncodingAndPayload(
         keyCandidate.key,
         'der',
-        candidate.value,
+        Buffer.concat([authenticatorData, candidate.value]),
+        'sha256',
       );
       attemptDetails.push(
-        `${keyCandidate.name}:${candidate.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+        `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
       );
       if (derResult.ok) {
         valid = true;
         break;
       }
 
-      const p1363Result = verifyWithEncodingAndClientHash(
+      const p1363Result = verifyWithEncodingAndPayload(
         keyCandidate.key,
         'ieee-p1363',
-        candidate.value,
+        Buffer.concat([authenticatorData, candidate.value]),
+        'sha256',
       );
       attemptDetails.push(
-        `${keyCandidate.name}:${candidate.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+        `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
       );
       if (p1363Result.ok) {
         valid = true;
