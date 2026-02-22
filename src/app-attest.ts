@@ -3,6 +3,7 @@ import {
   createHash,
   X509Certificate,
   createVerify,
+  createPublicKey,
 } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -46,6 +47,7 @@ export interface AttestationAuthData {
   signCount: number;
   aaguid: Buffer;
   credId: Buffer;
+  credentialPublicKey: Buffer;
 }
 
 export interface AssertionAuthData {
@@ -62,8 +64,11 @@ export function parseAttestationAuthData(
   const signCount = authData.readUInt32BE(33);
   const aaguid = Buffer.from(authData.subarray(37, 53));
   const credIdLen = authData.readUInt16BE(53);
-  const credId = Buffer.from(authData.subarray(55, 55 + credIdLen));
-  return { rpIdHash, flags, signCount, aaguid, credId };
+  const credIdStart = 55;
+  const credIdEnd = credIdStart + credIdLen;
+  const credId = Buffer.from(authData.subarray(credIdStart, credIdEnd));
+  const credentialPublicKey = Buffer.from(authData.subarray(credIdEnd));
+  return { rpIdHash, flags, signCount, aaguid, credId, credentialPublicKey };
 }
 
 export function parseAssertionAuthData(authData: Buffer): AssertionAuthData {
@@ -93,6 +98,52 @@ function toBase64Url(buf: Buffer): string {
     .replace(/\+/g, '-')
     .replace(/\//g, '_')
     .replace(/=+$/g, '');
+}
+
+function getCoseMapValue(
+  coseKey: unknown,
+  numericKey: number,
+): unknown {
+  if (coseKey instanceof Map) {
+    return coseKey.get(numericKey);
+  }
+
+  if (typeof coseKey === 'object' && coseKey !== null) {
+    const obj = coseKey as Record<string, unknown>;
+    const direct = obj[String(numericKey)];
+    if (direct !== undefined) {
+      return direct;
+    }
+    return obj[numericKey as unknown as keyof typeof obj];
+  }
+
+  return undefined;
+}
+
+function coseEcP256ToPem(coseKeyBuffer: Buffer): string {
+  const decoded = decode(coseKeyBuffer) as unknown;
+  const x = getCoseMapValue(decoded, -2);
+  const y = getCoseMapValue(decoded, -3);
+
+  const xBuf = Buffer.isBuffer(x) ? x : x ? Buffer.from(x as Uint8Array) : null;
+  const yBuf = Buffer.isBuffer(y) ? y : y ? Buffer.from(y as Uint8Array) : null;
+
+  if (!xBuf || !yBuf || xBuf.length !== 32 || yBuf.length !== 32) {
+    throw new Error('Invalid COSE key coordinates');
+  }
+
+  const uncompressedPoint = Buffer.concat([Buffer.from([0x04]), xBuf, yBuf]);
+  const spkiPrefix = Buffer.from(
+    '3059301306072A8648CE3D020106082A8648CE3D030107034200',
+    'hex',
+  );
+  const spkiDer = Buffer.concat([spkiPrefix, uncompressedPoint]);
+  const publicKey = createPublicKey({
+    key: spkiDer,
+    format: 'der',
+    type: 'spki',
+  });
+  return publicKey.export({ type: 'spki', format: 'pem' }).toString();
 }
 
 // ---------- Certificate nonce extraction ----------
@@ -358,10 +409,9 @@ export async function verifyAttestation(
     );
   }
 
-  // 6. Extract public key from credential cert
-  const publicKeyPem = credCert.publicKey
-    .export({ type: 'spki', format: 'pem' })
-    .toString();
+  // 6. Extract credential public key from authData COSE key.
+  // Assertions are signed by this key.
+  const publicKeyPem = coseEcP256ToPem(parsed.credentialPublicKey);
 
   // 7. Verify credential identifier consistency.
   // Some valid attestations present keyId as base64/base64url of credId.
