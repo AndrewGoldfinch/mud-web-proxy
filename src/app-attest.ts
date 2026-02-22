@@ -8,7 +8,7 @@ import {
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { decode } from 'cbor-x';
+import { decode, decodeMultiple } from 'cbor-x';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -47,7 +47,7 @@ export interface AttestationAuthData {
   signCount: number;
   aaguid: Buffer;
   credId: Buffer;
-  credentialPublicKey: Buffer;
+  credentialPublicKey: unknown;
 }
 
 export interface AssertionAuthData {
@@ -67,7 +67,15 @@ export function parseAttestationAuthData(
   const credIdStart = 55;
   const credIdEnd = credIdStart + credIdLen;
   const credId = Buffer.from(authData.subarray(credIdStart, credIdEnd));
-  const credentialPublicKey = Buffer.from(authData.subarray(credIdEnd));
+  const attestedDataTail = Buffer.from(authData.subarray(credIdEnd));
+  let credentialPublicKey: unknown = null;
+  try {
+    const decodedValues = decodeMultiple(attestedDataTail) as unknown[];
+    credentialPublicKey = decodedValues[0];
+  } catch {
+    // Keep null and let verifier continue with cert key path.
+    credentialPublicKey = null;
+  }
   return { rpIdHash, flags, signCount, aaguid, credId, credentialPublicKey };
 }
 
@@ -156,10 +164,9 @@ function asBuffer(value: unknown): Buffer | null {
   return null;
 }
 
-function coseEcP256ToPem(coseKeyBuffer: Buffer): string {
-  const decoded = decode(coseKeyBuffer) as unknown;
-  const x = getCoseMapValue(decoded, -2);
-  const y = getCoseMapValue(decoded, -3);
+function coseEcP256ToPem(coseKey: unknown): string {
+  const x = getCoseMapValue(coseKey, -2);
+  const y = getCoseMapValue(coseKey, -3);
 
   const xBuf = Buffer.isBuffer(x) ? x : x ? Buffer.from(x as Uint8Array) : null;
   const yBuf = Buffer.isBuffer(y) ? y : y ? Buffer.from(y as Uint8Array) : null;
