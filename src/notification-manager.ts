@@ -58,6 +58,24 @@ export class NotificationManager {
     if (this.config.apns && this.config.enabled) {
       this.generateAuthToken();
     }
+
+    this.logConfiguration();
+  }
+
+  private logConfiguration(): void {
+    const apns = this.config.apns;
+    if (!apns) {
+      // eslint-disable-next-line no-console
+      console.log(
+        '[notification-manager] APNS disabled (missing configuration)',
+      );
+      return;
+    }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[notification-manager] APNS config enabled env=${apns.environment} host=${this.apnsHost} topic=${apns.topic || '<missing>'} keyId=${apns.keyId || '<missing>'} teamId=${apns.teamId || '<missing>'} keyPath=${apns.keyPath}`,
+    );
   }
 
   /**
@@ -126,6 +144,11 @@ export class NotificationManager {
       this.authToken = token;
       this.tokenExpiry = Date.now() + 30 * 60 * 1000; // Refresh in 30 min
 
+      // eslint-disable-next-line no-console
+      console.log(
+        `[notification-manager] APNS auth token generated kid=${keyId} expiresAt=${new Date(this.tokenExpiry).toISOString()}`,
+      );
+
       return token;
     } catch (err) {
       // eslint-disable-next-line no-console
@@ -141,6 +164,8 @@ export class NotificationManager {
    */
   private getAuthToken(): string | null {
     if (!this.authToken || Date.now() > this.tokenExpiry) {
+      // eslint-disable-next-line no-console
+      console.log('[notification-manager] APNS auth token refresh required');
       return this.generateAuthToken();
     }
     return this.authToken;
@@ -185,6 +210,11 @@ export class NotificationManager {
       return false;
     }
 
+    // eslint-disable-next-line no-console
+    console.log(
+      `[notification-manager] sendSilentPush session=${sessionId} deviceToken=${this.redactToken(deviceToken)}`,
+    );
+
     const apnsPayload = {
       aps: {
         'content-available': 1,
@@ -206,6 +236,11 @@ export class NotificationManager {
     if (!this.isAvailable()) {
       return false;
     }
+
+    // eslint-disable-next-line no-console
+    console.log(
+      `[notification-manager] sendActivityKitPush world=${contentState.worldName} activityToken=${this.redactToken(activityPushToken)}`,
+    );
 
     const nowSeconds = Math.floor(Date.now() / 1000);
     const apnsPayload = {
@@ -304,6 +339,7 @@ export class NotificationManager {
     }
 
     const postData = JSON.stringify(apnsPayload);
+    const start = Date.now();
 
     const options: https.RequestOptions = {
       hostname: this.apnsHost,
@@ -321,25 +357,66 @@ export class NotificationManager {
     };
 
     return new Promise((resolve) => {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[notification-manager] APNS request start pushType=${optionsIn.pushType} priority=${optionsIn.priority} topic=${optionsIn.topic} target=${this.redactToken(deviceToken)} payloadBytes=${Buffer.byteLength(postData)}`,
+      );
+
       const req = https.request(options, (res) => {
         const statusCode = res.statusCode || 0;
+        const apnsIdHeader = res.headers['apns-id'];
+        const apnsId = Array.isArray(apnsIdHeader)
+          ? apnsIdHeader[0]
+          : apnsIdHeader || '';
+        const chunks: Buffer[] = [];
 
-        if (statusCode >= 200 && statusCode < 300) {
-          resolve(true);
-        } else {
+        res.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+        });
+
+        res.on('end', () => {
+          const elapsedMs = Date.now() - start;
+          const bodyText = Buffer.concat(chunks).toString('utf8');
+          let reason = '';
+          try {
+            const parsed = bodyText ? (JSON.parse(bodyText) as { reason?: string }) : undefined;
+            reason = parsed?.reason || '';
+          } catch {
+            reason = '';
+          }
+
+          if (statusCode >= 200 && statusCode < 300) {
+            // eslint-disable-next-line no-console
+            console.log(
+              `[notification-manager] APNS request success status=${statusCode} apnsId=${apnsId || '<none>'} elapsedMs=${elapsedMs}`,
+            );
+            resolve(true);
+            return;
+          }
+
           // eslint-disable-next-line no-console
-          console.error(`[notification-manager] APNS error ${statusCode}`);
+          console.error(
+            `[notification-manager] APNS request failed status=${statusCode} apnsId=${apnsId || '<none>'} reason=${reason || '<none>'} elapsedMs=${elapsedMs}`,
+          );
           resolve(false);
-        }
+        });
       });
 
       req.on('error', (err) => {
+        const elapsedMs = Date.now() - start;
         // eslint-disable-next-line no-console
-        console.error(`[notification-manager] Request error: ${err}`);
+        console.error(
+          `[notification-manager] APNS request error elapsedMs=${elapsedMs}: ${err}`,
+        );
         resolve(false);
       });
 
       req.setTimeout(10000, () => {
+        const elapsedMs = Date.now() - start;
+        // eslint-disable-next-line no-console
+        console.error(
+          `[notification-manager] APNS request timeout after ${elapsedMs}ms`,
+        );
         req.destroy();
         resolve(false);
       });
@@ -432,5 +509,13 @@ export class NotificationManager {
       tokenValid: !!this.getAuthToken(),
       pendingNotifications: this.pendingNotifications.size,
     };
+  }
+
+  private redactToken(token: string): string {
+    const trimmed = token.trim();
+    if (!trimmed) {
+      return '<empty>';
+    }
+    return `${trimmed.slice(0, 8)}... (len=${trimmed.length})`;
   }
 }
