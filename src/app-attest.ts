@@ -483,19 +483,26 @@ export async function verifyAssertion(
     );
   }
 
-  // 4. Verify ECDSA-P256-SHA256 signature
-  // Signed data: SHA256(authenticatorData || SHA256(nonce bytes))
+  // 4. Verify ECDSA-P256-SHA256 signature.
+  // Signed data: SHA256(authenticatorData || SHA256(nonce bytes)).
+  // Accept both DER and IEEE-P1363 signature encodings for compatibility.
   const clientDataHash = createHash('sha256')
     .update(Buffer.from(nonce, 'hex'))
     .digest();
-  const verifier = createVerify('SHA256');
-  verifier.update(authenticatorData);
-  verifier.update(clientDataHash);
-  const valid = verifier.verify(
-    { key: storedPublicKey, dsaEncoding: 'der' },
-    signature,
-  );
-  if (!valid) throw new Error('Assertion signature verification failed');
+  const verifyWithEncoding = (dsaEncoding: 'der' | 'ieee-p1363'): boolean => {
+    const verifier = createVerify('SHA256');
+    verifier.update(authenticatorData);
+    verifier.update(clientDataHash);
+    return verifier.verify({ key: storedPublicKey, dsaEncoding }, signature);
+  };
+
+  const validDer = verifyWithEncoding('der');
+  const validP1363 = validDer ? false : verifyWithEncoding('ieee-p1363');
+  if (!validDer && !validP1363) {
+    throw new Error(
+      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length})`,
+    );
+  }
 
   return { newSignCount: parsed.signCount };
 }
