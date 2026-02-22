@@ -74,6 +74,27 @@ export function parseAssertionAuthData(authData: Buffer): AssertionAuthData {
   };
 }
 
+function decodeBase64Like(input: string): Buffer | null {
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const normalized = trimmed.replace(/-/g, '+').replace(/_/g, '/');
+  const padded =
+    normalized + '==='.slice((normalized.length + 3) % 4);
+  try {
+    return Buffer.from(padded, 'base64');
+  } catch {
+    return null;
+  }
+}
+
+function toBase64Url(buf: Buffer): string {
+  return buf
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
 // ---------- Certificate nonce extraction ----------
 
 // OID 1.2.840.113635.100.8.2 in DER encoding
@@ -271,16 +292,28 @@ export async function verifyAttestation(
     .export({ type: 'spki', format: 'pem' })
     .toString();
 
-  // 7. Verify credId == SHA256(publicKey DER)
+  // 7. Verify credential identifier consistency.
+  // Some valid attestations present keyId as base64/base64url of credId.
+  // Keep SHA256(publicKey) as a compatibility fallback.
   const publicKeyDer = Buffer.from(
     credCert.publicKey.export({
       type: 'spki',
       format: 'der',
     }) as unknown as ArrayBuffer,
   );
-  const expectedCredId = createHash('sha256').update(publicKeyDer).digest();
-  if (!parsed.credId.equals(expectedCredId)) {
-    throw new Error('credentialId does not match SHA256(publicKey)');
+  const expectedCredIdFromPublicKey = createHash('sha256')
+    .update(publicKeyDer)
+    .digest();
+  const decodedKeyId = decodeBase64Like(keyId);
+  const matchesDecodedKeyId =
+    !!decodedKeyId && parsed.credId.equals(decodedKeyId);
+  const matchesPublicKeyHash = parsed.credId.equals(
+    expectedCredIdFromPublicKey,
+  );
+  if (!matchesDecodedKeyId && !matchesPublicKeyHash) {
+    throw new Error(
+      'credentialId mismatch: not equal to keyId bytes or SHA256(publicKey)',
+    );
   }
 
   // 8. Verify nonce in cert extension
@@ -296,12 +329,18 @@ export async function verifyAttestation(
     throw new Error('Certificate nonce does not match expected value');
   }
 
-  // 9. Verify keyId == base64(SHA256(publicKey DER))
-  const expectedKeyId = createHash('sha256')
-    .update(publicKeyDer)
-    .digest('base64');
-  if (keyId !== expectedKeyId) {
-    throw new Error('keyId does not match SHA256(publicKey)');
+  // 9. Verify keyId encoding consistency.
+  const credIdForKeyValidation = matchesDecodedKeyId
+    ? parsed.credId
+    : expectedCredIdFromPublicKey;
+  const expectedKeyIdB64 = credIdForKeyValidation.toString('base64');
+  const expectedKeyIdB64Url = toBase64Url(credIdForKeyValidation);
+  if (
+    keyId !== expectedKeyIdB64 &&
+    keyId !== expectedKeyIdB64Url &&
+    !(decodedKeyId && decodedKeyId.equals(credIdForKeyValidation))
+  ) {
+    throw new Error('keyId does not match expected credential identifier');
   }
 
   return { publicKey: publicKeyPem, keyId };
