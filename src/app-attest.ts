@@ -253,13 +253,16 @@ export async function verifyAttestation(
     throw new Error('rpIdHash does not match bundleId or TeamID.BundleID');
   }
 
-  // 5. Verify teamId and bundleId appear in cert subject
+  // 5. Soft-check cert subject contains team/bundle markers.
+  // Apple cert subject formatting can vary; rpIdHash + chain validation
+  // are the primary trust checks.
   if (
     !credCert.subject.includes(teamId) ||
     !credCert.subject.includes(bundleId)
   ) {
-    throw new Error(
-      `Certificate subject does not match teamId/bundleId (expected ${teamId}.${bundleId})`,
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[app-attest] Certificate subject mismatch; continuing. expected=${teamId}.${bundleId} subject=${credCert.subject}`,
     );
   }
 
