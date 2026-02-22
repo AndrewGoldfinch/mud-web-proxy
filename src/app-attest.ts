@@ -606,6 +606,18 @@ export async function verifyAssertion(
     throw new Error('Assertion missing signature/authenticatorData');
   }
 
+  const decodedShape = (() => {
+    if (obj instanceof Map) {
+      return `mapKeys=${Array.from(obj.keys())
+        .map((k) => String(k))
+        .join(',')}`;
+    }
+    if (typeof obj === 'object' && obj !== null) {
+      return `objKeys=${Object.keys(obj as Record<string, unknown>).join(',')}`;
+    }
+    return `type=${typeof obj}`;
+  })();
+
   // 2. Verify rpIdHash for App Attest.
   // Apple uses TeamID.BundleID; keep bundleId-only fallback for compatibility.
   const parsed = parseAssertionAuthData(authenticatorData);
@@ -723,7 +735,7 @@ export async function verifyAssertion(
       return { newSignCount: parsed.signCount };
     }
     throw new Error(
-      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
+      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
     );
   }
 
