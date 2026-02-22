@@ -409,32 +409,68 @@ export async function verifyAttestation(
     );
   }
 
-  // 6. Extract credential public key from authData COSE key.
-  // Assertions are signed by this key.
-  const publicKeyPem = coseEcP256ToPem(parsed.credentialPublicKey);
-  const credentialPublicKeyDer = Buffer.from(
-    createPublicKey(publicKeyPem).export({
+  // 6. Derive candidate public keys from both COSE authData and cert.
+  // Prefer whichever candidate hash matches credId.
+  const certPublicKeyPem = credCert.publicKey
+    .export({ type: 'spki', format: 'pem' })
+    .toString();
+  const certPublicKeyDer = Buffer.from(
+    credCert.publicKey.export({
       type: 'spki',
       format: 'der',
     }) as unknown as ArrayBuffer,
   );
+  const certCredId = createHash('sha256').update(certPublicKeyDer).digest();
+
+  let cosePublicKeyPem: string | null = null;
+  let cosePublicKeyDer: Buffer | null = null;
+  let coseCredId: Buffer | null = null;
+  try {
+    cosePublicKeyPem = coseEcP256ToPem(parsed.credentialPublicKey);
+    cosePublicKeyDer = Buffer.from(
+      createPublicKey(cosePublicKeyPem).export({
+        type: 'spki',
+        format: 'der',
+      }) as unknown as ArrayBuffer,
+    );
+    coseCredId = createHash('sha256').update(cosePublicKeyDer).digest();
+  } catch {
+    cosePublicKeyPem = null;
+    cosePublicKeyDer = null;
+    coseCredId = null;
+  }
 
   // 7. Verify credential identifier consistency.
   // Some valid attestations present keyId as base64/base64url of credId.
-  // Keep SHA256(publicKey) as a compatibility fallback.
-  const expectedCredIdFromPublicKey = createHash('sha256')
-    .update(credentialPublicKeyDer)
-    .digest();
+  // Keep SHA256(publicKey) compatibility checks for derived keys.
+  const expectedCredIdFromCose = coseCredId;
+  const expectedCredIdFromCert = certCredId;
   const decodedKeyId = decodeBase64Like(keyId);
   const matchesDecodedKeyId =
     !!decodedKeyId && parsed.credId.equals(decodedKeyId);
-  const matchesPublicKeyHash = parsed.credId.equals(
-    expectedCredIdFromPublicKey,
+  const matchesCosePublicKeyHash =
+    !!expectedCredIdFromCose && parsed.credId.equals(expectedCredIdFromCose);
+  const matchesCertPublicKeyHash = parsed.credId.equals(
+    expectedCredIdFromCert,
   );
-  if (!matchesDecodedKeyId && !matchesPublicKeyHash) {
+  if (
+    !matchesDecodedKeyId &&
+    !matchesCosePublicKeyHash &&
+    !matchesCertPublicKeyHash
+  ) {
     throw new Error(
-      'credentialId mismatch: not equal to keyId bytes or SHA256(publicKey)',
+      'credentialId mismatch: not equal to keyId bytes or SHA256(publicKey candidates)',
     );
+  }
+
+  let publicKeyPem = certPublicKeyPem;
+  if (matchesCosePublicKeyHash && cosePublicKeyPem) {
+    publicKeyPem = cosePublicKeyPem;
+  } else if (matchesCertPublicKeyHash) {
+    publicKeyPem = certPublicKeyPem;
+  } else if (cosePublicKeyPem) {
+    // Fallback to COSE key when credId came from keyId and both hashes are unavailable.
+    publicKeyPem = cosePublicKeyPem;
   }
 
   // 8. Verify nonce in cert extension
@@ -453,7 +489,9 @@ export async function verifyAttestation(
   // 9. Verify keyId encoding consistency.
   const credIdForKeyValidation = matchesDecodedKeyId
     ? parsed.credId
-    : expectedCredIdFromPublicKey;
+    : matchesCosePublicKeyHash && expectedCredIdFromCose
+      ? expectedCredIdFromCose
+      : expectedCredIdFromCert;
   const expectedKeyIdB64 = credIdForKeyValidation.toString('base64');
   const expectedKeyIdB64Url = toBase64Url(credIdForKeyValidation);
   if (
@@ -540,9 +578,10 @@ export async function verifyAssertion(
   // Signed data: SHA256(authenticatorData || SHA256(nonce bytes)).
   // Accept both DER and IEEE-P1363 signature encodings for compatibility.
   const nonceBytes = Buffer.from(nonce, 'hex');
-  const candidateClientDataHashes = [
-    createHash('sha256').update(nonceBytes).digest(),
-    nonceBytes,
+  const candidateClientDataHashes: Array<{ name: string; value: Buffer }> = [
+    { name: 'sha256NonceBytes', value: createHash('sha256').update(nonceBytes).digest() },
+    { name: 'rawNonceBytes', value: nonceBytes },
+    { name: 'sha256NonceUtf8', value: createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest() },
   ];
 
   const verifyWithEncodingAndClientHash = (
@@ -563,12 +602,10 @@ export async function verifyAssertion(
 
   let valid = false;
   const attemptDetails: string[] = [];
-  for (const clientDataHash of candidateClientDataHashes) {
-    const hashMode =
-      clientDataHash.length === nonceBytes.length ? 'rawNonce' : 'sha256Nonce';
-    const derResult = verifyWithEncodingAndClientHash('der', clientDataHash);
+  for (const candidate of candidateClientDataHashes) {
+    const derResult = verifyWithEncodingAndClientHash('der', candidate.value);
     attemptDetails.push(
-      `${hashMode}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+      `${candidate.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
     );
     if (derResult.ok) {
       valid = true;
@@ -577,10 +614,10 @@ export async function verifyAssertion(
 
     const p1363Result = verifyWithEncodingAndClientHash(
       'ieee-p1363',
-      clientDataHash,
+      candidate.value,
     );
     attemptDetails.push(
-      `${hashMode}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+      `${candidate.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
     );
     if (p1363Result.ok) {
       valid = true;
