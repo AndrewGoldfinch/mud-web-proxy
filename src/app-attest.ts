@@ -645,8 +645,10 @@ export async function verifyAssertion(
   }
   candidateClientDataHashes.push(
     { name: 'sha256NonceBytes', value: createHash('sha256').update(nonceBytes).digest() },
+    { name: 'sha256sha256NonceBytes', value: createHash('sha256').update(createHash('sha256').update(nonceBytes).digest()).digest() },
     { name: 'rawNonceBytes', value: nonceBytes },
     { name: 'sha256NonceUtf8', value: createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest() },
+    { name: 'sha256sha256NonceUtf8', value: createHash('sha256').update(createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest()).digest() },
   );
 
   const keyCandidates: Array<{ name: string; key: string }> = [
