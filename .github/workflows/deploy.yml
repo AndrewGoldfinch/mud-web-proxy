@@ -20,4 +20,5 @@ jobs:
             git pull origin develop
             bun install --production
             bun run build
-            pm2 restart mud-web-proxy
+            pm2 startOrRestart ecosystem.config.cjs --env production --update-env
+            pm2 save
