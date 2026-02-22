@@ -749,6 +749,16 @@ export function setAttestedKey(keyId: string, entry: AttestedKeyEntry): void {
   attestedKeys.set(keyId, entry);
 }
 
+export function getAllAttestedKeys(): Array<{
+  keyId: string;
+  entry: AttestedKeyEntry;
+}> {
+  return Array.from(attestedKeys.entries()).map(([keyId, entry]) => ({
+    keyId,
+    entry,
+  }));
+}
+
 export function updateSignCount(keyId: string, newCount: number): void {
   const entry = attestedKeys.get(keyId);
   if (entry) entry.signCount = newCount;

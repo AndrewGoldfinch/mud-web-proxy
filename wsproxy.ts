@@ -54,6 +54,7 @@ import {
   setAttestedKey,
   verifyAssertion,
   getAttestedKey,
+  getAllAttestedKeys,
   updateSignCount,
 } from './src/app-attest';
 
@@ -1200,6 +1201,38 @@ const srv: ServerConfig = {
                 'auth',
               );
             } catch (err) {
+              const diagnosticCrossKey =
+                process.env.APPATTEST_DIAG_CROSSKEY === 'true';
+              if (diagnosticCrossKey && keyId && assertionB64 && nonce) {
+                const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
+                const teamId = process.env.APPATTEST_TEAM_ID ?? '';
+                const allKeys = getAllAttestedKeys();
+                const assertionBuffer = Buffer.from(assertionB64, 'base64');
+                for (const candidate of allKeys) {
+                  if (candidate.keyId === keyId) {
+                    continue;
+                  }
+                  try {
+                    await verifyAssertion({
+                      assertionBuffer,
+                      nonce,
+                      bundleId,
+                      teamId: teamId || undefined,
+                      storedPublicKey: candidate.entry.publicKey,
+                      alternatePublicKey: candidate.entry.alternatePublicKey,
+                      storedSignCount: candidate.entry.signCount,
+                    });
+                    srv.logWarn(
+                      `Assertion diagnostic: signature validated with different keyId=${candidate.keyId.slice(0, 8)}... (header keyId=${keyId.slice(0, 8)}...)`,
+                      undefined,
+                      'auth',
+                    );
+                    break;
+                  } catch {
+                    // Continue scanning candidates for diagnostics only.
+                  }
+                }
+              }
               srv.logWarn(
                 'App Attest assertion failed: ' + (err as Error).message,
                 undefined,
