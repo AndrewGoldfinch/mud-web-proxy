@@ -901,6 +901,49 @@ const srv: ServerConfig = {
       'init',
     );
 
+    const requireAppAuth = process.env.REQUIRE_APP_AUTH !== 'false';
+    const appAttestBundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
+    const appAttestTeamId = process.env.APPATTEST_TEAM_ID ?? '';
+    const mtlsFallbackEnabled =
+      process.env.ALLOW_MTLS_FALLBACK === 'true' &&
+      process.env.NODE_ENV !== 'production';
+
+    srv.logInfo(
+      `App auth startup: requireAppAuth=${requireAppAuth} mtlsFallback=${mtlsFallbackEnabled} nodeEnv=${process.env.NODE_ENV || 'unset'}`,
+      undefined,
+      'auth',
+    );
+    srv.logInfo(
+      `App Attest config: bundleId=${appAttestBundleId || '<missing>'} teamId=${appAttestTeamId || '<missing>'} keysPath=${attestedKeysPath}`,
+      undefined,
+      'auth',
+    );
+
+    const requestPeer = (req: IncomingMessage): string => {
+      const forwardedFor = req.headers['x-forwarded-for'];
+      const forwarded = Array.isArray(forwardedFor)
+        ? forwardedFor[0]
+        : forwardedFor;
+      return (
+        forwarded ||
+        req.socket.remoteAddress ||
+        'unknown'
+      );
+    };
+
+    const summarizeUpgradeHeaders = (req: IncomingMessage): string => {
+      const keyId = req.headers['x-app-assert-keyid'];
+      const assertion = req.headers['x-app-assert-data'];
+      const nonce = req.headers['x-app-assert-nonce'];
+      const keyIdStr = typeof keyId === 'string' ? keyId : '';
+      const assertionStr = typeof assertion === 'string' ? assertion : '';
+      const nonceStr = typeof nonce === 'string' ? nonce : '';
+      const keySummary = keyIdStr
+        ? `${keyIdStr.slice(0, 8)}... (len=${keyIdStr.length})`
+        : '<missing>';
+      return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length}`;
+    };
+
     webserver.listen(srv.ws_port, function () {
       srv.logInfo('server listening: port ' + srv.ws_port, undefined, 'init');
     });
@@ -926,15 +969,30 @@ const srv: ServerConfig = {
         res.end(JSON.stringify(getDiagnosticData()));
       } else if (req.method === 'GET' && req.url === '/attest/challenge') {
         const nonce = generateChallenge();
+        srv.logInfo(
+          `Issued App Attest challenge peer=${requestPeer(req)} ua=${String(req.headers['user-agent'] || 'unknown').slice(0, 120)}`,
+          undefined,
+          'auth',
+        );
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ nonce, expires: Date.now() + 60_000 }));
       } else if (req.method === 'POST' && req.url === '/attest/register') {
+        srv.logInfo(
+          `App Attest register request received peer=${requestPeer(req)}`,
+          undefined,
+          'auth',
+        );
         const MAX_BODY_SIZE = 65_536; // 64 KB — Apple attestation objects are a few KB
         let bodySize = 0;
         const chunks: Buffer[] = [];
         req.on('data', (chunk: Buffer) => {
           bodySize += chunk.length;
           if (bodySize > MAX_BODY_SIZE) {
+            srv.logWarn(
+              `App Attest register rejected: body too large (${bodySize} bytes) peer=${requestPeer(req)}`,
+              undefined,
+              'auth',
+            );
             res.writeHead(413, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: 'Request body too large' }));
             req.destroy();
@@ -953,6 +1011,11 @@ const srv: ServerConfig = {
                 nonce: string; // hex
               };
               if (!body.keyId || !body.attestation || !body.nonce) {
+                srv.logWarn(
+                  `App Attest register rejected: missing fields peer=${requestPeer(req)}`,
+                  undefined,
+                  'auth',
+                );
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(
                   JSON.stringify({
@@ -962,6 +1025,11 @@ const srv: ServerConfig = {
                 return;
               }
               if (!validateAndConsumeNonce(body.nonce)) {
+                srv.logWarn(
+                  `App Attest register rejected: invalid nonce keyId=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)}`,
+                  undefined,
+                  'auth',
+                );
                 res.writeHead(400, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: 'Invalid or expired nonce' }));
                 return;
@@ -969,6 +1037,11 @@ const srv: ServerConfig = {
               const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
               const teamId = process.env.APPATTEST_TEAM_ID ?? '';
               if (!bundleId || !teamId) {
+                srv.logError(
+                  `App Attest register failed: server misconfigured bundleIdPresent=${Boolean(bundleId)} teamIdPresent=${Boolean(teamId)}`,
+                  undefined,
+                  'auth',
+                );
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(
                   JSON.stringify({
@@ -998,7 +1071,7 @@ const srv: ServerConfig = {
               });
               debouncedSaveAttestedKeys(keysPath);
               srv.logInfo(
-                'Registered App Attest key: ' + body.keyId,
+                `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
@@ -1039,6 +1112,11 @@ const srv: ServerConfig = {
 
     webserver.on('upgrade', (req: IncomingMessage, socket: Socket, head) => {
       void (async () => {
+        srv.logInfo(
+          `Upgrade request peer=${requestPeer(req)} path=${req.url || '/'} requireAppAuth=${requireAppAuth} ${summarizeUpgradeHeaders(req)}`,
+          undefined,
+          'auth',
+        );
         if (!srv.open) {
           rejectUpgrade(socket, 503, 'Service Unavailable');
           return;
@@ -1049,7 +1127,6 @@ const srv: ServerConfig = {
           return;
         }
 
-        const requireAppAuth = process.env.REQUIRE_APP_AUTH !== 'false';
         if (requireAppAuth) {
           const keyId = req.headers['x-app-assert-keyid'] as
             | string
@@ -1106,7 +1183,7 @@ const srv: ServerConfig = {
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);
               srv.logInfo(
-                'App Attest verified for keyId ' + keyId,
+                `App Attest verified keyId=${keyId.slice(0, 8)}... signCount=${storedKey.signCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
