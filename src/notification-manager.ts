@@ -9,7 +9,7 @@
  * - Graceful degradation
  */
 
-import https from 'https';
+import http2 from 'http2';
 import fs from 'fs';
 import crypto from 'crypto';
 import type {
@@ -93,8 +93,7 @@ export class NotificationManager {
 
       // Check if file exists
       if (!fs.existsSync(keyPath)) {
-        // eslint-disable-next-line no-console
-        console.error(
+        this.logFailure(
           `[notification-manager] APNS key file not found: ${keyPath}`,
         );
         return null;
@@ -151,8 +150,7 @@ export class NotificationManager {
 
       return token;
     } catch (err) {
-      // eslint-disable-next-line no-console
-      console.error(
+      this.logFailure(
         `[notification-manager] Failed to generate auth token: ${err}`,
       );
       return null;
@@ -341,88 +339,107 @@ export class NotificationManager {
     const postData = JSON.stringify(apnsPayload);
     const start = Date.now();
 
-    const options: https.RequestOptions = {
-      hostname: this.apnsHost,
-      port: 443,
-      path: `/3/device/${deviceToken}`,
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(postData),
-        Authorization: `Bearer ${authToken}`,
-        'apns-topic': optionsIn.topic,
-        'apns-push-type': optionsIn.pushType,
-        'apns-priority': optionsIn.priority,
-      },
-    };
-
     return new Promise((resolve) => {
       // eslint-disable-next-line no-console
       console.log(
         `[notification-manager] APNS request start pushType=${optionsIn.pushType} priority=${optionsIn.priority} topic=${optionsIn.topic} target=${this.redactToken(deviceToken)} payloadBytes=${Buffer.byteLength(postData)}`,
       );
+      const client = http2.connect(`https://${this.apnsHost}`);
+      let settled = false;
 
-      const req = https.request(options, (res) => {
-        const statusCode = res.statusCode || 0;
-        const apnsIdHeader = res.headers['apns-id'];
-        const apnsId = Array.isArray(apnsIdHeader)
-          ? apnsIdHeader[0]
-          : apnsIdHeader || '';
-        const chunks: Buffer[] = [];
+      const finish = (ok: boolean): void => {
+        if (settled) return;
+        settled = true;
+        client.close();
+        resolve(ok);
+      };
 
-        res.on('data', (chunk: Buffer) => {
-          chunks.push(chunk);
-        });
+      client.on('error', (err) => {
+        const elapsedMs = Date.now() - start;
+        this.logFailure(
+          `[notification-manager] APNS connection error elapsedMs=${elapsedMs}: ${err}`,
+        );
+        finish(false);
+      });
 
-        res.on('end', () => {
-          const elapsedMs = Date.now() - start;
-          const bodyText = Buffer.concat(chunks).toString('utf8');
-          let reason = '';
-          try {
-            const parsed = bodyText ? (JSON.parse(bodyText) as { reason?: string }) : undefined;
-            reason = parsed?.reason || '';
-          } catch {
-            reason = '';
-          }
+      const req = client.request({
+        ':method': 'POST',
+        ':path': `/3/device/${deviceToken}`,
+        authorization: `Bearer ${authToken}`,
+        'content-type': 'application/json',
+        'content-length': String(Buffer.byteLength(postData)),
+        'apns-topic': optionsIn.topic,
+        'apns-push-type': optionsIn.pushType,
+        'apns-priority': optionsIn.priority,
+      });
 
-          if (statusCode >= 200 && statusCode < 300) {
-            // eslint-disable-next-line no-console
-            console.log(
-              `[notification-manager] APNS request success status=${statusCode} apnsId=${apnsId || '<none>'} elapsedMs=${elapsedMs}`,
-            );
-            resolve(true);
-            return;
-          }
+      let statusCode = 0;
+      let apnsId = '';
+      const chunks: Buffer[] = [];
 
+      req.setEncoding('utf8');
+      req.on('response', (headers) => {
+        const statusHeader = headers[':status'];
+        statusCode =
+          typeof statusHeader === 'number'
+            ? statusHeader
+            : Number(statusHeader || 0);
+        const apnsIdHeader = headers['apns-id'];
+        apnsId = Array.isArray(apnsIdHeader)
+          ? String(apnsIdHeader[0] || '')
+          : String(apnsIdHeader || '');
+      });
+
+      req.on('data', (chunk: string) => {
+        chunks.push(Buffer.from(chunk));
+      });
+
+      req.on('end', () => {
+        const elapsedMs = Date.now() - start;
+        const bodyText = Buffer.concat(chunks).toString('utf8');
+        let reason = '';
+        try {
+          const parsed = bodyText
+            ? (JSON.parse(bodyText) as { reason?: string })
+            : undefined;
+          reason = parsed?.reason || '';
+        } catch {
+          reason = '';
+        }
+
+        if (statusCode >= 200 && statusCode < 300) {
           // eslint-disable-next-line no-console
-          console.error(
-            `[notification-manager] APNS request failed status=${statusCode} apnsId=${apnsId || '<none>'} reason=${reason || '<none>'} elapsedMs=${elapsedMs}`,
+          console.log(
+            `[notification-manager] APNS request success status=${statusCode} apnsId=${apnsId || '<none>'} elapsedMs=${elapsedMs}`,
           );
-          resolve(false);
-        });
+          finish(true);
+          return;
+        }
+
+        this.logFailure(
+          `[notification-manager] APNS request failed status=${statusCode} apnsId=${apnsId || '<none>'} reason=${reason || '<none>'} elapsedMs=${elapsedMs}`,
+        );
+        finish(false);
       });
 
       req.on('error', (err) => {
         const elapsedMs = Date.now() - start;
-        // eslint-disable-next-line no-console
-        console.error(
+        this.logFailure(
           `[notification-manager] APNS request error elapsedMs=${elapsedMs}: ${err}`,
         );
-        resolve(false);
+        finish(false);
       });
 
       req.setTimeout(10000, () => {
         const elapsedMs = Date.now() - start;
-        // eslint-disable-next-line no-console
-        console.error(
+        this.logFailure(
           `[notification-manager] APNS request timeout after ${elapsedMs}ms`,
         );
-        req.destroy();
-        resolve(false);
+        req.close(http2.constants.NGHTTP2_CANCEL);
+        finish(false);
       });
 
-      req.write(postData);
-      req.end();
+      req.end(postData);
     });
   }
 
@@ -517,5 +534,14 @@ export class NotificationManager {
       return '<empty>';
     }
     return `${trimmed.slice(0, 8)}... (len=${trimmed.length})`;
+  }
+
+  private logFailure(message: string): void {
+    // Mirror to both stdout/stderr so PM2 setups that only show one stream
+    // still capture APNS failure diagnostics.
+    // eslint-disable-next-line no-console
+    console.error(message);
+    // eslint-disable-next-line no-console
+    console.log(message);
   }
 }
