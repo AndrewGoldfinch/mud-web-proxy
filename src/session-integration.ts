@@ -61,6 +61,7 @@ export class SessionIntegration {
   backgroundPushScheduler: BackgroundPushScheduler;
   config: SessionIntegrationConfig;
   private retryInterval: ReturnType<typeof setInterval> | null = null;
+  private terminatingSessions: Set<string> = new Set();
 
   private log(msg: string, ip?: string, sessionId?: string): void {
     const parts = [new Date().toISOString(), '[session]'];
@@ -122,6 +123,47 @@ export class SessionIntegration {
     this.notificationManager.cleanupSession(sessionId);
     this.backgroundPushScheduler.untrackSession(sessionId);
     this.sessionManager.removeSession(sessionId);
+  }
+
+  /**
+   * Handle terminal telnet/MUD disconnect while preserving a clear signal to
+   * any still-attached WebSocket clients.
+   */
+  private handleMudTermination(session: Session, reason: string): void {
+    if (this.terminatingSessions.has(session.id)) {
+      return;
+    }
+    this.terminatingSessions.add(session.id);
+
+    this.log(`MUD terminated: ${reason}`, undefined, session.id);
+
+    const hasClients = session.hasClients();
+    if (hasClients) {
+      const errorResponse = {
+        type: 'error',
+        code: 'connection_failed',
+        message: reason,
+      };
+      session.broadcastToClients(JSON.stringify(errorResponse));
+
+      const disconnectedResponse = {
+        type: 'disconnected',
+        sessionId: session.id,
+      };
+      session.broadcastToClients(JSON.stringify(disconnectedResponse));
+    }
+
+    const cleanup = () => {
+      this.removeSessionAndCleanup(session.id);
+      this.terminatingSessions.delete(session.id);
+    };
+
+    if (hasClients) {
+      // Give the socket a brief window to flush terminal state before close.
+      setTimeout(cleanup, 150);
+    } else {
+      cleanup();
+    }
   }
 
   /**
@@ -270,16 +312,14 @@ export class SessionIntegration {
       });
 
       session.onClose(() => {
-        this.sendError(socket, 'connection_failed', 'MUD connection closed');
-        this.removeSessionAndCleanup(session.id);
+        this.handleMudTermination(session, 'MUD connection closed');
       });
 
       await session.connect();
 
       // Set up error handler
       session.onError((err: Error) => {
-        this.sendError(socket, 'connection_failed', err.message);
-        this.removeSessionAndCleanup(session.id);
+        this.handleMudTermination(session, err.message);
       });
     } catch (err) {
       this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
