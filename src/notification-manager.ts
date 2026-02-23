@@ -25,6 +25,21 @@ export interface NotificationManagerConfig {
   enabled: boolean;
 }
 
+export interface APNSReadiness {
+  enabled: boolean;
+  configured: boolean;
+  available: boolean;
+  tokenValid: boolean;
+  pendingNotifications: number;
+  environment: 'sandbox' | 'production' | null;
+  host: string | null;
+  topic: string | null;
+  keyId: string | null;
+  keyPath: string | null;
+  teamId: string | null;
+  tokenExpiresAt: string | null;
+}
+
 export class NotificationManager {
   private config: NotificationManagerConfig;
   private triggerMatcher: TriggerMatcher;
@@ -253,6 +268,34 @@ export class NotificationManager {
       pushType: 'liveactivity',
       priority: '10',
       topic: `${this.config.apns!.topic}.push-type.liveactivity`,
+    });
+  }
+
+  async sendAlertPush(
+    deviceToken: string,
+    title: string,
+    body: string,
+    custom: Record<string, unknown> = {},
+  ): Promise<boolean> {
+    if (!this.isAvailable()) {
+      return false;
+    }
+
+    const apnsPayload = {
+      aps: {
+        alert: {
+          title: title.substring(0, 100),
+          body: body.substring(0, 180),
+        },
+        sound: 'default',
+      },
+      ...custom,
+    };
+
+    return this.sendRawToAPNS(deviceToken, apnsPayload, {
+      pushType: 'alert',
+      priority: '10',
+      topic: this.config.apns!.topic,
     });
   }
 
@@ -525,6 +568,31 @@ export class NotificationManager {
       configured: !!this.config.apns,
       tokenValid: !!this.getAuthToken(),
       pendingNotifications: this.pendingNotifications.size,
+    };
+  }
+
+  getReadiness(): APNSReadiness {
+    const apns = this.config.apns;
+    const tokenValid = !!this.getAuthToken();
+    const configured = !!apns;
+    const enabled = this.config.enabled;
+    const available = enabled && configured && tokenValid;
+
+    return {
+      enabled,
+      configured,
+      available,
+      tokenValid,
+      pendingNotifications: this.pendingNotifications.size,
+      environment: apns?.environment ?? null,
+      host: apns ? this.apnsHost : null,
+      topic: apns?.topic ?? null,
+      keyId: apns?.keyId ?? null,
+      keyPath: apns?.keyPath ?? null,
+      teamId: apns?.teamId ?? null,
+      tokenExpiresAt: this.tokenExpiry
+        ? new Date(this.tokenExpiry).toISOString()
+        : null,
     };
   }
 

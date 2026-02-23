@@ -384,6 +384,7 @@ const getDiagnosticData = () => {
       ...sessionStats.sessions,
     },
     notifications: sessionStats.notifications,
+    apnsReadiness: sessionStats.apnsReadiness,
     sessions,
     sockets,
     timestamp: new Date().toISOString(),
@@ -481,6 +482,23 @@ const generateDiagnosticHTML = (): string => {
     transition: width 1s linear;
   }
   .empty { color: var(--text-dim); font-style: italic; padding: 12px; text-align: center; }
+  .control-row { display: flex; gap: 8px; margin-bottom: 8px; flex-wrap: wrap; }
+  .control-row input {
+    flex: 1; min-width: 180px; background: #0b0f14; color: var(--text);
+    border: 1px solid var(--border); border-radius: 4px; padding: 6px 8px;
+    font-family: inherit; font-size: 12px;
+  }
+  .control-row button {
+    background: #1f6feb; color: #fff; border: none; border-radius: 4px;
+    padding: 6px 10px; font-family: inherit; font-size: 12px; cursor: pointer;
+  }
+  .control-row button.secondary { background: #30363d; }
+  .control-row button:disabled { opacity: 0.6; cursor: not-allowed; }
+  .result-box {
+    margin-top: 8px; background: #0b0f14; border: 1px solid var(--border);
+    border-radius: 4px; padding: 8px; font-size: 12px; white-space: pre-wrap;
+    color: var(--text-dim);
+  }
   @media (max-width: 600px) { .grid { grid-template-columns: 1fr; } }
 </style>
 </head>
@@ -515,6 +533,27 @@ const generateDiagnosticHTML = (): string => {
     <h2>Notifications</h2>
     <div id="notifications-info"></div>
   </div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <h2>APNS Debug Push</h2>
+  <div class="control-row">
+    <input id="apns-secret" type="password" placeholder="x-apns-test-secret">
+    <input id="apns-session-id" type="text" placeholder="sessionId (optional if device token set)">
+  </div>
+  <div class="control-row">
+    <input id="apns-device-token" type="text" placeholder="deviceToken (optional if sessionId set)">
+  </div>
+  <div class="control-row">
+    <input id="apns-alert-title" type="text" placeholder="alert title" value="MUDBasher Test">
+    <input id="apns-alert-message" type="text" placeholder="alert message" value="Visible APNS test from diagnostics">
+  </div>
+  <div class="control-row">
+    <button id="apns-silent-btn" type="button">Send Silent Push</button>
+    <button id="apns-alert-btn" type="button">Send Alert Push</button>
+    <button id="apns-clear-btn" class="secondary" type="button">Clear</button>
+  </div>
+  <div id="apns-debug-result" class="result-box">ready</div>
 </div>
 
 <div class="card" style="margin-bottom:16px">
@@ -582,11 +621,90 @@ function renderConnections(d) {
 
 function renderNotifications(d) {
   var n = d.notifications;
+  var a = d.apnsReadiness || {};
+  var overall = a.available ? '<span class="badge badge-green">ready</span>' :
+    (a.configured ? '<span class="badge badge-yellow">degraded</span>' :
+    '<span class="badge badge-red">not configured</span>');
+  var hostAndEnv = a.host && a.environment ? (a.host + ' (' + a.environment + ')') :
+    (a.host || a.environment || '-');
+  var tokenExpiry = a.tokenExpiresAt ? new Date(a.tokenExpiresAt).toLocaleString() : '-';
+  var keyId = a.keyId || '-';
+  var topic = a.topic || '-';
   document.getElementById('notifications-info').innerHTML =
+    statRow('Overall', overall) +
     statRow('Enabled', badge(n.enabled)) +
     statRow('Configured', badge(n.configured)) +
     statRow('Token Valid', badge(n.tokenValid)) +
+    statRow('Available', badge(!!a.available)) +
+    statRow('Host / Env', hostAndEnv) +
+    statRow('Topic', topic) +
+    statRow('Key ID', keyId) +
+    statRow('Token Expires', tokenExpiry) +
     statRow('Pending', n.pendingNotifications);
+}
+
+function apnsPayloadFromInputs(includeAlertFields) {
+  var sessionId = document.getElementById('apns-session-id').value.trim();
+  var deviceToken = document.getElementById('apns-device-token').value.trim();
+  var payload = {};
+  if (sessionId) payload.sessionId = sessionId;
+  if (deviceToken) payload.deviceToken = deviceToken;
+  if (includeAlertFields) {
+    var title = document.getElementById('apns-alert-title').value.trim();
+    var message = document.getElementById('apns-alert-message').value.trim();
+    if (title) payload.title = title;
+    if (message) payload.message = message;
+  }
+  return payload;
+}
+
+function setAPNSResult(text) {
+  document.getElementById('apns-debug-result').textContent = text;
+}
+
+function setAPNSButtonsDisabled(disabled) {
+  document.getElementById('apns-silent-btn').disabled = disabled;
+  document.getElementById('apns-alert-btn').disabled = disabled;
+}
+
+function runAPNSTest(path, payload) {
+  var secret = document.getElementById('apns-secret').value.trim();
+  if (!secret) {
+    setAPNSResult('missing secret: enter x-apns-test-secret');
+    return;
+  }
+  if (!payload.sessionId && !payload.deviceToken) {
+    setAPNSResult('provide sessionId or deviceToken');
+    return;
+  }
+
+  setAPNSButtonsDisabled(true);
+  setAPNSResult('sending...');
+
+  fetch(path, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-apns-test-secret': secret
+    },
+    body: JSON.stringify(payload)
+  })
+    .then(function(r) {
+      return r.text().then(function(body) {
+        var parsed;
+        try { parsed = JSON.parse(body); } catch { parsed = { raw: body }; }
+        return { ok: r.ok, status: r.status, body: parsed };
+      });
+    })
+    .then(function(result) {
+      setAPNSResult('status=' + result.status + '\\n' + JSON.stringify(result.body, null, 2));
+    })
+    .catch(function(err) {
+      setAPNSResult('request failed: ' + err);
+    })
+    .finally(function() {
+      setAPNSButtonsDisabled(false);
+    });
 }
 
 function renderSessions(d) {
@@ -654,6 +772,21 @@ function refresh() {
         '<span class="badge badge-red">error</span>';
     });
 }
+
+document.getElementById('apns-silent-btn').addEventListener('click', function() {
+  runAPNSTest('/debug/apns/test', apnsPayloadFromInputs(false));
+});
+
+document.getElementById('apns-alert-btn').addEventListener('click', function() {
+  runAPNSTest('/debug/apns/alert-test', apnsPayloadFromInputs(true));
+});
+
+document.getElementById('apns-clear-btn').addEventListener('click', function() {
+  document.getElementById('apns-device-token').value = '';
+  document.getElementById('apns-alert-title').value = 'MUDBasher Test';
+  document.getElementById('apns-alert-message').value = 'Visible APNS test from diagnostics';
+  setAPNSResult('ready');
+});
 
 function tick() {
   timer += 1000;
@@ -1109,6 +1242,148 @@ const srv: ServerConfig = {
               } else {
                 srv.logWarn(
                   `APNS silent push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                  undefined,
+                  'auth',
+                );
+              }
+
+              const status = sessionIntegration.notificationManager.getStatus();
+              res.writeHead(sent ? 200 : 502, {
+                'Content-Type': 'application/json',
+              });
+              res.end(
+                JSON.stringify({
+                  sent,
+                  sessionId: resolvedSessionId,
+                  deviceToken: tokenSummary,
+                  notifications: status,
+                }),
+              );
+            } catch (err) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  error: 'Invalid JSON body',
+                  detail: (err as Error).message,
+                }),
+              );
+            }
+          })();
+        });
+      } else if (
+        req.method === 'POST' &&
+        (pathOnly === '/debug/apns/alert-test' ||
+          pathOnly === '/debug/apns/alert-test/')
+      ) {
+        if (!apnsTestSecret) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found' }));
+          return;
+        }
+
+        const providedSecret = req.headers['x-apns-test-secret'];
+        const provided = Array.isArray(providedSecret)
+          ? providedSecret[0]
+          : providedSecret || '';
+        if (provided !== apnsTestSecret) {
+          srv.logWarn(
+            `APNS alert test request rejected: invalid secret peer=${requestPeer(req)}`,
+            undefined,
+            'auth',
+          );
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const MAX_BODY_SIZE = 8_192;
+        let bodySize = 0;
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => {
+          bodySize += chunk.length;
+          if (bodySize > MAX_BODY_SIZE) {
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Request body too large' }));
+            req.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        req.on('end', () => {
+          void (async () => {
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as {
+                sessionId?: string;
+                deviceToken?: string;
+                title?: string;
+                message?: string;
+              };
+
+              const requestedSessionId = body.sessionId?.trim();
+              let targetDeviceToken = body.deviceToken?.trim();
+              let resolvedSessionId = requestedSessionId || 'manual-alert-test';
+
+              if (!targetDeviceToken && requestedSessionId) {
+                const session = sessionIntegration.sessionManager.get(
+                  requestedSessionId,
+                );
+                if (!session) {
+                  res.writeHead(404, { 'Content-Type': 'application/json' });
+                  res.end(
+                    JSON.stringify({
+                      error: 'Session not found',
+                      sessionId: requestedSessionId,
+                    }),
+                  );
+                  return;
+                }
+                if (!session.deviceToken) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(
+                    JSON.stringify({
+                      error: 'Session has no device token',
+                      sessionId: requestedSessionId,
+                    }),
+                  );
+                  return;
+                }
+                targetDeviceToken = session.deviceToken;
+                resolvedSessionId = session.id;
+              }
+
+              if (!targetDeviceToken) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({
+                    error: 'Provide deviceToken or sessionId',
+                  }),
+                );
+                return;
+              }
+
+              const alertTitle = (body.title || 'MUDBasher Test').trim();
+              const alertMessage =
+                (body.message || 'APNS alert test from proxy').trim();
+
+              const sent = await sessionIntegration.notificationManager.sendAlertPush(
+                targetDeviceToken,
+                alertTitle,
+                alertMessage,
+                {
+                  sessionId: resolvedSessionId,
+                  type: 'debugAlert',
+                },
+              );
+              const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
+              if (sent) {
+                srv.logInfo(
+                  `APNS alert push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                  undefined,
+                  'auth',
+                );
+              } else {
+                srv.logWarn(
+                  `APNS alert push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
                   undefined,
                   'auth',
                 );

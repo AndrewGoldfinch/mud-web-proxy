@@ -594,6 +594,7 @@ export class SessionIntegration {
     return {
       sessions: this.sessionManager.getStats(),
       notifications: this.notificationManager.getStatus(),
+      apnsReadiness: this.notificationManager.getReadiness(),
     };
   }
 
