@@ -263,6 +263,7 @@ interface MSDPRequest {
 
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
+  socketId?: number;
   ts?: TelnetSocket;
   host?: string;
   port?: number;
@@ -294,6 +295,39 @@ export interface TelnetSocket extends Socket {
 }
 
 let server: ServerState = { sockets: new Set() };
+let nextSocketId = 1;
+
+const getHeaderValue = (
+  value: string | string[] | undefined,
+): string | undefined => {
+  if (typeof value === 'string') return value;
+  if (Array.isArray(value) && value.length > 0) return value[0];
+  return undefined;
+};
+
+const formatWsSocketContext = (s: SocketExtended): string => {
+  const wsId = `ws#${s.socketId ?? '?'}`;
+  const peerIP = s.remoteAddress || s.req?.connection?.remoteAddress || '';
+  const peerPort = s.req?.socket?.remotePort;
+  const sourceIP = s.req?.socket?.remoteAddress || '';
+  const sourcePort = s.req?.socket?.remotePort;
+  const hostHeader = getHeaderValue(s.req?.headers?.host) || '-';
+  const forwardedHost =
+    getHeaderValue(s.req?.headers?.['x-forwarded-host']) || '-';
+  const forwardedFor =
+    getHeaderValue(s.req?.headers?.['x-forwarded-for']) || '-';
+  const targetHost = s.host ?? srv.tn_host;
+  const targetPort = s.port ?? srv.tn_port;
+  const peer = peerPort ? `${peerIP}:${peerPort}` : peerIP || '-';
+  const source = sourcePort ? `${sourceIP}:${sourcePort}` : sourceIP || '-';
+
+  return (
+    `${wsId} peer=${peer} source=${source} ` +
+    `host=${hostHeader} x-forwarded-host=${forwardedHost} ` +
+    `x-forwarded-for=${forwardedFor} ` +
+    `target=${targetHost}:${targetPort}`
+  );
+};
 
 const stringify = function (A: unknown): string {
   const cache = new Set<unknown>();
@@ -1087,11 +1121,7 @@ const srv: ServerConfig = {
       const forwarded = Array.isArray(forwardedFor)
         ? forwardedFor[0]
         : forwardedFor;
-      return (
-        forwarded ||
-        req.socket.remoteAddress ||
-        'unknown'
-      );
+      return forwarded || req.socket.remoteAddress || 'unknown';
     };
 
     const summarizeUpgradeHeaders = (req: IncomingMessage): string => {
@@ -1197,7 +1227,9 @@ const srv: ServerConfig = {
         req.on('end', () => {
           void (async () => {
             try {
-              const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as {
+              const body = JSON.parse(
+                Buffer.concat(chunks).toString('utf-8'),
+              ) as {
                 sessionId?: string;
                 deviceToken?: string;
               };
@@ -1207,9 +1239,8 @@ const srv: ServerConfig = {
               let resolvedSessionId = requestedSessionId || 'manual-test';
 
               if (!targetDeviceToken && requestedSessionId) {
-                const session = sessionIntegration.sessionManager.get(
-                  requestedSessionId,
-                );
+                const session =
+                  sessionIntegration.sessionManager.get(requestedSessionId);
                 if (!session) {
                   res.writeHead(404, { 'Content-Type': 'application/json' });
                   res.end(
@@ -1244,10 +1275,11 @@ const srv: ServerConfig = {
                 return;
               }
 
-              const sent = await sessionIntegration.notificationManager.sendSilentPush(
-                targetDeviceToken,
-                resolvedSessionId,
-              );
+              const sent =
+                await sessionIntegration.notificationManager.sendSilentPush(
+                  targetDeviceToken,
+                  resolvedSessionId,
+                );
               const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
               if (sent) {
                 srv.logInfo(
@@ -1263,7 +1295,8 @@ const srv: ServerConfig = {
                 );
               }
 
-              const status = sessionIntegration.notificationManager.getStatus();
+              const status =
+                sessionIntegration.notificationManager.getStatus();
               res.writeHead(sent ? 200 : 502, {
                 'Content-Type': 'application/json',
               });
@@ -1328,7 +1361,9 @@ const srv: ServerConfig = {
         req.on('end', () => {
           void (async () => {
             try {
-              const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as {
+              const body = JSON.parse(
+                Buffer.concat(chunks).toString('utf-8'),
+              ) as {
                 sessionId?: string;
                 deviceToken?: string;
                 title?: string;
@@ -1337,12 +1372,12 @@ const srv: ServerConfig = {
 
               const requestedSessionId = body.sessionId?.trim();
               let targetDeviceToken = body.deviceToken?.trim();
-              let resolvedSessionId = requestedSessionId || 'manual-alert-test';
+              let resolvedSessionId =
+                requestedSessionId || 'manual-alert-test';
 
               if (!targetDeviceToken && requestedSessionId) {
-                const session = sessionIntegration.sessionManager.get(
-                  requestedSessionId,
-                );
+                const session =
+                  sessionIntegration.sessionManager.get(requestedSessionId);
                 if (!session) {
                   res.writeHead(404, { 'Content-Type': 'application/json' });
                   res.end(
@@ -1378,18 +1413,20 @@ const srv: ServerConfig = {
               }
 
               const alertTitle = (body.title || 'MUDBasher Test').trim();
-              const alertMessage =
-                (body.message || 'APNS alert test from proxy').trim();
+              const alertMessage = (
+                body.message || 'APNS alert test from proxy'
+              ).trim();
 
-              const sent = await sessionIntegration.notificationManager.sendAlertPush(
-                targetDeviceToken,
-                alertTitle,
-                alertMessage,
-                {
-                  sessionId: resolvedSessionId,
-                  type: 'debugAlert',
-                },
-              );
+              const sent =
+                await sessionIntegration.notificationManager.sendAlertPush(
+                  targetDeviceToken,
+                  alertTitle,
+                  alertMessage,
+                  {
+                    sessionId: resolvedSessionId,
+                    type: 'debugAlert',
+                  },
+                );
               const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
               if (sent) {
                 srv.logInfo(
@@ -1405,7 +1442,8 @@ const srv: ServerConfig = {
                 );
               }
 
-              const status = sessionIntegration.notificationManager.getStatus();
+              const status =
+                sessionIntegration.notificationManager.getStatus();
               res.writeHead(sent ? 200 : 502, {
                 'Content-Type': 'application/json',
               });
@@ -1768,9 +1806,16 @@ const srv: ServerConfig = {
         const extendedSocket = socket as SocketExtended;
         if (!extendedSocket.req)
           extendedSocket.req = req as SocketExtended['req'];
+        if (!extendedSocket.socketId) extendedSocket.socketId = nextSocketId++;
 
         // Resolve real client IP (supports reverse proxy headers)
         extendedSocket.remoteAddress = getClientIP(req);
+
+        srv.logInfo(
+          'new connection accepted: ' + formatWsSocketContext(extendedSocket),
+          extendedSocket,
+          'ws',
+        );
 
         // Add compatibility methods for the WebSocket
         extendedSocket.sendUTF = extendedSocket.send.bind(extendedSocket);
@@ -1789,8 +1834,18 @@ const srv: ServerConfig = {
           }
         });
 
-        socket.on('close', () => {
-          srv.logInfo('peer disconnected', extendedSocket, 'ws');
+        socket.on('close', (code: number, reason: Buffer) => {
+          const closeReason = reason.length ? reason.toString('utf8') : 'none';
+          srv.logInfo(
+            'peer disconnected: code=' +
+              code +
+              ' reason=' +
+              closeReason +
+              ' ' +
+              formatWsSocketContext(extendedSocket),
+            extendedSocket,
+            'ws',
+          );
           srv.closeSocket(extendedSocket);
         });
 
@@ -2026,7 +2081,7 @@ const srv: ServerConfig = {
 
     server.sockets.delete(s);
 
-    srv.logInfo('closing socket', s, 'ws');
+    srv.logInfo('closing websocket: ' + formatWsSocketContext(s), s, 'ws');
 
     if (s.terminate) s.terminate();
     else

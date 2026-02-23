@@ -101,8 +101,7 @@ function decodeBase64Like(input: string): Buffer | null {
   const trimmed = input.trim();
   if (!trimmed) return null;
   const normalized = trimmed.replace(/-/g, '+').replace(/_/g, '/');
-  const padded =
-    normalized + '==='.slice((normalized.length + 3) % 4);
+  const padded = normalized + '==='.slice((normalized.length + 3) % 4);
   try {
     return Buffer.from(padded, 'base64');
   } catch {
@@ -118,10 +117,7 @@ function toBase64Url(buf: Buffer): string {
     .replace(/=+$/g, '');
 }
 
-function getCoseMapValue(
-  coseKey: unknown,
-  numericKey: number,
-): unknown {
+function getCoseMapValue(coseKey: unknown, numericKey: number): unknown {
   if (
     typeof coseKey === 'object' &&
     coseKey !== null &&
@@ -199,8 +195,16 @@ function coseEcP256ToPem(coseKey: unknown): string {
   const x = getCoseMapValue(normalizedKey, -2);
   const y = getCoseMapValue(normalizedKey, -3);
 
-  const xBuf = Buffer.isBuffer(x) ? x : x ? Buffer.from(x as Uint8Array) : null;
-  const yBuf = Buffer.isBuffer(y) ? y : y ? Buffer.from(y as Uint8Array) : null;
+  const xBuf = Buffer.isBuffer(x)
+    ? x
+    : x
+      ? Buffer.from(x as Uint8Array)
+      : null;
+  const yBuf = Buffer.isBuffer(y)
+    ? y
+    : y
+      ? Buffer.from(y as Uint8Array)
+      : null;
 
   if (!xBuf || !yBuf || xBuf.length !== 32 || yBuf.length !== 32) {
     throw new Error('Invalid COSE key coordinates');
@@ -546,12 +550,13 @@ export async function verifyAttestation(
     );
   }
 
-  const keyIdMatchesCertHash = keyId === expectedCredIdFromCert.toString('base64') ||
+  const keyIdMatchesCertHash =
+    keyId === expectedCredIdFromCert.toString('base64') ||
     keyId === toBase64Url(expectedCredIdFromCert);
-  const keyIdMatchesCoseHash = !!expectedCredIdFromCose && (
-    keyId === expectedCredIdFromCose.toString('base64') ||
-    keyId === toBase64Url(expectedCredIdFromCose)
-  );
+  const keyIdMatchesCoseHash =
+    !!expectedCredIdFromCose &&
+    (keyId === expectedCredIdFromCose.toString('base64') ||
+      keyId === toBase64Url(expectedCredIdFromCose));
 
   // Prefer the credential public key carried in authData (COSE key).
   // Assertion signatures are produced by that credential key.
@@ -698,17 +703,12 @@ export async function verifyAssertion(
   const parsed = parseAssertionAuthData(authenticatorData);
   const expectedBundleHash = createHash('sha256').update(bundleId).digest();
   const expectedAppIdHash = teamId
-    ? createHash('sha256')
-        .update(`${teamId}.${bundleId}`)
-        .digest()
+    ? createHash('sha256').update(`${teamId}.${bundleId}`).digest()
     : null;
   const rpMatchesBundle = parsed.rpIdHash.equals(expectedBundleHash);
   const rpMatchesAppId =
     !!expectedAppIdHash && parsed.rpIdHash.equals(expectedAppIdHash);
-  if (
-    !rpMatchesBundle &&
-    !rpMatchesAppId
-  ) {
+  if (!rpMatchesBundle && !rpMatchesAppId) {
     throw new Error('rpIdHash does not match bundleId or TeamID.BundleID');
   }
 
@@ -737,11 +737,29 @@ export async function verifyAssertion(
     });
   }
   candidateClientDataHashes.push(
-    { name: 'sha256NonceBytes', value: createHash('sha256').update(nonceBytes).digest() },
-    { name: 'sha256sha256NonceBytes', value: createHash('sha256').update(createHash('sha256').update(nonceBytes).digest()).digest() },
+    {
+      name: 'sha256NonceBytes',
+      value: createHash('sha256').update(nonceBytes).digest(),
+    },
+    {
+      name: 'sha256sha256NonceBytes',
+      value: createHash('sha256')
+        .update(createHash('sha256').update(nonceBytes).digest())
+        .digest(),
+    },
     { name: 'rawNonceBytes', value: nonceBytes },
-    { name: 'sha256NonceUtf8', value: createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest() },
-    { name: 'sha256sha256NonceUtf8', value: createHash('sha256').update(createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest()).digest() },
+    {
+      name: 'sha256NonceUtf8',
+      value: createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest(),
+    },
+    {
+      name: 'sha256sha256NonceUtf8',
+      value: createHash('sha256')
+        .update(
+          createHash('sha256').update(Buffer.from(nonce, 'utf8')).digest(),
+        )
+        .digest(),
+    },
   );
 
   const keyCandidates: Array<{ name: string; key: string }> = [
@@ -811,8 +829,16 @@ export async function verifyAssertion(
     const authPlusClient = Buffer.concat([authenticatorData, clientDataHash]);
     const clientPlusAuth = Buffer.concat([clientDataHash, authenticatorData]);
     return [
-      { name: 'authPlusClient:sha256', payload: authPlusClient, mode: 'sha256' },
-      { name: 'clientPlusAuth:sha256', payload: clientPlusAuth, mode: 'sha256' },
+      {
+        name: 'authPlusClient:sha256',
+        payload: authPlusClient,
+        mode: 'sha256',
+      },
+      {
+        name: 'clientPlusAuth:sha256',
+        payload: clientPlusAuth,
+        mode: 'sha256',
+      },
       { name: 'authPlusClient:raw', payload: authPlusClient, mode: 'raw' },
       { name: 'clientPlusAuth:raw', payload: clientPlusAuth, mode: 'raw' },
       {

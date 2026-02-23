@@ -1,4 +1,6 @@
-  module.exports = {
+/* global module */
+
+module.exports = {
     apps: [
       {
         name: "mud-web-proxy",
@@ -14,4 +16,4 @@
         },
       },
     ],
-  };
+};
