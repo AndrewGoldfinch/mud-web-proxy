@@ -317,6 +317,7 @@ const getDiagnosticData = () => {
   const sessions = allSessions.map((session) => {
     const meta = session.getMetadata();
     return {
+      sessionIdFull: meta.sessionId,
       sessionId: meta.sessionId.slice(0, 8) + '...',
       mudHost: meta.mudHost,
       mudPort: meta.mudPort,
@@ -707,10 +708,24 @@ function runAPNSTest(path, payload) {
     });
 }
 
+function useSessionId(sessionId) {
+  var sidInput = document.getElementById('apns-session-id');
+  sidInput.value = sessionId;
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(sessionId).then(function() {
+      setAPNSResult('sessionId copied and loaded: ' + sessionId);
+    }).catch(function() {
+      setAPNSResult('sessionId loaded: ' + sessionId);
+    });
+  } else {
+    setAPNSResult('sessionId loaded: ' + sessionId);
+  }
+}
+
 function renderSessions(d) {
   var el = document.getElementById('sessions-table');
   if (!d.sessions.length) { el.innerHTML = '<div class="empty">No active sessions</div>'; return; }
-  var html = '<table><tr><th>ID</th><th>MUD</th><th>Telnet</th><th>Clients</th><th>Created</th><th>Buffer</th></tr>';
+  var html = '<table><tr><th>ID</th><th>MUD</th><th>Telnet</th><th>Clients</th><th>Created</th><th>Buffer</th><th>Action</th></tr>';
   d.sessions.forEach(function(s) {
     html += '<tr>' +
       '<td>' + s.sessionId + '</td>' +
@@ -720,6 +735,7 @@ function renderSessions(d) {
       '<td>' + new Date(s.createdAt).toLocaleString() + '</td>' +
       '<td>' + (s.bufferStats ? s.bufferStats.chunks + ' chunks / ' +
         formatBytes(s.bufferStats.sizeBytes) : '-') + '</td>' +
+      '<td><button type="button" class="secondary" onclick="useSessionId(\\'' + s.sessionIdFull + '\\')">Use</button></td>' +
       '</tr>';
   });
   el.innerHTML = html + '</table>';
