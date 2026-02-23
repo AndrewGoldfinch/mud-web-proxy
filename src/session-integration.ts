@@ -379,6 +379,15 @@ export class SessionIntegration {
       session.setDeviceToken(msg.deviceToken);
     }
 
+    // Confirm resume before replay so client can complete resume handshake
+    // without waiting for buffered data timing.
+    const resumedResponse = {
+      type: 'resumed',
+      sessionId: session.id,
+      capabilities: ['activityToken', 'syncAck'],
+    };
+    socket.sendUTF(JSON.stringify(resumedResponse));
+
     // Replay buffered output
     const chunks = session.replayFromSequence(msg.lastSeq);
     for (const chunk of chunks) {
