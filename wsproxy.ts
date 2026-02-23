@@ -910,6 +910,7 @@ const srv: ServerConfig = {
       process.env.NODE_ENV !== 'production';
     const allowAssertionBypass =
       process.env.APPATTEST_ALLOW_ASSERTION_BYPASS === 'true';
+    const apnsTestSecret = process.env.APNS_TEST_SECRET ?? '';
 
     srv.logInfo(
       `App auth startup: requireAppAuth=${requireAppAuth} mtlsFallback=${mtlsFallbackEnabled} nodeEnv=${process.env.NODE_ENV || 'unset'}`,
@@ -925,6 +926,11 @@ const srv: ServerConfig = {
       `App Attest config: bundleId=${appAttestBundleId || '<missing>'} teamId=${appAttestTeamId || '<missing>'} keysPath=${attestedKeysPath}`,
       undefined,
       'auth',
+    );
+    srv.logInfo(
+      `APNS test endpoint enabled=${Boolean(apnsTestSecret)}`,
+      undefined,
+      'init',
     );
 
     const requestPeer = (req: IncomingMessage): string => {
@@ -972,7 +978,10 @@ const srv: ServerConfig = {
 
     // Add HTTP endpoints
     webserver.on('request', (req: IncomingMessage, res: ServerResponse) => {
-      if (req.url === '/health') {
+      const rawUrl = req.url || '';
+      const pathOnly = rawUrl.split('?')[0];
+
+      if (pathOnly === '/health') {
         const stats = sessionIntegration.getStats();
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(
@@ -983,13 +992,13 @@ const srv: ServerConfig = {
             ...stats,
           }),
         );
-      } else if (req.url === '/diagnostic') {
+      } else if (pathOnly === '/diagnostic') {
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(generateDiagnosticHTML());
-      } else if (req.url === '/diagnostic/api') {
+      } else if (pathOnly === '/diagnostic/api') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(getDiagnosticData()));
-      } else if (req.method === 'GET' && req.url === '/attest/challenge') {
+      } else if (req.method === 'GET' && pathOnly === '/attest/challenge') {
         const nonce = generateChallenge();
         srv.logInfo(
           `Issued App Attest challenge peer=${requestPeer(req)} ua=${String(req.headers['user-agent'] || 'unknown').slice(0, 120)}`,
@@ -998,7 +1007,140 @@ const srv: ServerConfig = {
         );
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ nonce, expires: Date.now() + 60_000 }));
-      } else if (req.method === 'POST' && req.url === '/attest/register') {
+      } else if (
+        req.method === 'POST' &&
+        (pathOnly === '/debug/apns/test' || pathOnly === '/debug/apns/test/')
+      ) {
+        if (!apnsTestSecret) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found' }));
+          return;
+        }
+
+        const providedSecret = req.headers['x-apns-test-secret'];
+        const provided = Array.isArray(providedSecret)
+          ? providedSecret[0]
+          : providedSecret || '';
+        if (provided !== apnsTestSecret) {
+          srv.logWarn(
+            `APNS test request rejected: invalid secret peer=${requestPeer(req)}`,
+            undefined,
+            'auth',
+          );
+          res.writeHead(401, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Unauthorized' }));
+          return;
+        }
+
+        const MAX_BODY_SIZE = 8_192;
+        let bodySize = 0;
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => {
+          bodySize += chunk.length;
+          if (bodySize > MAX_BODY_SIZE) {
+            res.writeHead(413, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Request body too large' }));
+            req.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        req.on('end', () => {
+          void (async () => {
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString('utf-8')) as {
+                sessionId?: string;
+                deviceToken?: string;
+              };
+
+              const requestedSessionId = body.sessionId?.trim();
+              let targetDeviceToken = body.deviceToken?.trim();
+              let resolvedSessionId = requestedSessionId || 'manual-test';
+
+              if (!targetDeviceToken && requestedSessionId) {
+                const session = sessionIntegration.sessionManager.get(
+                  requestedSessionId,
+                );
+                if (!session) {
+                  res.writeHead(404, { 'Content-Type': 'application/json' });
+                  res.end(
+                    JSON.stringify({
+                      error: 'Session not found',
+                      sessionId: requestedSessionId,
+                    }),
+                  );
+                  return;
+                }
+                if (!session.deviceToken) {
+                  res.writeHead(400, { 'Content-Type': 'application/json' });
+                  res.end(
+                    JSON.stringify({
+                      error: 'Session has no device token',
+                      sessionId: requestedSessionId,
+                    }),
+                  );
+                  return;
+                }
+                targetDeviceToken = session.deviceToken;
+                resolvedSessionId = session.id;
+              }
+
+              if (!targetDeviceToken) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(
+                  JSON.stringify({
+                    error: 'Provide deviceToken or sessionId',
+                  }),
+                );
+                return;
+              }
+
+              const sent = await sessionIntegration.notificationManager.sendSilentPush(
+                targetDeviceToken,
+                resolvedSessionId,
+              );
+              const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
+              if (sent) {
+                srv.logInfo(
+                  `APNS silent push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                  undefined,
+                  'auth',
+                );
+              } else {
+                srv.logWarn(
+                  `APNS silent push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                  undefined,
+                  'auth',
+                );
+              }
+
+              const status = sessionIntegration.notificationManager.getStatus();
+              res.writeHead(sent ? 200 : 502, {
+                'Content-Type': 'application/json',
+              });
+              res.end(
+                JSON.stringify({
+                  sent,
+                  sessionId: resolvedSessionId,
+                  deviceToken: tokenSummary,
+                  notifications: status,
+                }),
+              );
+            } catch (err) {
+              res.writeHead(400, { 'Content-Type': 'application/json' });
+              res.end(
+                JSON.stringify({
+                  error: 'Invalid JSON body',
+                  detail: (err as Error).message,
+                }),
+              );
+            }
+          })();
+        });
+      } else if (
+        req.method === 'POST' &&
+        (pathOnly === '/attest/register' || pathOnly === '/attest/register/')
+      ) {
         srv.logInfo(
           `App Attest register request received peer=${requestPeer(req)}`,
           undefined,
@@ -1111,6 +1253,14 @@ const srv: ServerConfig = {
             }
           })();
         });
+      } else {
+        srv.logWarn(
+          `Unhandled HTTP request method=${req.method || 'UNKNOWN'} path=${pathOnly || '<empty>'} peer=${requestPeer(req)}`,
+          undefined,
+          'init',
+        );
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Not found' }));
       }
     });
 
