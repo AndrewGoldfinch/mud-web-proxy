@@ -316,8 +316,34 @@ const formatWsSocketContext = (s: SocketExtended): string => {
     getHeaderValue(s.req?.headers?.['x-forwarded-host']) || '-';
   const forwardedFor =
     getHeaderValue(s.req?.headers?.['x-forwarded-for']) || '-';
-  const targetHost = s.host ?? srv.tn_host;
-  const targetPort = s.port ?? srv.tn_port;
+  let targetSource: 'session' | 'requested' | 'default' = 'default';
+  let targetHost = srv.tn_host;
+  let targetPort = srv.tn_port;
+
+  try {
+    const session = sessionIntegration.sessionManager.findByWebSocket(s);
+    if (session) {
+      const meta = session.getMetadata();
+      targetSource = 'session';
+      targetHost = meta.mudHost;
+      targetPort = meta.mudPort;
+    } else if (s.host || s.port) {
+      targetSource = 'requested';
+      targetHost = s.host ?? srv.tn_host;
+      targetPort = s.port ?? srv.tn_port;
+    }
+  } catch (_err) {
+    if (s.host || s.port) {
+      targetSource = 'requested';
+      targetHost = s.host ?? srv.tn_host;
+      targetPort = s.port ?? srv.tn_port;
+    }
+  }
+
+  const telnetRemote =
+    s.ts?.remoteAddress && s.ts?.remotePort
+      ? `${s.ts.remoteAddress}:${s.ts.remotePort}`
+      : '-';
   const peer = peerPort ? `${peerIP}:${peerPort}` : peerIP || '-';
   const source = sourcePort ? `${sourceIP}:${sourcePort}` : sourceIP || '-';
 
@@ -325,7 +351,8 @@ const formatWsSocketContext = (s: SocketExtended): string => {
     `${wsId} peer=${peer} source=${source} ` +
     `host=${hostHeader} x-forwarded-host=${forwardedHost} ` +
     `x-forwarded-for=${forwardedFor} ` +
-    `target=${targetHost}:${targetPort}`
+    `target=${targetHost}:${targetPort} ` +
+    `target_source=${targetSource} telnet_remote=${telnetRemote}`
   );
 };
 
@@ -1792,7 +1819,19 @@ const srv: ServerConfig = {
     wsServer.on(
       'connection',
       function connection(socket: WS, req: IncomingMessage) {
-        srv.logInfo('new connection', undefined, 'ws');
+        const incomingIP = req.socket.remoteAddress || '-';
+        const incomingPort = req.socket.remotePort;
+        const incomingSource = incomingPort
+          ? `${incomingIP}:${incomingPort}`
+          : incomingIP;
+        const incomingHost = getHeaderValue(req.headers.host) || '-';
+        const incomingForwardedFor =
+          getHeaderValue(req.headers['x-forwarded-for']) || '-';
+        srv.logInfo(
+          `incoming websocket connection: source=${incomingSource} host=${incomingHost} x-forwarded-for=${incomingForwardedFor}`,
+          undefined,
+          'ws',
+        );
         if (!srv.open) {
           socket.terminate();
           return;
