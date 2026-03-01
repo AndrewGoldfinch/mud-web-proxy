@@ -139,16 +139,10 @@ export class SessionIntegration {
 
     const hasClients = session.hasClients();
     if (hasClients) {
-      const errorResponse = {
-        type: 'error',
-        code: 'connection_failed',
-        message: reason,
-      };
-      session.broadcastToClients(JSON.stringify(errorResponse));
-
       const disconnectedResponse = {
         type: 'disconnected',
         sessionId: session.id,
+        reason,
       };
       session.broadcastToClients(JSON.stringify(disconnectedResponse));
     }
@@ -397,6 +391,7 @@ export class SessionIntegration {
           seq: chunk.sequence,
           package: chunk.gmcpPackage,
           data: chunk.gmcpData,
+          replayed: true,
         };
         socket.sendUTF(JSON.stringify(response));
       } else {
@@ -404,6 +399,7 @@ export class SessionIntegration {
           type: 'data',
           seq: chunk.sequence,
           payload: chunk.data.toString('base64'),
+          replayed: true,
         };
         socket.sendUTF(JSON.stringify(response));
       }

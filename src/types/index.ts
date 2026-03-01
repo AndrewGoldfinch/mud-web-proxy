@@ -230,10 +230,17 @@ export interface SessionResponse {
   capabilities?: string[];
 }
 
+export interface ResumedResponse {
+  type: 'resumed';
+  sessionId: string;
+  capabilities?: string[];
+}
+
 export interface DataResponse {
   type: 'data';
   seq: number;
   payload: string; // base64 encoded
+  replayed?: boolean;
 }
 
 export interface GMCPResponse {
@@ -241,6 +248,7 @@ export interface GMCPResponse {
   seq: number;
   package: string;
   data: object;
+  replayed?: boolean;
 }
 
 export interface ErrorResponse {
@@ -250,28 +258,23 @@ export interface ErrorResponse {
     | 'session_expired'
     | 'rate_limited'
     | 'connection_failed'
-    | 'unauthorized'
-    | 'invalid_request'
-    | 'attestation_required'
-    | 'attestation_invalid'
-    | 'attestation_expired'
-    | 'attestation_not_configured';
+    | 'invalid_request';
   message: string;
 }
 
 export interface DisconnectedResponse {
   type: 'disconnected';
   sessionId: string;
+  reason?: string;
 }
 
 export type ProxyMessage =
   | SessionResponse
+  | ResumedResponse
   | DataResponse
   | GMCPResponse
   | ErrorResponse
-  | DisconnectedResponse
-  | ChallengeResponse
-  | AttestResponse;
+  | DisconnectedResponse;
 
 /**
  * APNS configuration
