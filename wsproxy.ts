@@ -151,8 +151,6 @@ const sessionIntegration = new SessionIntegration({
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = true;
-// Trust X-Real-IP / X-Forwarded-For headers from a reverse proxy
-const TRUST_PROXY = process.env.TRUST_PROXY === '1';
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
 const PACKAGE_VERSION = '3.0.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
@@ -161,19 +159,18 @@ const SOCKET_CLOSE_DELAY_MS = 500;
 
 /**
  * Resolve the real client IP from proxy headers or the socket.
- * Only trusts headers when TRUST_PROXY=1.
+ * Reads X-Real-IP then X-Forwarded-For (first entry) before falling
+ * back to the raw socket address.
  */
 const getClientIP = (req: IncomingMessage): string => {
-  if (TRUST_PROXY) {
-    const realIP = req.headers['x-real-ip'];
-    if (typeof realIP === 'string' && realIP) return realIP;
+  const realIP = req.headers['x-real-ip'];
+  if (typeof realIP === 'string' && realIP) return realIP;
 
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string' && forwarded) {
-      // First entry is the original client
-      return forwarded.split(',')[0].trim();
-    }
+  const forwarded = req.headers['x-forwarded-for'];
+  if (typeof forwarded === 'string' && forwarded) {
+    return forwarded.split(',')[0].trim();
   }
+
   return req.socket?.remoteAddress || '';
 };
 
