@@ -42,6 +42,7 @@ export class Session {
   buffer: CircularBuffer;
 
   deviceToken?: string;
+  clientIp?: string;
   activityPushToken?: string;
   clientBackgrounded = false;
   lastBackgroundedAt = 0;

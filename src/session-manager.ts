@@ -142,6 +142,11 @@ export class SessionManager {
       return;
     }
 
+    // Decrement IP count if this session was counted
+    if (session.clientIp) {
+      this.decrementIPCount(session.clientIp);
+    }
+
     // Clean up device mapping
     if (session.deviceToken) {
       const deviceSessions = this.deviceSessions.get(session.deviceToken);

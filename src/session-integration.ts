@@ -189,7 +189,7 @@ export class SessionIntegration {
         if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
         this.log(
           `client msg: ${JSON.stringify(sanitized)}`,
-          socket.remoteAddress,
+          this.getClientIP(socket),
         );
       }
 
@@ -231,10 +231,7 @@ export class SessionIntegration {
     socket: SocketExtended,
     msg: ConnectRequest,
   ): Promise<void> {
-    const ip =
-      socket.remoteAddress ||
-      socket.req?.connection?.remoteAddress ||
-      'unknown';
+    const ip = this.getClientIP(socket);
 
     this.log(`connect request to ${msg.host}:${msg.port}`, ip);
 
@@ -282,10 +279,6 @@ export class SessionIntegration {
     session.markClientForegrounded();
     this.backgroundPushScheduler.untrackSession(session.id);
 
-    if (msg.deviceToken) {
-      this.sessionManager.incrementIPCount(ip);
-    }
-
     // Send session response
     const response = {
       type: 'session',
@@ -311,6 +304,13 @@ export class SessionIntegration {
 
       await session.connect();
 
+      // Count this IP only after a successful connection; clientIp on the
+      // session is what removeSession uses to decrement on teardown.
+      if (msg.deviceToken && ip !== 'unknown') {
+        session.clientIp = ip;
+        this.sessionManager.incrementIPCount(ip);
+      }
+
       // Set up error handler
       session.onError((err: Error) => {
         this.handleMudTermination(session, err.message);
@@ -326,10 +326,7 @@ export class SessionIntegration {
    * Handle resume request - reattach to existing session
    */
   private handleResume(socket: SocketExtended, msg: ResumeRequest): void {
-    const ip =
-      socket.remoteAddress ||
-      socket.req?.connection?.remoteAddress ||
-      'unknown';
+    const ip = this.getClientIP(socket);
     this.log(
       `resume request for session ${msg.sessionId} from seq ${msg.lastSeq}`,
       ip,
@@ -454,10 +451,7 @@ export class SessionIntegration {
    * Handle disconnect request - close session and telnet connection
    */
   private handleDisconnect(socket: SocketExtended): void {
-    const ip =
-      socket.remoteAddress ||
-      socket.req?.connection?.remoteAddress ||
-      'unknown';
+    const ip = this.getClientIP(socket);
 
     const session = this.sessionManager.findByWebSocket(socket);
     if (!session) {
@@ -481,13 +475,9 @@ export class SessionIntegration {
     }
 
     // Close the telnet connection and clean up session
+    // (removeSessionAndCleanup → removeSession handles IP count decrement)
     session.close();
     this.removeSessionAndCleanup(sessionId);
-
-    // Decrement IP count
-    if (ip && ip !== 'unknown') {
-      this.sessionManager.decrementIPCount(ip);
-    }
 
     this.log('session disconnected and removed', ip, sessionId);
   }
@@ -598,22 +588,19 @@ export class SessionIntegration {
   handleSocketClose(socket: SocketExtended): void {
     const session = this.sessionManager.findByWebSocket(socket);
     if (session) {
-      const ip =
-        socket.remoteAddress ||
-        socket.req?.connection?.remoteAddress ||
-        'unknown';
-      this.log('client detached from session', ip, session.id);
+      this.log(
+        'client detached from session',
+        this.getClientIP(socket),
+        session.id,
+      );
 
-      // Detach instead of terminate
+      // Detach instead of terminate — session stays alive for resume.
+      // IP count is NOT decremented here; it tracks sessions, not sockets,
+      // and is decremented only when the session itself is destroyed.
       this.sessionManager.detachWebSocket(socket);
       if (!session.hasClients() && session.telnetConnected) {
         session.markClientBackgrounded();
         this.backgroundPushScheduler.trackSession(session);
-      }
-
-      // Decrement IP count
-      if (ip && ip !== 'unknown') {
-        this.sessionManager.decrementIPCount(ip);
       }
     }
   }
@@ -621,6 +608,19 @@ export class SessionIntegration {
   /**
    * Check if socket is part of a session
    */
+  private getClientIP(socket: SocketExtended): string {
+    const xff = socket.req?.headers['x-forwarded-for'];
+    if (xff) {
+      const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
+      if (first) return first;
+    }
+    return (
+      socket.remoteAddress ||
+      socket.req?.connection?.remoteAddress ||
+      'unknown'
+    );
+  }
+
   hasSession(socket: SocketExtended): boolean {
     return !!this.sessionManager.findByWebSocket(socket);
   }
