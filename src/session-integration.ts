@@ -11,6 +11,7 @@ import type { SocketExtended } from './types';
 import { TriggerMatcher } from './trigger-matcher';
 import { NotificationManager } from './notification-manager';
 import { BackgroundPushScheduler } from './background-push-scheduler';
+import { validateTarget, type TargetPolicyConfig } from './target-policy';
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -52,6 +53,7 @@ export interface SessionIntegrationConfig {
     maxFallbacksPerHour?: number;
     maxSnippetLength?: number;
   };
+  targets?: TargetPolicyConfig;
 }
 
 export class SessionIntegration {
@@ -238,6 +240,20 @@ export class SessionIntegration {
     // Enable per-client debug logging if requested
     if (msg.debug) socket.debug = msg.debug;
 
+    const target = validateTarget(msg.host, msg.port, this.config.targets);
+    if (!target.allowed || !target.host || !target.port) {
+      this.log(
+        `connect rejected: ${target.reason || 'Target not allowed'}`,
+        ip,
+      );
+      this.sendError(
+        socket,
+        'invalid_request',
+        target.reason || 'Target not allowed',
+      );
+      return;
+    }
+
     // Check connection limits
     if (msg.deviceToken) {
       const limits = this.sessionManager.enforceConnectionLimits(
@@ -260,8 +276,8 @@ export class SessionIntegration {
 
     // Create new session
     const session = this.sessionManager.create(
-      msg.host,
-      msg.port,
+      target.host,
+      target.port,
       msg.deviceToken,
       this.config.buffer.sizeKB * 1024,
     );
@@ -288,7 +304,11 @@ export class SessionIntegration {
     };
     socket.sendUTF(JSON.stringify(response));
 
-    this.log(`session created for ${msg.host}:${msg.port}`, ip, session.id);
+    this.log(
+      `session created for ${target.host}:${target.port}`,
+      ip,
+      session.id,
+    );
 
     // Connect to MUD
     try {

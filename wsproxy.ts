@@ -58,6 +58,17 @@ import type { TLSSocket } from 'tls';
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 import {
+  escapeDiagnosticHtml,
+  getRuntimeConfig,
+  isDiagnosticRequestAuthorized,
+  resolveTlsSettings,
+} from './src/runtime-config';
+import {
+  PROTOCOL_CONSTANTS,
+  type ProtocolConstants,
+} from './src/protocol-constants';
+import { validateTarget } from './src/target-policy';
+import {
   generateChallenge,
   validateAndConsumeNonce,
   verifyAttestation,
@@ -115,6 +126,7 @@ const useColors = process.stdout.isTTY && process.env.NO_COLOR !== '1';
 // Get current file directory in ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+const runtimeConfig = getRuntimeConfig(process.env);
 
 // Initialize session persistence layer
 const sessionIntegration = new SessionIntegration({
@@ -146,6 +158,12 @@ const sessionIntegration = new SessionIntegration({
     maxSnippetLength:
       Number(process.env.ACTIVITY_PUSH_MAX_SNIPPET_LENGTH) || undefined,
   },
+  targets: {
+    onlyAllowDefaultServer: runtimeConfig.onlyAllowDefaultServer,
+    defaultHost: runtimeConfig.tnHost,
+    defaultPort: runtimeConfig.tnPort,
+    allowedTargets: runtimeConfig.allowedTargets,
+  },
   // APNS config from environment
   apns: process.env.APNS_KEY_PATH
     ? {
@@ -162,7 +180,7 @@ const sessionIntegration = new SessionIntegration({
 
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
-const ONLY_ALLOW_DEFAULT_SERVER = true;
+const ONLY_ALLOW_DEFAULT_SERVER = runtimeConfig.onlyAllowDefaultServer;
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
 const PACKAGE_VERSION = '3.0.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
@@ -209,50 +227,6 @@ export const writeTelnet = (
 
 interface ServerState {
   sockets: Set<SocketExtended>;
-}
-
-interface ProtocolConstants {
-  WILL_ATCP: Buffer;
-  WILL_GMCP: Buffer;
-  DO_GMCP: Buffer;
-  DO_MCCP: Buffer;
-  DO_MSDP: Buffer;
-  DO_MXP: Buffer;
-  WILL_MXP: Buffer;
-  START: Buffer;
-  STOP: Buffer;
-  WILL_TTYPE: Buffer;
-  WILL_NEW: Buffer;
-  WONT_NAWS: Buffer;
-  SGA: number;
-  NEW: number;
-  TTYPE: number;
-  MCCP2: number;
-  MSDP: number;
-  MSDP_VAR: number;
-  MSDP_VAL: number;
-  MXP: number;
-  ATCP: number;
-  GMCP: number;
-  SE: number;
-  SB: number;
-  WILL: number;
-  WONT: number;
-  DO: number;
-  DONT: number;
-  IAC: number;
-  IS: number;
-  REQUEST: number;
-  ECHO: number;
-  VAR: number;
-  ACCEPTED: number;
-  REJECTED: number;
-  CHARSET: number;
-  ESC: number;
-  NAWS: number;
-  WILL_CHARSET: Buffer;
-  WILL_UTF8: Buffer;
-  ACCEPT_UTF8: Buffer;
 }
 
 interface TTypeConfig {
@@ -387,9 +361,9 @@ const getDiagnosticData = () => {
   const sessions = allSessions.map((session) => {
     const meta = session.getMetadata();
     return {
-      sessionIdFull: meta.sessionId,
-      sessionId: meta.sessionId.slice(0, 8) + '...',
-      mudHost: meta.mudHost,
+      sessionIdFull: escapeDiagnosticHtml(meta.sessionId),
+      sessionId: escapeDiagnosticHtml(meta.sessionId.slice(0, 8) + '...'),
+      mudHost: escapeDiagnosticHtml(meta.mudHost),
       mudPort: meta.mudPort,
       telnetConnected: meta.telnetConnected,
       clientConnected: meta.clientConnected,
@@ -404,11 +378,13 @@ const getDiagnosticData = () => {
   });
 
   const sockets = Array.from(server.sockets).map((s) => ({
-    remoteAddress: s.req?.connection?.remoteAddress || 'unknown',
-    host: s.host || null,
+    remoteAddress: escapeDiagnosticHtml(
+      s.req?.connection?.remoteAddress || 'unknown',
+    ),
+    host: s.host ? escapeDiagnosticHtml(s.host) : null,
     port: s.port || null,
-    name: s.name || null,
-    client: s.client || null,
+    name: s.name ? escapeDiagnosticHtml(s.name) : null,
+    client: s.client ? escapeDiagnosticHtml(s.client) : null,
     compressed: s.compressed,
     protocols: {
       mccp: !!s.mccp_negotiated,
@@ -432,9 +408,9 @@ const getDiagnosticData = () => {
       nodeVersion: process.version,
       platform: process.platform,
       arch: process.arch,
-      hostname: os.hostname(),
+      hostname: escapeDiagnosticHtml(os.hostname()),
       pid: process.pid,
-      defaultHost: srv.tn_host,
+      defaultHost: escapeDiagnosticHtml(srv.tn_host),
       defaultPort: srv.tn_port,
       wsPort: srv.ws_port,
       onlyAllowDefaultServer: ONLY_ALLOW_DEFAULT_SERVER,
@@ -928,11 +904,11 @@ interface ServerConfig {
 const srv: ServerConfig = {
   path: __dirname,
   /* this websocket proxy port - can be overridden with WS_PORT env var */
-  ws_port: parseInt(process.env.WS_PORT || '6200', 10),
+  ws_port: runtimeConfig.wsPort,
   /* default telnet host - can be overridden with TN_HOST env var */
-  tn_host: process.env.TN_HOST || 'muds.maldorne.org',
+  tn_host: runtimeConfig.tnHost,
   /* default telnet/target port - can be overridden with TN_PORT env var */
-  tn_port: parseInt(process.env.TN_PORT || '5010', 10),
+  tn_port: runtimeConfig.tnPort,
   /* enable additional debugging */
   debug: false,
   /* use node zlib (different from mccp) - you want this turned off unless your server can't do MCCP and your client can inflate data */
@@ -950,51 +926,7 @@ const srv: ServerConfig = {
     portal: ['client maldorne.org', 'client_version 1.0'],
   } as GMCPConfig,
 
-  prt: {
-    WILL_ATCP: Buffer.from([255, 251, 200]),
-    WILL_GMCP: Buffer.from([255, 251, 201]),
-    DO_GMCP: Buffer.from([255, 253, 201]),
-    DO_MCCP: Buffer.from([255, 253, 86]),
-    DO_MSDP: Buffer.from([255, 253, 69]),
-    DO_MXP: Buffer.from([255, 253, 91]),
-    WILL_MXP: Buffer.from([255, 251, 91]),
-    START: Buffer.from([255, 250, 201]),
-    STOP: Buffer.from([255, 240]),
-    WILL_TTYPE: Buffer.from([255, 251, 24]),
-    WILL_NEW: Buffer.from([255, 251, 39]),
-    WONT_NAWS: Buffer.from([255, 252, 31]),
-    SGA: 3,
-    NEW: 39,
-    TTYPE: 24,
-    MCCP2: 86,
-    MSDP: 69,
-    MSDP_VAR: 1,
-    MSDP_VAL: 2,
-    MXP: 91,
-    ATCP: 200,
-    GMCP: 201,
-    SE: 240,
-    SB: 250,
-    WILL: 251,
-    WONT: 252,
-    DO: 253,
-    DONT: 254,
-    IAC: 255,
-    IS: 0,
-    REQUEST: 1,
-    ECHO: 1,
-    VAR: 1,
-    ACCEPTED: 2,
-    REJECTED: 3,
-    CHARSET: 42,
-    ESC: 33,
-    NAWS: 31,
-    WILL_CHARSET: Buffer.from([255, 251, 42]),
-    WILL_UTF8: Buffer.from([255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240]),
-    ACCEPT_UTF8: Buffer.from([
-      255, 250, 2, 34, 85, 84, 70, 45, 56, 34, 255, 240,
-    ]),
-  } as ProtocolConstants,
+  prt: PROTOCOL_CONSTANTS,
 
   init: async function (): Promise<void> {
     let webserver: HttpServer;
@@ -1015,16 +947,15 @@ const srv: ServerConfig = {
       sockets: new Set(),
     };
 
-    // Check if TLS is disabled (for testing)
-    const USE_TLS = process.env.DISABLE_TLS !== '1';
+    const tlsSettings = resolveTlsSettings(
+      process.env,
+      __dirname,
+      fs.existsSync,
+    );
 
-    if (
-      USE_TLS &&
-      fs.existsSync(path.resolve(__dirname, 'cert.pem')) &&
-      fs.existsSync(path.resolve(__dirname, 'privkey.pem'))
-    ) {
-      const cert = fs.readFileSync(path.resolve(__dirname, 'cert.pem'));
-      const key = fs.readFileSync(path.resolve(__dirname, 'privkey.pem'));
+    if (tlsSettings.useTls) {
+      const cert = fs.readFileSync(tlsSettings.certPath);
+      const key = fs.readFileSync(tlsSettings.keyPath);
       const tlsOptions: https.ServerOptions = { cert, key };
       const clientCaPath = process.env.MTLS_CLIENT_CA_PATH;
       const allowMtlsFallback =
@@ -1098,14 +1029,14 @@ const srv: ServerConfig = {
           'init',
         );
       }
-    } else if (!USE_TLS) {
+    } else if (tlsSettings.reason === 'disabled') {
       // Non-TLS mode for testing
       webserver = http.createServer();
       srv.logInfo('Running without TLS (DISABLE_TLS=1)', undefined, 'init');
     } else {
       webserver = http.createServer();
       srv.logWarn(
-        'No cert.pem/privkey.pem found, running without TLS',
+        'No TLS certificate/key found, running without TLS',
         undefined,
         'init',
       );
@@ -1121,7 +1052,7 @@ const srv: ServerConfig = {
       'init',
     );
 
-    const requireAppAuth = process.env.REQUIRE_APP_AUTH !== 'false';
+    const requireAppAuth = runtimeConfig.requireAppAuth;
     const appAttestBundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
     const appAttestTeamId = process.env.APPATTEST_TEAM_ID ?? '';
     const mtlsFallbackEnabled =
@@ -1208,9 +1139,19 @@ const srv: ServerConfig = {
           }),
         );
       } else if (pathOnly === '/diagnostic') {
+        if (!isDiagnosticRequestAuthorized(req.headers, runtimeConfig)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found' }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
         res.end(generateDiagnosticHTML());
       } else if (pathOnly === '/diagnostic/api') {
+        if (!isDiagnosticRequestAuthorized(req.headers, runtimeConfig)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Not found' }));
+          return;
+        }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(getDiagnosticData()));
       } else if (req.method === 'GET' && pathOnly === '/attest/challenge') {
@@ -1995,30 +1936,34 @@ const srv: ServerConfig = {
 
     s.compressed = 0;
 
-    // do not allow the proxy connect to different servers
-    if (ONLY_ALLOW_DEFAULT_SERVER) {
-      const resolvedHost = s.host || srv.tn_host;
-      if (resolvedHost !== srv.tn_host) {
-        srv.logWarn(
-          'blocked connection attempt to: ' + s.host + ':' + s.port,
-          s,
-          'telnet',
-        );
-        srv.sendClient(
-          s,
-          Buffer.from(
-            'This proxy does not allow connections to servers different to ' +
-              srv.tn_host +
-              '.\r\nTake a look in ' +
-              REPOSITORY_URL +
-              ' and install it in your own server.\r\n',
-          ),
-        );
-        setTimeout(function () {
-          srv.closeSocket(s);
-        }, SOCKET_CLOSE_DELAY_MS);
-        return;
-      }
+    const target = validateTarget(host, port, {
+      onlyAllowDefaultServer: ONLY_ALLOW_DEFAULT_SERVER,
+      defaultHost: srv.tn_host,
+      defaultPort: srv.tn_port,
+      allowedTargets: runtimeConfig.allowedTargets,
+    });
+    if (!target.allowed) {
+      srv.logWarn(
+        'blocked connection attempt to: ' + s.host + ':' + s.port,
+        s,
+        'telnet',
+      );
+      srv.sendClient(
+        s,
+        Buffer.from(
+          'This proxy does not allow connections to servers different to ' +
+            srv.tn_host +
+            ':' +
+            srv.tn_port +
+            '.\r\nTake a look in ' +
+            REPOSITORY_URL +
+            ' and install it in your own server.\r\n',
+        ),
+      );
+      setTimeout(function () {
+        srv.closeSocket(s);
+      }, SOCKET_CLOSE_DELAY_MS);
+      return;
     }
 
     s.ts = net.createConnection(port, host, function () {
@@ -2631,7 +2576,7 @@ const init = async () => {
       srv.die();
     });
 
-  srv.init();
+  await srv.init();
 };
 
 // Start the server

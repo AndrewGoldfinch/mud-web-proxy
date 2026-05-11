@@ -16,6 +16,7 @@ export default [
       '**/types/',
       '**/wsproxy.js',
       '**/*.test.ts',
+      '**/.claude/',
     ],
   },
   // general defaults

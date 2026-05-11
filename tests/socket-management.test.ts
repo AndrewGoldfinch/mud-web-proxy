@@ -108,12 +108,12 @@ const createTestServer = () => {
       ACCEPTED: 2,
       REJECTED: 3,
       CHARSET: 42,
-      ESC: 33,
+      ESC: 27,
       NAWS: 31,
       WILL_CHARSET: Buffer.from([255, 251, 42]),
       WILL_UTF8: Buffer.from([255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240]),
       ACCEPT_UTF8: Buffer.from([
-        255, 250, 2, 34, 85, 84, 70, 45, 56, 34, 255, 240,
+        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
       ]),
     },
 

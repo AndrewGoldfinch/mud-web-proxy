@@ -191,13 +191,13 @@ describe('Protocol Constants', () => {
 
     test('should have correct byte sequence for ACCEPT_UTF8', () => {
       const expected = Buffer.from([
-        255, 250, 2, 34, 85, 84, 70, 45, 56, 34, 255, 240,
+        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
       ]);
       const actual = Buffer.from([
-        255, 250, 2, 34, 85, 84, 70, 45, 56, 34, 255, 240,
+        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
       ]);
       expect(actual).toEqual(expected);
-      expect(actual.length).toBe(12);
+      expect(actual.length).toBe(11);
     });
   });
 
@@ -223,7 +223,7 @@ describe('Protocol Constants', () => {
     });
 
     test('should have correct value for ESC', () => {
-      expect(33).toBe(33);
+      expect(27).toBe(27);
     });
   });
 
@@ -300,11 +300,11 @@ describe('Protocol Constants', () => {
       expect(buffer.length).toBe(11);
     });
 
-    test('ACCEPT_UTF8 buffer length should be 12', () => {
+    test('ACCEPT_UTF8 buffer length should be 11', () => {
       const buffer = Buffer.from([
-        255, 250, 2, 34, 85, 84, 70, 45, 56, 34, 255, 240,
+        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
       ]);
-      expect(buffer.length).toBe(12);
+      expect(buffer.length).toBe(11);
     });
   });
 });
