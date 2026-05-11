@@ -1,29 +1,41 @@
 /*
 Lightweight Websocket <-> Telnet Proxy
-v1.3 - 2/27/2014 @plamzi
-v2.0 - ?? @neverbot
-v3.0 - March 2025 @neverbot
 
-Author: plamzi - plamzi@gmail.com
-Contributor: neverbot
-MIT license
+Version history:
+  v1.3 - 2014-02-27 @plamzi
+  v2.0 - @neverbot
+  v3.0 - 2025-03   @neverbot
 
-Supports client setting any host and port prior to connect.
+Original author: plamzi <plamzi@gmail.com> (2014)
+Contributors:    neverbot, Andrew Goldfinch
+License:         MIT
+
+Entry point. Most server logic lives in the `srv` singleton below; the
+session persistence, App Attest, and APNS layers live under `src/`.
+
+Client protocol:
+
+  - JSON messages with a `type` field are routed to the session layer
+    (types: connect, resume, input, naws, activityToken, syncAck,
+    disconnect). See src/session-integration.ts.
+  - Any other payload (non-JSON, or JSON without `type`) is forwarded
+    raw to the telnet target, after telnet protocol negotiation.
 
 Example (client-side JS):
 
-if (WebSocket) {
-  let ws = new WebSocket('ws://mywsproxyserver:6200/');
-  ws.onopen = function(e) {
-    ws.send('{ host: "localhost", port: 7000, connect: 1 }');
+  const ws = new WebSocket('wss://mywsproxyserver:6200/');
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'connect', host: 'localhost', port: 7000 }));
   };
-}
 
-Usage Notes:
+When ONLY_ALLOW_DEFAULT_SERVER is true (default), `host`/`port` from the
+client must match srv.tn_host / srv.tn_port or the connection is refused.
 
-The server waits to receive { "connect": 1 } to begin connecting to
-a telnet client on behalf of the user, so you have to send it
-even if you are not passing it host and port from the client.
+HTTP endpoints exposed alongside the WS upgrade: /health, /diagnostic,
+/diagnostic/api, /attest/challenge, /attest/register, /debug/apns/test.
+
+Configuration is environment-driven: WS_PORT, TN_HOST, TN_PORT,
+LOG_LEVEL, ALLOWED_ORIGINS, APNS_*, APPATTEST_*.
 */
 
 import util from 'util';
@@ -2558,7 +2570,6 @@ const srv: ServerConfig = {
     if (!srv.open) {
       /* server is going down */
       s.terminate();
-      // s.destroy?s.destroy():s.socket.destroy();
       return;
     }
 
