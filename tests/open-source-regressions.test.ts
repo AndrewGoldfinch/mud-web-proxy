@@ -201,6 +201,27 @@ describe('open-source release regression coverage', () => {
     ).toThrow('DISABLE_TLS=1 is not allowed in production');
   });
 
+  test('production finds TLS files beside the project when running from dist', () => {
+    const existingFiles = new Set([
+      '/opt/mud-proxy/cert.pem',
+      '/opt/mud-proxy/privkey.pem',
+    ]);
+    const existsSync = (filePath: string) => existingFiles.has(filePath);
+
+    expect(
+      resolveTlsSettings(
+        { NODE_ENV: 'production' },
+        '/opt/mud-proxy/dist',
+        existsSync,
+      ),
+    ).toMatchObject({
+      useTls: true,
+      certPath: '/opt/mud-proxy/cert.pem',
+      keyPath: '/opt/mud-proxy/privkey.pem',
+      reason: 'configured',
+    });
+  });
+
   test('explicit override is required for insecure production no-TLS mode', () => {
     const existsSync = () => false;
 

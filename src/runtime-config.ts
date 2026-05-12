@@ -76,8 +76,8 @@ export const resolveTlsSettings = (
   basePath: string,
   existsSync: (filePath: string) => boolean,
 ): TlsSettings => {
-  const certPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
-  const keyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
+  let certPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
+  let keyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
   const production = env.NODE_ENV === 'production';
   const allowInsecureProductionNoTls = readBooleanEnv(
     env,
@@ -96,6 +96,20 @@ export const resolveTlsSettings = (
 
   if (existsSync(certPath) && existsSync(keyPath)) {
     return { useTls: true, certPath, keyPath, reason: 'configured' };
+  }
+
+  if (
+    !env.TLS_CERT_PATH &&
+    !env.TLS_KEY_PATH &&
+    path.basename(basePath) === 'dist'
+  ) {
+    const parentCertPath = path.resolve(basePath, '..', 'cert.pem');
+    const parentKeyPath = path.resolve(basePath, '..', 'privkey.pem');
+    if (existsSync(parentCertPath) && existsSync(parentKeyPath)) {
+      certPath = parentCertPath;
+      keyPath = parentKeyPath;
+      return { useTls: true, certPath, keyPath, reason: 'configured' };
+    }
   }
 
   if (production && !allowInsecureProductionNoTls) {
