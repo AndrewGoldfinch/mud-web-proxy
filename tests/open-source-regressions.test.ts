@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { EventEmitter } from 'events';
+import net from 'net';
 import { PROTOCOL_CONSTANTS } from '../src/protocol-constants.js';
 import {
   escapeDiagnosticHtml,
@@ -47,6 +48,74 @@ function parseLastMessage(socket: MockSocket): Record<string, unknown> {
   const raw = socket.messages.at(-1);
   if (!raw) throw new Error('socket has no messages');
   return JSON.parse(raw) as Record<string, unknown>;
+}
+
+function waitForMessage(
+  socket: MockSocket,
+  match: (msg: Record<string, unknown>) => boolean,
+  label: string,
+  timeout = 1000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(
+      () => reject(new Error(`Timeout waiting for ${label}`)),
+      timeout,
+    );
+    const check = () => {
+      const found = socket.messages.some((raw) => {
+        try {
+          return match(JSON.parse(raw) as Record<string, unknown>);
+        } catch {
+          return false;
+        }
+      });
+
+      if (found) {
+        clearTimeout(deadline);
+        resolve();
+      } else {
+        setTimeout(check, 20);
+      }
+    };
+    check();
+  });
+}
+
+function waitForCondition(
+  condition: () => boolean,
+  label: string,
+  timeout = 1000,
+): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const deadline = setTimeout(
+      () => reject(new Error(`Timeout waiting for ${label}`)),
+      timeout,
+    );
+    const check = () => {
+      if (condition()) {
+        clearTimeout(deadline);
+        resolve();
+      } else {
+        setTimeout(check, 20);
+      }
+    };
+    check();
+  });
+}
+
+function firstMessage(
+  socket: MockSocket,
+  match: (msg: Record<string, unknown>) => boolean,
+): Record<string, unknown> {
+  for (const raw of socket.messages) {
+    try {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (match(parsed)) return parsed;
+    } catch {
+      // Ignore non-JSON socket messages.
+    }
+  }
+  throw new Error('message not found');
 }
 
 function makeSessionIntegration(): SessionIntegration {
@@ -236,5 +305,74 @@ describe('open-source release regression coverage', () => {
         existsSync,
       ),
     ).toMatchObject({ useTls: false, reason: 'disabled' });
+  });
+
+  test('connect sslMode none opens a plain target socket without TLS probing', async () => {
+    let resolveFirstPayload: (data: Buffer) => void;
+    const targetSockets: net.Socket[] = [];
+    const firstPayload = new Promise<Buffer>((resolve, reject) => {
+      const timeout = setTimeout(
+        () => reject(new Error('Timed out waiting for target payload')),
+        1000,
+      );
+      resolveFirstPayload = (data: Buffer) => {
+        clearTimeout(timeout);
+        resolve(data);
+      };
+    });
+    const server = net.createServer((targetSocket) => {
+      targetSockets.push(targetSocket);
+      targetSocket.once('data', (data) => {
+        resolveFirstPayload(Buffer.from(data));
+      });
+    });
+
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const { port } = server.address() as net.AddressInfo;
+    const integration = new SessionIntegration({
+      sessions: { timeoutHours: 24, maxPerDevice: 5, maxPerIP: 10 },
+      targets: {
+        onlyAllowDefaultServer: false,
+        defaultHost: '127.0.0.1',
+        defaultPort: port,
+      },
+    });
+    integrations.push(integration);
+    const socket = makeSocket();
+
+    try {
+      integration.parseNewMessage(
+        socket,
+        Buffer.from(
+          JSON.stringify({
+            type: 'connect',
+            host: '127.0.0.1',
+            port,
+            deviceToken: 'dev-plain-target',
+            sslMode: 'none',
+          }),
+        ),
+      );
+      await waitForMessage(socket, (m) => m.type === 'session', 'session response');
+      const sessionMessage = firstMessage(socket, (m) => m.type === 'session');
+      const sessionId = String(sessionMessage.sessionId);
+      await waitForCondition(
+        () => integration.sessionManager.get(sessionId)?.telnetConnected === true,
+        'plain target socket connect',
+      );
+
+      integration.parseNewMessage(
+        socket,
+        Buffer.from(JSON.stringify({ type: 'input', text: 'look\r\n' })),
+      );
+
+      const payload = await firstPayload;
+      expect(payload.toString('utf8')).toBe('look\r\n');
+    } finally {
+      for (const targetSocket of targetSockets) {
+        targetSocket.destroy();
+      }
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
   });
 });

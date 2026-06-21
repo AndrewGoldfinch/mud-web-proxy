@@ -94,6 +94,8 @@ export interface ProcessedData {
   gmcpData?: object;
 }
 
+export type TargetSSLMode = 'none' | 'required' | 'autodetect';
+
 /**
  * Client → Proxy message types
  */
@@ -104,6 +106,7 @@ export interface ConnectRequest {
   deviceToken?: string;
   apiKey?: string;
   appToken?: string;
+  sslMode?: TargetSSLMode;
   width?: number;
   height?: number;
   debug?: boolean;

@@ -17,6 +17,7 @@ import type {
   BufferChunk,
   ProcessedData,
   SocketExtended,
+  TargetSSLMode,
   TelnetSocket,
   Trigger,
 } from './types';
@@ -31,6 +32,7 @@ export class Session {
 
   mudHost: string;
   mudPort: number;
+  sslMode: TargetSSLMode;
 
   telnet: TelnetSocket | null = null;
   telnetConnected = false;
@@ -62,6 +64,7 @@ export class Session {
     host: string,
     port: number,
     bufferSizeBytes: number = 50 * 1024,
+    sslMode: TargetSSLMode = 'autodetect',
   ) {
     this.id = crypto.randomUUID();
     this.authToken = crypto.randomBytes(32).toString('hex');
@@ -69,6 +72,7 @@ export class Session {
     this.lastClientConnection = Date.now();
     this.mudHost = host;
     this.mudPort = port;
+    this.sslMode = sslMode;
     this.buffer = new CircularBuffer(bufferSizeBytes);
     this.telnetParser = new TelnetParser(this);
   }
@@ -112,7 +116,7 @@ export class Session {
         return true;
       };
 
-      const tryPlain = () => {
+      const tryPlain = (reason: 'requested' | 'fallback') => {
         if (triedPlain) return;
         triedPlain = true;
 
@@ -124,10 +128,12 @@ export class Session {
           return;
         }
 
-        // eslint-disable-next-line no-console
-        console.log(
-          `[session] TLS failed, falling back to plain TCP for ${this.mudHost}:${this.mudPort}`,
-        );
+        if (reason === 'fallback') {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[session] TLS failed, falling back to plain TCP for ${this.mudHost}:${this.mudPort}`,
+          );
+        }
 
         // Destroy the old TLS socket to prevent stale handlers
         if (this.telnet) {
@@ -157,6 +163,11 @@ export class Session {
         }
       };
 
+      if (this.sslMode === 'none') {
+        tryPlain('requested');
+        return;
+      }
+
       try {
         const tlsSocket = tls.connect(this.mudPort, this.mudHost, {}, () => {
           if (abortIfClosing(tlsSocket)) return;
@@ -168,8 +179,8 @@ export class Session {
 
         this.setupTelnetHandlers((err: Error) => {
           if (settled) return;
-          if (isSSLError(err)) {
-            tryPlain();
+          if (this.sslMode === 'autodetect' && isSSLError(err)) {
+            tryPlain('fallback');
           } else {
             reject(err);
           }

@@ -21,6 +21,7 @@ import type {
   NAWSRequest,
   ClientMessage,
   ProcessedData,
+  TargetSSLMode,
 } from './types';
 
 export interface SessionIntegrationConfig {
@@ -274,12 +275,15 @@ export class SessionIntegration {
       }
     }
 
+    const sslMode = this.normalizedSSLMode(msg.sslMode);
+
     // Create new session
     const session = this.sessionManager.create(
       target.host,
       target.port,
       msg.deviceToken,
       this.config.buffer.sizeKB * 1024,
+      sslMode,
     );
 
     // Set device token and window size
@@ -340,6 +344,13 @@ export class SessionIntegration {
       this.sendError(socket, 'connection_failed', (err as Error).message);
       this.removeSessionAndCleanup(session.id);
     }
+  }
+
+  private normalizedSSLMode(value: unknown): TargetSSLMode {
+    if (value === 'none' || value === 'required' || value === 'autodetect') {
+      return value;
+    }
+    return 'autodetect';
   }
 
   /**

@@ -12,7 +12,7 @@
 
 import { timingSafeEqual } from 'crypto';
 import { Session } from './session';
-import type { SocketExtended } from './types';
+import type { SocketExtended, TargetSSLMode } from './types';
 
 export interface SessionManagerConfig {
   timeoutHours: number;
@@ -54,8 +54,9 @@ export class SessionManager {
     port: number,
     deviceToken?: string,
     bufferSizeBytes: number = 50 * 1024,
+    sslMode: TargetSSLMode = 'autodetect',
   ): Session {
-    const session = new Session(host, port, bufferSizeBytes);
+    const session = new Session(host, port, bufferSizeBytes, sslMode);
 
     if (deviceToken) {
       session.setDeviceToken(deviceToken);
