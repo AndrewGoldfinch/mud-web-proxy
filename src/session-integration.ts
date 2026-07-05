@@ -300,7 +300,7 @@ export class SessionIntegration {
       type: 'session',
       sessionId: session.id,
       token: session.authToken,
-      capabilities: ['activityToken', 'syncAck'],
+      capabilities: ['activityToken', 'syncAck', 'echoState'],
     };
     socket.sendUTF(JSON.stringify(response));
 
@@ -395,7 +395,7 @@ export class SessionIntegration {
     const resumedResponse = {
       type: 'resumed',
       sessionId: session.id,
-      capabilities: ['activityToken', 'syncAck'],
+      capabilities: ['activityToken', 'syncAck', 'echoState'],
     };
     socket.sendUTF(JSON.stringify(resumedResponse));
 
@@ -408,6 +408,14 @@ export class SessionIntegration {
           seq: chunk.sequence,
           package: chunk.gmcpPackage,
           data: chunk.gmcpData,
+          replayed: true,
+        };
+        socket.sendUTF(JSON.stringify(response));
+      } else if (chunk.type === 'echo') {
+        const response = {
+          type: 'echo',
+          seq: chunk.sequence,
+          suppressed: chunk.echoSuppressed,
           replayed: true,
         };
         socket.sendUTF(JSON.stringify(response));
@@ -557,27 +565,48 @@ export class SessionIntegration {
       session.broadcastToClients(JSON.stringify(response));
     }
 
-    // Buffer and forward clean text (skip if empty — pure negotiation chunk)
-    if (result.text.length > 0) {
-      const processed: ProcessedData = {
-        data: result.text,
-        type: 'data',
-      };
-      const chunk = session.bufferOutput(processed);
+    // Buffer and forward text/echo segments in the exact order the MUD produced them.
+    // Splitting at each ECHO transition (rather than combining all text for the chunk)
+    // lets the client apply suppression at the right boundary — e.g. a password the MUD
+    // echoes back followed by `WONT ECHO` in the same TCP read.
+    for (const segment of result.segments) {
+      if (segment.kind === 'text') {
+        if (segment.data.length === 0) continue;
 
-      const response = {
-        type: 'data',
-        seq: chunk.sequence,
-        payload: result.text.toString('base64'),
-      };
-      session.broadcastToClients(JSON.stringify(response));
+        const processed: ProcessedData = {
+          data: segment.data,
+          type: 'data',
+        };
+        const chunk = session.bufferOutput(processed);
 
-      if (!session.hasClients()) {
-        void this.backgroundPushScheduler.onBufferedOutput(
-          session,
-          chunk.sequence,
-          result.text.toString('utf8'),
-        );
+        const response = {
+          type: 'data',
+          seq: chunk.sequence,
+          payload: segment.data.toString('base64'),
+        };
+        session.broadcastToClients(JSON.stringify(response));
+
+        if (!session.hasClients()) {
+          void this.backgroundPushScheduler.onBufferedOutput(
+            session,
+            chunk.sequence,
+            segment.data.toString('utf8'),
+          );
+        }
+      } else {
+        const processed: ProcessedData = {
+          data: Buffer.alloc(0),
+          type: 'echo',
+          echoSuppressed: segment.suppressed,
+        };
+        const chunk = session.bufferOutput(processed);
+
+        const response = {
+          type: 'echo',
+          seq: chunk.sequence,
+          suppressed: segment.suppressed,
+        };
+        session.broadcastToClients(JSON.stringify(response));
       }
     }
   }

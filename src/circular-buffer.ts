@@ -32,7 +32,7 @@ export class CircularBuffer {
    */
   append(
     data: Buffer,
-    type: 'data' | 'gmcp',
+    type: 'data' | 'gmcp' | 'echo',
     metadata?: Partial<BufferChunk>,
   ): BufferChunk {
     const chunk: BufferChunk = {
