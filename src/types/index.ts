@@ -49,9 +49,11 @@ export interface BufferChunk {
   sequence: number;
   timestamp: number;
   data: Buffer;
-  type: 'data' | 'gmcp';
+  type: 'data' | 'gmcp' | 'echo';
   gmcpPackage?: string;
   gmcpData?: object;
+  /** Set when `type === 'echo'`: whether the MUD had taken over local echo. */
+  echoSuppressed?: boolean;
 }
 
 /**
@@ -89,9 +91,11 @@ export interface SessionMetadata {
  */
 export interface ProcessedData {
   data: Buffer;
-  type: 'data' | 'gmcp';
+  type: 'data' | 'gmcp' | 'echo';
   gmcpPackage?: string;
   gmcpData?: object;
+  /** Set when `type === 'echo'`: whether the MUD had taken over local echo. */
+  echoSuppressed?: boolean;
 }
 
 /**

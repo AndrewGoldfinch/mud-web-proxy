@@ -333,6 +333,8 @@ export class Session {
     if (processed.type === 'gmcp') {
       metadata.gmcpPackage = processed.gmcpPackage;
       metadata.gmcpData = processed.gmcpData;
+    } else if (processed.type === 'echo') {
+      metadata.echoSuppressed = processed.echoSuppressed;
     }
     return this.buffer.append(processed.data, processed.type, metadata);
   }

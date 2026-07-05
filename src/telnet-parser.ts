@@ -54,8 +54,30 @@ export interface GmcpMessage {
   data: string;
 }
 
+/**
+ * Ordered output unit: either a run of clean text, or an ECHO-suppression state
+ * transition. Split at the exact transition point (not just an end-of-chunk flag) so
+ * a chunk that both echoes suppressed text back *and* toggles ECHO in the same TCP
+ * read — e.g. the MUD echoing a password and then sending `WONT ECHO` before the
+ * next line — can be forwarded with the suppression boundary in the right place.
+ */
+export type TelnetSegment =
+  | { kind: 'text'; data: Buffer }
+  | { kind: 'echo'; suppressed: boolean };
+
 export interface TelnetParseResult {
+  /** All text bytes this call, concatenated — unchanged from before segments existed. */
   text: Buffer;
+  /** Ordered text/echo segments, split at each ECHO transition. */
+  segments: TelnetSegment[];
+  gmcpMessages: GmcpMessage[];
+}
+
+/** Per-call accumulator threaded through `process()` and the negotiation handlers. */
+interface ParseOutput {
+  currentText: number[];
+  allText: number[];
+  segments: TelnetSegment[];
   gmcpMessages: GmcpMessage[];
 }
 
@@ -94,11 +116,16 @@ export class TelnetParser {
 
   /**
    * Process a raw data buffer from the MUD.
-   * Returns clean text (IAC sequences stripped) and any extracted GMCP messages.
+   * Returns clean text (IAC sequences stripped), ordered text/echo segments, and any
+   * extracted GMCP messages.
    */
   process(data: Buffer): TelnetParseResult {
-    const textBytes: number[] = [];
-    const gmcpMessages: GmcpMessage[] = [];
+    const output: ParseOutput = {
+      currentText: [],
+      allText: [],
+      segments: [],
+      gmcpMessages: [],
+    };
 
     for (let i = 0; i < data.length; i++) {
       const byte = data[i];
@@ -108,14 +135,14 @@ export class TelnetParser {
           if (byte === IAC) {
             this.state = State.IAC;
           } else {
-            textBytes.push(byte);
+            this.pushTextByte(output, byte);
           }
           break;
 
         case State.IAC:
           if (byte === IAC) {
             // Escaped IAC → literal 0xFF
-            textBytes.push(0xff);
+            this.pushTextByte(output, 0xff);
             this.state = State.TEXT;
           } else if (byte >= NOP && byte <= GA) {
             // 2-byte commands (NOP, GA, etc.) — just strip
@@ -142,7 +169,7 @@ export class TelnetParser {
             this.state = State.SUBNEG;
           } else {
             // 3-byte: IAC WILL/WONT/DO/DONT <option>
-            this.handleNegotiation(this.negotiationCmd, byte);
+            this.handleNegotiation(this.negotiationCmd, byte, output);
             this.state = State.TEXT;
           }
           break;
@@ -161,7 +188,7 @@ export class TelnetParser {
             this.handleSubnegotiation(
               this.subnegOption,
               this.subnegBuffer,
-              gmcpMessages,
+              output.gmcpMessages,
             );
             this.state = State.TEXT;
           } else if (byte === IAC) {
@@ -176,6 +203,10 @@ export class TelnetParser {
       }
     }
 
+    // Flush any trailing text accumulated after the last echo transition (or all of it,
+    // if there was none this call).
+    this.flushText(output);
+
     // Log a one-time summary once negotiation options have been seen
     if (!this.negotiationLoggedOnce && this.hasAnyNegotiation()) {
       this.negotiationLoggedOnce = true;
@@ -186,15 +217,50 @@ export class TelnetParser {
     }
 
     return {
-      text: Buffer.from(textBytes),
-      gmcpMessages,
+      text: Buffer.from(output.allText),
+      segments: output.segments,
+      gmcpMessages: output.gmcpMessages,
     };
+  }
+
+  /** Record a clean text byte in both the running segment buffer and the full-call buffer. */
+  private pushTextByte(output: ParseOutput, byte: number): void {
+    output.currentText.push(byte);
+    output.allText.push(byte);
+  }
+
+  /** Close out the current text run as a segment, if any bytes have accumulated. */
+  private flushText(output: ParseOutput): void {
+    if (output.currentText.length > 0) {
+      output.segments.push({
+        kind: 'text',
+        data: Buffer.from(output.currentText),
+      });
+      output.currentText = [];
+    }
+  }
+
+  /**
+   * Update ECHO-suppression state and, if it actually changed, flush pending text and
+   * push an ordered echo segment at this exact point in the stream. No-ops on a
+   * repeated negotiation for the same state (e.g. two WILL ECHOs in a row) so replay
+   * consumers don't see duplicate transitions.
+   */
+  private setPasswordMode(suppressed: boolean, output: ParseOutput): void {
+    if (this.passwordMode === suppressed) return;
+    this.passwordMode = suppressed;
+    this.flushText(output);
+    output.segments.push({ kind: 'echo', suppressed });
   }
 
   /**
    * Handle 3-byte negotiation: IAC WILL/WONT/DO/DONT <option>
    */
-  private handleNegotiation(cmd: number, option: number): void {
+  private handleNegotiation(
+    cmd: number,
+    option: number,
+    output: ParseOutput,
+  ): void {
     switch (option) {
       case GMCP:
         if (!this.gmcpNegotiated) {
@@ -250,11 +316,16 @@ export class TelnetParser {
         break;
 
       case ECHO:
-        if (cmd === WILL && !this.echoNegotiated) {
-          this.echoNegotiated = true;
-          this.passwordMode = true;
+        // Tracked per-transition (not gated on a one-time `echoNegotiated` flag) so a
+        // second password prompt later in the same session (re-auth, change-password)
+        // is suppressed too. `echoNegotiated` still records "ECHO was seen at all" for
+        // the one-time negotiation summary log below.
+        this.echoNegotiated =
+          this.echoNegotiated || cmd === WILL || cmd === WONT;
+        if (cmd === WILL) {
+          this.setPasswordMode(true, output);
         } else if (cmd === WONT) {
-          this.passwordMode = false;
+          this.setPasswordMode(false, output);
         }
         break;
 
