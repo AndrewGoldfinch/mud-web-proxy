@@ -314,9 +314,11 @@ function handleBasicNegotiations(
         data[i + 1] === p.WILL &&
         data[i + 2] === p.ECHO
       ) {
+        const response = Buffer.from([p.IAC, p.WONT, p.ECHO]);
+        s.ts?.write(response);
         s.password_mode = true;
         s.echo_negotiated = 1;
-        return { handled: true, type: 'ECHO' };
+        return { handled: true, type: 'ECHO', response };
       }
     }
   }
@@ -961,6 +963,18 @@ describe('SGA, ECHO, NAWS Handling', () => {
       expect(mockSocket.echo_negotiated).toBe(0);
       handleBasicNegotiations(mockSocket, data);
       expect(mockSocket.echo_negotiated).toBe(1);
+    });
+
+    it('should respond with IAC WONT ECHO when receiving IAC WILL ECHO', () => {
+      const data = createTelnetCommand(TELNET.IAC, TELNET.WILL, TELNET.ECHO);
+
+      const result = handleBasicNegotiations(mockSocket, data);
+
+      expect(result.handled).toBe(true);
+      expect(result.type).toBe('ECHO');
+      expect(result.response).toEqual(
+        Buffer.from([TELNET.IAC, TELNET.WONT, TELNET.ECHO]),
+      );
     });
 
     it('should not respond to second WILL ECHO after negotiation', () => {

@@ -37,25 +37,28 @@ Tests use `ws://` (non-TLS) to avoid certificate issues.
 
 ### 1. Create Environment Config Files
 
-Each MUD has its own `.env.{mud}` file for configuration. Bun automatically loads these files.
+Each MUD has a tracked `.env.{mud}.example` file for public defaults and an
+ignored `.env.{mud}.local` override for credentials. The package scripts load
+the example file first and the local override second.
 
 **Create your local config (for secrets):**
 
 ```bash
 # Copy the example and customize
-cp .env.aardwolf .env.aardwolf.local
-cp .env.achaea .env.achaea.local
-cp .env.discworld .env.discworld.local
-cp .env.ire .env.ire.local
-cp .env.rom .env.rom.local
-cp .env.raw .env.raw.local
+cp .env.aardwolf.example .env.aardwolf.local
+cp .env.achaea.example .env.achaea.local
+cp .env.discworld.example .env.discworld.local
+cp .env.ire.example .env.ire.local
+cp .env.rom.example .env.rom.local
+cp .env.raw.example .env.raw.local
 ```
 
-**Note:** `.env.{mud}.local` files are gitignored for security - never commit credentials!
+**Note:** `.env.{mud}.local` files are gitignored for security - never commit credentials.
 
 ### 2. Configure Each MUD
 
-Edit each `.env.{mud}.local` file with your credentials. Since each file is MUD-specific, variables don't need prefixes:
+Edit each `.env.{mud}.local` file with your credentials. Since each file is
+MUD-specific, variables do not need prefixes:
 
 **.env.aardwolf.local:**
 
@@ -163,7 +166,8 @@ You'll see a message like:
 
 ## Configuration Options
 
-Since each MUD has its own `.env.{mud}` file, variables don't need prefixes:
+Since each MUD has its own example/local env pair, variables do not need
+prefixes:
 
 | Variable       | Required | Description                                   |
 | -------------- | -------- | --------------------------------------------- |
@@ -185,6 +189,7 @@ Since each MUD has its own `.env.{mud}` file, variables don't need prefixes:
 ## Security Notes
 
 - `.env.{mud}.local` files are in `.gitignore` - **never commit credentials**
+- `.env.{mud}.example` files contain public defaults only
 - Passwords are only used for testing, not stored
 - Tests only verify connection/auth flow, not gameplay
 - Credentials pass through to MUD servers directly
@@ -221,13 +226,13 @@ Since each MUD has its own `.env.{mud}` file, variables don't need prefixes:
 2. Copy template from existing test
 3. Update `MUD_NAME` constant
 4. Add tests for your MUD's specific features
-5. Create config: `.env.your-mud` and `.env.your-mud.local`
+5. Create config: `.env.your-mud.example` and `.env.your-mud.local`
 6. Add npm script to `package.json`
 
-Example `.env.your-mud`:
+Example `.env.your-mud.example`:
 
 ```env
-ENABLED=true
+ENABLED=false
 HOST=your-mud.com
 PORT=4000
 EXPECT_GMCP=true
@@ -242,7 +247,13 @@ LOGIN_PROMPT="Login:"
 
 ## CI/CD Integration
 
-E2E tests are **not** run in CI by default. They require:
+The mock E2E suite runs in CI and does not contact public MUD servers:
+
+```bash
+bun run test:e2e:mock
+```
+
+Real MUD E2E tests are **not** run in CI by default. They require:
 
 - Running proxy server
 - Network access to MUD servers
@@ -280,4 +291,5 @@ HOST=aardmud.org
 PORT=4000
 ```
 
-Since each MUD has its own `.env.{mud}` file, the prefix is unnecessary and redundant.
+Since each MUD has its own example/local env pair, the prefix is unnecessary
+and redundant.

@@ -11,18 +11,17 @@ import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'aardwolf';
 const TEST_PROXY_PORT = 6299;
+const configResult = loadE2EConfig(MUD_NAME);
+const describeRealMud: typeof describe = configResult.skip
+  ? describe.skip
+  : describe;
 
-describe('Aardwolf MUD (aardmud.org:4000)', () => {
-  const configResult = loadE2EConfig(MUD_NAME);
+describeRealMud('Aardwolf MUD (aardmud.org:4000)', () => {
   const config = configResult.config;
   let connection: E2EConnection | null = null;
   let proxy: ProxyLauncher | null = null;
 
   beforeAll(async () => {
-    if (configResult.skip) {
-      throw new Error(`E2E test config error: ${configResult.reason}`);
-    }
-
     // Start test proxy
     proxy = await startTestProxy(TEST_PROXY_PORT);
   });

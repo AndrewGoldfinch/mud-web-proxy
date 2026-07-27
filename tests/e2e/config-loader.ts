@@ -7,8 +7,9 @@
  * 2. .env.{environment} (e.g., .env.test, .env.production)
  * 3. .env (defaults, can be committed)
  *
- * Per-MUD configs: .env.aardwolf, .env.achaea, etc.
- * Each file contains unprefixed variables like ENABLED=true, HOST=..., etc.
+ * Per-MUD configs use a tracked .env.{mud}.example file and an ignored
+ * .env.{mud}.local override. Each file contains unprefixed variables like
+ * ENABLED=true, HOST=..., etc.
  */
 
 import path from 'path';
@@ -44,10 +45,10 @@ export interface ConfigLoadResult {
 
 /**
  * Load E2E config for a specific MUD from environment variables
- * Variables are loaded from .env.{mud} and .env.{mud}.local files
+ * Variables are loaded from .env.{mud}.example and .env.{mud}.local files
  * Variables in each file are unprefixed (e.g., ENABLED=true, HOST=...)
  *
- * Example for Aardwolf in .env.aardwolf:
+ * Example for Aardwolf in .env.aardwolf.local:
  *   ENABLED=true
  *   HOST=aardmud.org
  *   PORT=4000
@@ -135,13 +136,13 @@ export function isCI(): boolean {
 
 /**
  * Get list of available E2E configs
- * Note: This now checks each MUD's specific .env file
+ * Note: Package scripts load each MUD's example/local env pair.
  */
 export function listAvailableConfigs(): string[] {
   const muds = ['aardwolf', 'achaea', 'discworld', 'ire', 'rom', 'raw'];
 
   return muds.filter((mud) => {
-    // In a real implementation, we would load each .env.{mud} file
+    // In a real implementation, we would load each .env.{mud}.example/local pair
     // and check if ENABLED=true. For now, just return empty or
     // check if there's a way to know which are configured.
     // This is a simplified version - in practice, you'd need to

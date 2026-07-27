@@ -9,20 +9,19 @@ import { loadE2EConfig } from './config-loader';
 import { E2EConnection } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
-const MUD_NAME = 'raw_telnet';
+const MUD_NAME = 'raw';
 const TEST_PROXY_PORT = 6299;
+const configResult = loadE2EConfig(MUD_NAME);
+const describeRealMud: typeof describe = configResult.skip
+  ? describe.skip
+  : describe;
 
-describe('Raw Telnet Server (port 23)', () => {
-  const configResult = loadE2EConfig(MUD_NAME);
+describeRealMud('Raw Telnet Server (port 23)', () => {
   const config = configResult.config;
   let connection: E2EConnection | null = null;
   let proxy: ProxyLauncher | null = null;
 
   beforeAll(async () => {
-    if (configResult.skip) {
-      throw new Error(`E2E test config error: ${configResult.reason}`);
-    }
-
     // Start test proxy
     proxy = await startTestProxy(TEST_PROXY_PORT);
   });

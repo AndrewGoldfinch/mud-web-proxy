@@ -1,5 +1,6 @@
 import { describe, test, expect, afterEach } from 'bun:test';
 import { EventEmitter } from 'events';
+import { readFileSync } from 'fs';
 import { PROTOCOL_CONSTANTS } from '../src/protocol-constants.js';
 import {
   escapeDiagnosticHtml,
@@ -183,6 +184,23 @@ describe('open-source release regression coverage', () => {
       diagnosticsEnabled: false,
       adminToken: '',
     });
+  });
+
+  test('tracked real-MUD env examples are opt-in', () => {
+    const examples = [
+      '.env.aardwolf.example',
+      '.env.achaea.example',
+      '.env.discworld.example',
+      '.env.ire.example',
+      '.env.raw.example',
+      '.env.rom.example',
+    ];
+
+    for (const example of examples) {
+      const contents = readFileSync(example, 'utf8');
+      expect(contents).toContain('ENABLED=false');
+      expect(contents).not.toContain('ENABLED=true');
+    }
   });
 
   test('production cannot silently run without TLS', () => {

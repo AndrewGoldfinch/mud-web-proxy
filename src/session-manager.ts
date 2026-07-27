@@ -14,6 +14,8 @@ import { timingSafeEqual } from 'crypto';
 import { Session } from './session';
 import type { SocketExtended } from './types';
 
+const CLIENT_CLOSE_CLEANUP_DELAY_MS = 200;
+
 export interface SessionManagerConfig {
   timeoutHours: number;
   maxPerDevice: number;
@@ -66,6 +68,17 @@ export class SessionManager {
 
     // Set up session cleanup handlers
     session.onClose(() => {
+      if (session.hasClients()) {
+        // Other close observers may need to notify attached clients before
+        // removeSession closes the sockets. Keep this longer than the
+        // SessionIntegration MUD termination flush window.
+        const cleanupTimer = setTimeout(() => {
+          this.removeSession(session.id);
+        }, CLIENT_CLOSE_CLEANUP_DELAY_MS);
+        cleanupTimer.unref?.();
+        return;
+      }
+
       this.removeSession(session.id);
     });
 

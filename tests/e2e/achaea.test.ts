@@ -11,18 +11,17 @@ import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'achaea';
 const TEST_PROXY_PORT = 6299;
+const configResult = loadE2EConfig(MUD_NAME);
+const describeRealMud: typeof describe = configResult.skip
+  ? describe.skip
+  : describe;
 
-describe('Achaea MUD (IRE - heavy GMCP)', () => {
-  const configResult = loadE2EConfig(MUD_NAME);
+describeRealMud('Achaea MUD (IRE - heavy GMCP)', () => {
   const config = configResult.config;
   let connection: E2EConnection | null = null;
   let proxy: ProxyLauncher | null = null;
 
   beforeAll(async () => {
-    if (configResult.skip) {
-      throw new Error(`E2E test config error: ${configResult.reason}`);
-    }
-
     // Start test proxy
     proxy = await startTestProxy(TEST_PROXY_PORT);
   });

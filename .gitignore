@@ -1,14 +1,28 @@
+# Runtime secrets and generated local config
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+!.envrc.example
 cert.pem
 privkey.pem
-**/.DS_Store
-node_modules/
-dist/
-config/e2e/*.json
-
-# Environment variables (secrets)
-.env.local
-.env.*.local
-!.env.example
-!.env.*
+*.key
+*.p8
+*.p12
+*.pfx
 config/attested-keys.json
 config/client-ca/
+config/e2e/*.json
+!config/e2e.example.json
+
+# Build, dependency, and report output
+node_modules/
+dist/
+coverage/
+.nyc_output/
+*.log
+logs/
+
+# OS/editor noise
+**/.DS_Store

@@ -55,7 +55,7 @@ export class Session {
   telnetParser: TelnetParser;
 
   private onDataCallback: ((data: Buffer) => void) | null = null;
-  private onCloseCallback: (() => void) | null = null;
+  private onCloseCallbacks: Set<() => void> = new Set();
   private onErrorCallback: ((err: Error) => void) | null = null;
 
   constructor(
@@ -87,14 +87,21 @@ export class Session {
 
       const isSSLError = (err: Error): boolean => {
         const msg = err.message.toLowerCase();
+        const code = (err as NodeJS.ErrnoException).code;
+        if (
+          code === 'ECONNREFUSED' ||
+          msg.includes('econnrefused') ||
+          msg.includes('econnreset')
+        ) {
+          return false;
+        }
+
         return (
           msg.includes('tls') ||
           msg.includes('ssl') ||
           msg.includes('certificate') ||
           msg.includes('packet length') ||
-          msg.includes('wrong version number') ||
-          msg.includes('econnreset') ||
-          msg.includes('econnrefused')
+          msg.includes('wrong version number')
         );
       };
 
@@ -112,7 +119,7 @@ export class Session {
         return true;
       };
 
-      const tryPlain = () => {
+      const tryPlain = (reason = 'TLS failed') => {
         if (triedPlain) return;
         triedPlain = true;
 
@@ -126,7 +133,7 @@ export class Session {
 
         // eslint-disable-next-line no-console
         console.log(
-          `[session] TLS failed, falling back to plain TCP for ${this.mudHost}:${this.mudPort}`,
+          `[session] ${reason}, using plain TCP for ${this.mudHost}:${this.mudPort}`,
         );
 
         // Destroy the old TLS socket to prevent stale handlers
@@ -157,23 +164,45 @@ export class Session {
         }
       };
 
-      try {
-        const tlsSocket = tls.connect(this.mudPort, this.mudHost, {}, () => {
-          if (abortIfClosing(tlsSocket)) return;
-          this.telnetConnected = true;
-          settled = true;
-          resolve();
-        }) as unknown as TelnetSocket;
-        this.telnet = tlsSocket;
+      if (process.env.MUD_TLS_MODE?.toLowerCase() === 'plain') {
+        tryPlain('MUD_TLS_MODE=plain');
+        return;
+      }
 
-        this.setupTelnetHandlers((err: Error) => {
+      try {
+        const onTlsConnectError = (err: Error): void => {
           if (settled) return;
           if (isSSLError(err)) {
             tryPlain();
           } else {
+            settled = true;
             reject(err);
           }
+        };
+        const onTlsConnectClose = (): void => {
+          if (settled || this.closing) return;
+          tryPlain();
+        };
+
+        const tlsSocket = tls.connect(
+          this.mudPort,
+          this.mudHost,
+          {},
+        ) as unknown as TelnetSocket;
+        this.telnet = tlsSocket;
+        tlsSocket.once('secureConnect', () => {
+          tlsSocket.off('error', onTlsConnectError);
+          tlsSocket.off('close', onTlsConnectClose);
+          if (abortIfClosing(tlsSocket)) return;
+          this.setupTelnetHandlers((err: Error) => {
+            if (!settled) reject(err);
+          });
+          this.telnetConnected = true;
+          settled = true;
+          resolve();
         });
+        tlsSocket.once('error', onTlsConnectError);
+        tlsSocket.once('close', onTlsConnectClose);
       } catch (err) {
         reject(err);
       }
@@ -204,9 +233,7 @@ export class Session {
 
     this.telnet.on('close', () => {
       this.telnetConnected = false;
-      if (this.onCloseCallback) {
-        this.onCloseCallback();
-      }
+      this.notifyCloseCallbacks();
     });
 
     this.telnet.on('error', (err: Error) => {
@@ -229,7 +256,7 @@ export class Session {
    * Set callback for telnet close
    */
   onClose(callback: () => void): void {
-    this.onCloseCallback = callback;
+    this.onCloseCallbacks.add(callback);
   }
 
   /**
@@ -237,6 +264,20 @@ export class Session {
    */
   onError(callback: (err: Error) => void): void {
     this.onErrorCallback = callback;
+  }
+
+  private notifyCloseCallbacks(): void {
+    const callbacks = Array.from(this.onCloseCallbacks);
+    for (const callback of callbacks) {
+      try {
+        callback();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `[session] close callback failed for ${this.mudHost}:${this.mudPort}: ${err}`,
+        );
+      }
+    }
   }
 
   /**

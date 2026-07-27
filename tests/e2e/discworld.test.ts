@@ -10,18 +10,17 @@ import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'discworld';
 const TEST_PROXY_PORT = 6299;
+const configResult = loadE2EConfig(MUD_NAME);
+const describeRealMud: typeof describe = configResult.skip
+  ? describe.skip
+  : describe;
 
-describe('Discworld MUD (MXP support)', () => {
-  const configResult = loadE2EConfig(MUD_NAME);
+describeRealMud('Discworld MUD (MXP support)', () => {
   const config = configResult.config;
   let connection: E2EConnection | null = null;
   let proxy: ProxyLauncher | null = null;
 
   beforeAll(async () => {
-    if (configResult.skip) {
-      throw new Error(`E2E test config error: ${configResult.reason}`);
-    }
-
     // Start test proxy
     proxy = await startTestProxy(TEST_PROXY_PORT);
   });

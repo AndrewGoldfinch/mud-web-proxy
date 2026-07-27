@@ -1,4 +1,5 @@
 import { describe, test, expect } from 'bun:test';
+import { PROTOCOL_CONSTANTS } from '../src/protocol-constants.js';
 
 describe('Protocol Constants', () => {
   // Define expected values based on Telnet RFC and the wsproxy.ts definitions
@@ -182,9 +183,7 @@ describe('Protocol Constants', () => {
       const expected = Buffer.from([
         255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
       ]);
-      const actual = Buffer.from([
-        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
-      ]);
+      const actual = PROTOCOL_CONSTANTS.WILL_UTF8;
       expect(actual).toEqual(expected);
       expect(actual.length).toBe(11);
     });
@@ -193,11 +192,17 @@ describe('Protocol Constants', () => {
       const expected = Buffer.from([
         255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
       ]);
-      const actual = Buffer.from([
-        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
-      ]);
+      const actual = PROTOCOL_CONSTANTS.ACCEPT_UTF8;
       expect(actual).toEqual(expected);
       expect(actual.length).toBe(11);
+      expect(actual.subarray(0, 4)).toEqual(
+        Buffer.from([
+          PROTOCOL_CONSTANTS.IAC,
+          PROTOCOL_CONSTANTS.SB,
+          PROTOCOL_CONSTANTS.CHARSET,
+          PROTOCOL_CONSTANTS.ACCEPTED,
+        ]),
+      );
     });
   });
 
@@ -223,7 +228,7 @@ describe('Protocol Constants', () => {
     });
 
     test('should have correct value for ESC', () => {
-      expect(27).toBe(27);
+      expect(PROTOCOL_CONSTANTS.ESC).toBe(27);
     });
   });
 
@@ -294,16 +299,12 @@ describe('Protocol Constants', () => {
     });
 
     test('WILL_UTF8 buffer length should be 11', () => {
-      const buffer = Buffer.from([
-        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
-      ]);
+      const buffer = PROTOCOL_CONSTANTS.WILL_UTF8;
       expect(buffer.length).toBe(11);
     });
 
     test('ACCEPT_UTF8 buffer length should be 11', () => {
-      const buffer = Buffer.from([
-        255, 250, 42, 2, 85, 84, 70, 45, 56, 255, 240,
-      ]);
+      const buffer = PROTOCOL_CONSTANTS.ACCEPT_UTF8;
       expect(buffer.length).toBe(11);
     });
   });

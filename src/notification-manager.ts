@@ -46,6 +46,8 @@ export class NotificationManager {
   private authToken: string | null = null;
   private tokenExpiry: number = 0;
   private apnsHost: string;
+  private apnsClient: http2.ClientHttp2Session | null = null;
+  private apnsClientHost: string | null = null;
 
   // Track pending notifications for retry
   private pendingNotifications: Map<
@@ -387,34 +389,79 @@ export class NotificationManager {
       console.log(
         `[notification-manager] APNS request start pushType=${optionsIn.pushType} priority=${optionsIn.priority} topic=${optionsIn.topic} target=${this.redactToken(deviceToken)} payloadBytes=${Buffer.byteLength(postData)}`,
       );
-      const client = http2.connect(`https://${this.apnsHost}`);
+      const client = this.getAPNSClient();
       let settled = false;
 
       const finish = (ok: boolean): void => {
         if (settled) return;
         settled = true;
-        client.close();
+        client.removeListener('error', onConnectionError);
+        client.removeListener('close', onConnectionClose);
+        client.removeListener('goaway', onConnectionGoaway);
         resolve(ok);
       };
 
-      client.on('error', (err) => {
+      const onConnectionError = (err: Error): void => {
         const elapsedMs = Date.now() - start;
         this.logFailure(
           `[notification-manager] APNS connection error elapsedMs=${elapsedMs}: ${err}`,
         );
         finish(false);
-      });
+      };
 
-      const req = client.request({
-        ':method': 'POST',
-        ':path': `/3/device/${deviceToken}`,
-        authorization: `Bearer ${authToken}`,
-        'content-type': 'application/json',
-        'content-length': String(Buffer.byteLength(postData)),
-        'apns-topic': optionsIn.topic,
-        'apns-push-type': optionsIn.pushType,
-        'apns-priority': optionsIn.priority,
-      });
+      const onConnectionClose = (): void => {
+        const elapsedMs = Date.now() - start;
+        this.logFailure(
+          `[notification-manager] APNS connection closed before response elapsedMs=${elapsedMs}`,
+        );
+        finish(false);
+      };
+
+      const onConnectionGoaway = (
+        errorCode: number,
+        lastStreamID: number,
+      ): void => {
+        const requestStreamId = req?.id;
+        if (
+          errorCode === http2.constants.NGHTTP2_NO_ERROR &&
+          requestStreamId !== undefined &&
+          requestStreamId <= lastStreamID
+        ) {
+          return;
+        }
+
+        const elapsedMs = Date.now() - start;
+        this.logFailure(
+          `[notification-manager] APNS connection goaway errorCode=${errorCode} lastStreamID=${lastStreamID} elapsedMs=${elapsedMs}`,
+        );
+        finish(false);
+      };
+
+      client.on('error', onConnectionError);
+      client.on('close', onConnectionClose);
+      client.on('goaway', onConnectionGoaway);
+
+      let req: http2.ClientHttp2Stream;
+      try {
+        req = client.request({
+          ':method': 'POST',
+          ':path': `/3/device/${deviceToken}`,
+          authorization: `Bearer ${authToken}`,
+          'content-type': 'application/json',
+          'content-length': String(Buffer.byteLength(postData)),
+          'apns-topic': optionsIn.topic,
+          'apns-push-type': optionsIn.pushType,
+          'apns-priority': optionsIn.priority,
+        });
+      } catch (err) {
+        const elapsedMs = Date.now() - start;
+        this.closeAPNSClient(client);
+        this.logFailure(
+          `[notification-manager] APNS request creation failed elapsedMs=${elapsedMs}: ${err}`,
+        );
+        finish(false);
+        return;
+      }
 
       let statusCode = 0;
       let apnsId = '';
@@ -422,6 +469,10 @@ export class NotificationManager {
 
       req.setEncoding('utf8');
       req.on('response', (headers) => {
+        if (settled) {
+          return;
+        }
+
         const statusHeader = headers[':status'];
         statusCode =
           typeof statusHeader === 'number'
@@ -434,10 +485,18 @@ export class NotificationManager {
       });
 
       req.on('data', (chunk: string) => {
+        if (settled) {
+          return;
+        }
+
         chunks.push(Buffer.from(chunk));
       });
 
       req.on('end', () => {
+        if (settled) {
+          return;
+        }
+
         const elapsedMs = Date.now() - start;
         const bodyText = Buffer.concat(chunks).toString('utf8');
         let reason = '';
@@ -474,6 +533,10 @@ export class NotificationManager {
       });
 
       req.setTimeout(10000, () => {
+        if (settled) {
+          return;
+        }
+
         const elapsedMs = Date.now() - start;
         this.logFailure(
           `[notification-manager] APNS request timeout after ${elapsedMs}ms`,
@@ -484,6 +547,70 @@ export class NotificationManager {
 
       req.end(postData);
     });
+  }
+
+  private getAPNSClient(): http2.ClientHttp2Session {
+    const cachedClient = this.apnsClient;
+    if (
+      cachedClient &&
+      this.apnsClientHost === this.apnsHost &&
+      this.isAPNSClientHealthy(cachedClient)
+    ) {
+      return cachedClient;
+    }
+
+    if (cachedClient && this.isAPNSClientHealthy(cachedClient)) {
+      this.closeAPNSClient(cachedClient);
+    }
+    this.clearAPNSClient(cachedClient);
+
+    const client = http2.connect(`https://${this.apnsHost}`);
+    this.apnsClient = client;
+    this.apnsClientHost = this.apnsHost;
+
+    client.on('error', () => {
+      this.clearAPNSClient(client);
+    });
+    client.on('close', () => {
+      this.clearAPNSClient(client);
+    });
+    client.on('goaway', () => {
+      this.clearAPNSClient(client);
+    });
+
+    return client;
+  }
+
+  private isAPNSClientHealthy(client: http2.ClientHttp2Session): boolean {
+    return !client.closed && !client.destroyed;
+  }
+
+  close(): void {
+    this.closeAPNSClient(this.apnsClient);
+  }
+
+  private closeAPNSClient(
+    client: http2.ClientHttp2Session | null | undefined,
+  ): void {
+    if (!client) {
+      return;
+    }
+
+    this.clearAPNSClient(client);
+    if (this.isAPNSClientHealthy(client)) {
+      client.close();
+    }
+  }
+
+  private clearAPNSClient(
+    client: http2.ClientHttp2Session | null | undefined,
+  ): void {
+    if (!client || this.apnsClient !== client) {
+      return;
+    }
+
+    this.apnsClient = null;
+    this.apnsClientHost = null;
   }
 
   /**

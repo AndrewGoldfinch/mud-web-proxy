@@ -246,14 +246,20 @@ class MockServer {
           data[i + 1] === p.DO &&
           data[i + 2] === p.TTYPE
         ) {
-          this.sendTTYPE(s, s.ttype.shift()!);
+          if (!s.ttype.length) continue;
+          const terminalType = s.ttype.shift();
+          if (!terminalType) continue;
+          this.sendTTYPE(s, terminalType);
         } else if (
           data[i] === p.IAC &&
           data[i + 1] === p.SB &&
           data[i + 2] === p.TTYPE &&
           data[i + 3] === p.REQUEST
         ) {
-          this.sendTTYPE(s, s.ttype.shift()!);
+          if (!s.ttype.length) continue;
+          const terminalType = s.ttype.shift();
+          if (!terminalType) continue;
+          this.sendTTYPE(s, terminalType);
         }
       }
     }
@@ -400,6 +406,28 @@ describe('Telnet Negotiation Handlers - Part 1', () => {
       // Should shift again
       expect(mockSocket.ttype.length).toBe(originalLength - 2);
       expect(mockSocket.ttype[0]).toBe('linux');
+    });
+
+    test('does not shift past an exhausted TTYPE queue in one buffer', () => {
+      const terminalTypes = ['xterm-256color'];
+      const originalShift = terminalTypes.shift.bind(terminalTypes);
+      let shiftCount = 0;
+      terminalTypes.shift = () => {
+        shiftCount++;
+        return originalShift();
+      };
+      mockSocket.ttype = terminalTypes;
+
+      srv.sendClient(
+        mockSocket,
+        Buffer.concat([
+          createIACSequence(PROTOCOL.DO, PROTOCOL.TTYPE),
+          createSubnegotiation(PROTOCOL.TTYPE, PROTOCOL.REQUEST),
+        ]),
+      );
+
+      expect(shiftCount).toBe(1);
+      expect(mockSocket.ttype).toHaveLength(0);
     });
 
     test('No terminal type sent when ttype array is empty', () => {
