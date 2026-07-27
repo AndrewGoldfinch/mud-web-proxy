@@ -1560,7 +1560,10 @@ const srv: ServerConfig = {
     // Create WebSocket server
     try {
       const { WebSocketServer } = await import('ws');
-      wsServer = new WebSocketServer({ noServer: true });
+      wsServer = new WebSocketServer({
+        noServer: true,
+        maxPayload: 64 * 1024,
+      });
 
       srv.logInfo(
         `WebSocket server initialized (Node.js ${process.version})`,
