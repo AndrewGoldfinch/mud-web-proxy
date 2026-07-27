@@ -127,6 +127,8 @@ describe('loadChatLog() function', () => {
     }
   };
 
+  const originalCwd = process.cwd();
+
   beforeEach(() => {
     // Create test directory
     if (!fs.existsSync(testDir)) {
@@ -137,6 +139,8 @@ describe('loadChatLog() function', () => {
   });
 
   afterEach(() => {
+    // Restore cwd before removing the test directory
+    originalProcessChdir(originalCwd);
     // Clean up test directory
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true });
@@ -678,6 +682,7 @@ describe('Additional stringify edge cases', () => {
 
 describe('loadChatLog edge cases', () => {
   const testDir = '/tmp/test-chatlog-edge';
+  const originalCwd = process.cwd();
 
   beforeEach(() => {
     if (!fs.existsSync(testDir)) {
@@ -687,6 +692,7 @@ describe('loadChatLog edge cases', () => {
   });
 
   afterEach(() => {
+    originalProcessChdir(originalCwd);
     if (fs.existsSync(testDir)) {
       fs.rmSync(testDir, { recursive: true, force: true });
     }

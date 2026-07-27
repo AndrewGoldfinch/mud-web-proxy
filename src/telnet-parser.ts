@@ -62,8 +62,7 @@ export interface GmcpMessage {
  * next line — can be forwarded with the suppression boundary in the right place.
  */
 export type TelnetSegment =
-  | { kind: 'text'; data: Buffer }
-  | { kind: 'echo'; suppressed: boolean };
+  { kind: 'text'; data: Buffer } | { kind: 'echo'; suppressed: boolean };
 
 export interface TelnetParseResult {
   /** All text bytes this call, concatenated — unchanged from before segments existed. */

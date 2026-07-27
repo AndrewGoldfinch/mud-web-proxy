@@ -18,10 +18,7 @@ export interface BackgroundPushEnvConfig {
 }
 
 export type ApnsDebugAuthResult =
-  | 'authorized'
-  | 'disabled'
-  | 'diagnosticUnauthorized'
-  | 'invalidSecret';
+  'authorized' | 'disabled' | 'diagnosticUnauthorized' | 'invalidSecret';
 
 const readOptionalNumberEnv = (
   env: NodeJS.ProcessEnv,

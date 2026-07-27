@@ -1598,17 +1598,13 @@ const srv: ServerConfig = {
 
         if (requireAppAuth) {
           const keyId = req.headers['x-app-assert-keyid'] as
-            | string
-            | undefined;
+            string | undefined;
           const assertionB64 = req.headers['x-app-assert-data'] as
-            | string
-            | undefined;
+            string | undefined;
           const nonce = req.headers['x-app-assert-nonce'] as
-            | string
-            | undefined;
+            string | undefined;
           const clientHashB64 = req.headers['x-app-assert-clienthash'] as
-            | string
-            | undefined;
+            string | undefined;
 
           if (keyId && assertionB64 && nonce) {
             if (!validateAndConsumeNonce(nonce)) {
