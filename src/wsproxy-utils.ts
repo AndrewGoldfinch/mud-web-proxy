@@ -272,3 +272,155 @@ export const isTrustedPeer = (
 
   return false;
 };
+
+// ---------------------------------------------------------------------------
+// Shared-secret authentication (MWP-85)
+// ---------------------------------------------------------------------------
+
+export interface SharedSecretAuthConfig {
+  authMode: 'shared-secret' | 'none';
+  sharedSecret: string;
+  /**
+   * Accept the secret as a `secret` query parameter.
+   *
+   * Browsers cannot set headers on a WebSocket, so this is the only option
+   * for them — but the value then appears in access logs, proxy logs, and
+   * referrers. Opt-in for that reason.
+   */
+  allowQuerySecret: boolean;
+}
+
+export type SharedSecretAuthResult =
+  { authorized: true } | { authorized: false; reason: string };
+
+const BEARER = /^bearer\s+(.*)$/i;
+
+/** Constant-time compare that tolerates unequal lengths. */
+const secretsMatch = (supplied: string, expected: string): boolean => {
+  const a = Buffer.from(supplied);
+  const b = Buffer.from(expected);
+  // timingSafeEqual throws on a length mismatch, and the length itself is not
+  // secret, so check it first.
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+};
+
+/**
+ * Authorize a WebSocket upgrade against the configured shared secret.
+ *
+ * Pure and synchronous so it can be exercised directly. The caller is
+ * responsible for rejecting with 401 *before* allocating any session or
+ * connection-limit capacity, so failed authentication cannot consume quota.
+ *
+ * Never returns the supplied or configured secret in `reason` — that string
+ * reaches the logs.
+ */
+export const authorizeSharedSecret = (
+  headers: Record<string, string | string[] | undefined>,
+  url: string | undefined,
+  config: SharedSecretAuthConfig,
+): SharedSecretAuthResult => {
+  if (config.authMode !== 'shared-secret') return { authorized: true };
+
+  if (!config.sharedSecret) {
+    // Startup validation should have prevented this; fail closed regardless.
+    return { authorized: false, reason: 'auth is misconfigured' };
+  }
+
+  const authorization = headers['authorization'];
+  if (typeof authorization === 'string') {
+    const match = authorization.match(BEARER);
+    if (match) {
+      const supplied = match[1].trim();
+      if (supplied && secretsMatch(supplied, config.sharedSecret)) {
+        return { authorized: true };
+      }
+      return { authorized: false, reason: 'invalid credentials' };
+    }
+    return { authorized: false, reason: 'unsupported authorization scheme' };
+  }
+  if (authorization !== undefined) {
+    // Duplicate headers arrive as an array; do not guess which one was meant.
+    return { authorized: false, reason: 'malformed authorization header' };
+  }
+
+  if (config.allowQuerySecret && url) {
+    let supplied: string | null = null;
+    try {
+      supplied = new URL(url, 'http://placeholder.invalid').searchParams.get(
+        'secret',
+      );
+    } catch {
+      supplied = null;
+    }
+    if (supplied && secretsMatch(supplied, config.sharedSecret)) {
+      return { authorized: true };
+    }
+  }
+
+  return { authorized: false, reason: 'missing or invalid credentials' };
+};
+
+export interface FailedAuthLimiterOptions {
+  maxFailures: number;
+  windowMs: number;
+  /** Bounds the store, which is addressable by an attacker. */
+  maxTrackedSources?: number;
+  now?: () => number;
+}
+
+/**
+ * Per-source rate limit on failed authentication.
+ *
+ * Without this, the shared secret is only as strong as the attacker's
+ * patience. Bounded so that tracking failures cannot itself become a
+ * memory-growth vector.
+ */
+export class FailedAuthLimiter {
+  private readonly failures = new Map<string, number[]>();
+  private readonly maxFailures: number;
+  private readonly windowMs: number;
+  private readonly maxTrackedSources: number;
+  private readonly now: () => number;
+
+  constructor(options: FailedAuthLimiterOptions) {
+    this.maxFailures = options.maxFailures;
+    this.windowMs = options.windowMs;
+    this.maxTrackedSources = options.maxTrackedSources ?? 10_000;
+    this.now = options.now ?? Date.now;
+  }
+
+  private recent(source: string): number[] {
+    const cutoff = this.now() - this.windowMs;
+    const kept = (this.failures.get(source) ?? []).filter((t) => t > cutoff);
+    if (kept.length === 0) this.failures.delete(source);
+    else this.failures.set(source, kept);
+    return kept;
+  }
+
+  recordFailure(source: string): void {
+    if (
+      !this.failures.has(source) &&
+      this.failures.size >= this.maxTrackedSources
+    ) {
+      // Evict the oldest tracked source rather than growing without bound.
+      const oldest = this.failures.keys().next();
+      if (!oldest.done) this.failures.delete(oldest.value);
+    }
+    const times = this.recent(source);
+    times.push(this.now());
+    this.failures.set(source, times);
+  }
+
+  recordSuccess(source: string): void {
+    this.failures.delete(source);
+  }
+
+  isBlocked(source: string): boolean {
+    return this.recent(source).length >= this.maxFailures;
+  }
+
+  size(): number {
+    return this.failures.size;
+  }
+}

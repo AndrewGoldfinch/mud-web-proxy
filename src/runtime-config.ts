@@ -167,6 +167,7 @@ export interface RuntimeConfig {
 
   // Authentication (sibling MWP-85)
   authMode: AuthMode;
+  allowQuerySecret: boolean;
 
   // Inbound TLS (sibling MWP-81)
   inboundTlsMode: InboundTlsMode;
@@ -276,6 +277,15 @@ export const parseRuntimeConfig = (
   }
 
   // Authentication
+  // Browsers cannot set headers on a WebSocket, so the secret can also be
+  // passed as ?secret=. That puts it in access logs and referrers, so it is
+  // opt-in rather than automatic.
+  const allowQuerySecret = readBooleanEnv(
+    env,
+    'AUTH_ALLOW_QUERY_SECRET',
+    false,
+  );
+
   const authMode = readEnumEnv<AuthMode>(
     env,
     'AUTH_MODE',
@@ -550,6 +560,7 @@ export const parseRuntimeConfig = (
     targetMode,
     arbitraryAllowedPorts,
     authMode,
+    allowQuerySecret,
     inboundTlsMode,
     mudTlsMode,
     onlyAllowDefaultServer: targetMode === 'fixed',

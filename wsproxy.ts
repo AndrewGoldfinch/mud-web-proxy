@@ -69,6 +69,8 @@ import {
 import {
   authorizeApnsDebugRequest,
   encodeTelnetOutbound,
+  FailedAuthLimiter,
+  authorizeSharedSecret,
   formatMissingTypeLogMessage,
   isTrustedPeer,
   readLimitedRequestBody,
@@ -212,6 +214,15 @@ const getClientIP = (req: IncomingMessage): string => {
 
   return req.socket?.remoteAddress || '';
 };
+
+/**
+ * Rate limit on failed shared-secret attempts, keyed on the resolved client
+ * address. Without it the secret is only as strong as the attacker's patience.
+ */
+const failedAuthLimiter = new FailedAuthLimiter({
+  maxFailures: 10,
+  windowMs: 60_000,
+});
 
 const rejectUpgrade = (
   socket: Socket,
@@ -1636,6 +1647,44 @@ const srv: ServerConfig = {
         if (!srv.originAllowed(req)) {
           rejectUpgrade(socket, 403, 'Forbidden');
           return;
+        }
+
+        // Shared-secret auth (MWP-85). Deliberately before App Attest and
+        // before handleUpgrade, so a failed attempt allocates no session and
+        // consumes no connection-limit capacity.
+        if (runtimeConfig.authMode === 'shared-secret') {
+          const peer = getClientIP(req);
+
+          // Verify BEFORE consulting the rate limiter. Clients routinely
+          // share a source address through NAT or a forward proxy, so
+          // blocking first would let one failing client deny service to
+          // every authorized client behind that address. The limiter exists
+          // to bound the cost of wrong guesses, not to reject right ones.
+          const auth = authorizeSharedSecret(req.headers, req.url, {
+            authMode: runtimeConfig.authMode,
+            sharedSecret: runtimeConfig.proxySharedSecret,
+            allowQuerySecret: runtimeConfig.allowQuerySecret,
+          });
+
+          if (auth.authorized) {
+            // Clears the block for everyone sharing this address.
+            failedAuthLimiter.recordSuccess(peer);
+          } else {
+            failedAuthLimiter.recordFailure(peer);
+            const throttled = failedAuthLimiter.isBlocked(peer);
+            // auth.reason never contains the supplied or configured secret.
+            srv.logWarn(
+              `Rejected upgrade: ${auth.reason}${throttled ? ' (throttled)' : ''}`,
+              undefined,
+              'auth',
+            );
+            if (throttled) {
+              rejectUpgrade(socket, 429, 'Too Many Requests');
+            } else {
+              rejectUpgrade(socket, 401, 'Unauthorized');
+            }
+            return;
+          }
         }
 
         if (requireAppAuth) {
