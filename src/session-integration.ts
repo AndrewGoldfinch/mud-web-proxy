@@ -54,6 +54,7 @@ export interface SessionIntegrationConfig {
     maxSnippetLength?: number;
   };
   targets?: TargetPolicyConfig;
+  trustProxy?: boolean | string[];
 }
 
 export class SessionIntegration {
@@ -658,16 +659,28 @@ export class SessionIntegration {
    * Check if socket is part of a session
    */
   private getClientIP(socket: SocketExtended): string {
-    const xff = socket.req?.headers['x-forwarded-for'];
-    if (xff) {
-      const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
-      if (first) return first;
+    const trustProxy = this.config.trustProxy;
+    const peerAddress =
+      socket.remoteAddress || socket.req?.connection?.remoteAddress;
+
+    const isTrustedPeer = (
+      peer: string | undefined,
+      trustList: boolean | string[] | undefined,
+    ): boolean => {
+      if (!peer || !trustList) return false;
+      if (trustList === true) return true;
+      return trustList.includes(peer);
+    };
+
+    if (isTrustedPeer(peerAddress, trustProxy)) {
+      const xff = socket.req?.headers['x-forwarded-for'];
+      if (xff) {
+        const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
+        if (first) return first;
+      }
     }
-    return (
-      socket.remoteAddress ||
-      socket.req?.connection?.remoteAddress ||
-      'unknown'
-    );
+
+    return peerAddress || socket.req?.connection?.remoteAddress || 'unknown';
   }
 
   hasSession(socket: SocketExtended): boolean {

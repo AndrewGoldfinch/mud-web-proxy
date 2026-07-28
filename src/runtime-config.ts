@@ -14,6 +14,7 @@ export interface RuntimeConfig {
   requireAppAuth: boolean;
   diagnosticsEnabled: boolean;
   adminToken: string;
+  trustProxy: boolean | string[];
 }
 
 export interface TlsSettings {
@@ -55,6 +56,17 @@ export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
     .map((target) => target.trim())
     .filter(Boolean);
 
+  const trustProxyRaw = env.TRUST_PROXY?.trim().toLowerCase();
+  let trustProxy: boolean | string[] = false;
+  if (trustProxyRaw === 'true') {
+    trustProxy = true;
+  } else if (trustProxyRaw && trustProxyRaw !== 'false') {
+    trustProxy = trustProxyRaw
+      .split(',')
+      .map((cidr) => cidr.trim())
+      .filter(Boolean);
+  }
+
   return {
     wsPort: readIntegerEnv(env, 'WS_PORT', 6200),
     tnHost: env.TN_HOST || 'muds.maldorne.org',
@@ -68,6 +80,7 @@ export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
     requireAppAuth: readBooleanEnv(env, 'REQUIRE_APP_AUTH', false),
     diagnosticsEnabled: readBooleanEnv(env, 'ENABLE_DIAGNOSTICS', false),
     adminToken: env.ADMIN_TOKEN || '',
+    trustProxy,
   };
 };
 

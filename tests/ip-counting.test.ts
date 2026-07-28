@@ -112,6 +112,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
   beforeEach(() => {
     si = new SessionIntegration({
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
+      trustProxy: true,
     });
   });
 
@@ -131,8 +132,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       ),
     );
 
-    // BEFORE fix: 127.0.0.1 checked → not at limit → session created (wrong).
-    // AFTER fix:  1.2.3.4 checked  → at limit    → rate_limited.
+    // With trustProxy=true: 1.2.3.4 checked via XFF → at limit → rate_limited.
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
   });
 
@@ -148,8 +148,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       ),
     );
 
-    // BEFORE fix: 127.0.0.1 checked → at limit → rate_limited (wrong).
-    // AFTER fix:  9.9.9.9 checked   → not at limit → session created.
+    // With trustProxy=true: 9.9.9.9 checked via XFF → not at limit → session created.
     expect(lastMsg(socket)).toMatchObject({ type: 'session' });
   });
 
@@ -182,6 +181,28 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     );
 
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+  });
+
+  test('ignores XFF headers when trustProxy is false (default)', () => {
+    si.shutdown();
+    si = new SessionIntegration({
+      sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
+      trustProxy: false,
+    });
+
+    // XFF IP is at limit, but remoteAddress is NOT.
+    si.sessionManager.incrementIPCount('1.2.3.4');
+
+    const socket = makeSocket({ remoteAddress: '127.0.0.1', xff: '1.2.3.4' });
+    si.parseNewMessage(
+      socket,
+      Buffer.from(
+        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+      ),
+    );
+
+    // Without trustProxy: remoteAddress (127.0.0.1) is used, not XFF → session created.
+    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
   });
 });
 

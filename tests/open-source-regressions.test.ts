@@ -221,21 +221,21 @@ describe('open-source release regression coverage', () => {
 
   test('production finds TLS files beside the project when running from dist', () => {
     const existingFiles = new Set([
-      '/opt/mud-proxy/cert.pem',
-      '/opt/mud-proxy/privkey.pem',
+      '/srv/mud-proxy/cert.pem',
+      '/srv/mud-proxy/privkey.pem',
     ]);
     const existsSync = (filePath: string) => existingFiles.has(filePath);
 
     expect(
       resolveTlsSettings(
         { NODE_ENV: 'production' },
-        '/opt/mud-proxy/dist',
+        '/srv/mud-proxy/dist',
         existsSync,
       ),
     ).toMatchObject({
       useTls: true,
-      certPath: '/opt/mud-proxy/cert.pem',
-      keyPath: '/opt/mud-proxy/privkey.pem',
+      certPath: '/srv/mud-proxy/cert.pem',
+      keyPath: '/srv/mud-proxy/privkey.pem',
       reason: 'configured',
     });
   });

@@ -1,23 +1,32 @@
-name: Deploy mud-web-proxy
+# Deployment workflow for mud-web-proxy
+#
+# THIS FILE IS A TEMPLATE. The production deploy workflow lives in the
+# private ops repository (mud-web-proxy-ops).  Do not use this file for
+# actual deployments — it lacks secrets, environment guards, and the
+# immutable-artifact pull logic described in MWP-76.
+#
+# To deploy:
+#   1. Fork / copy the workflow from the private ops repo.
+#   2. Configure the required secrets (DEPLOY_SSH_KEY, DEPLOY_HOST, etc.).
+#   3. Trigger the workflow manually (workflow_dispatch).
+
+name: Deploy mud-web-proxy (TEMPLATE)
 
 on:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
-      - name: Deploy to droplet
-        uses: appleboy/ssh-action@v1
-        with:
-          host: mud-proxy.kingfrat.com
-          username: deploy
-          key: ${{ secrets.DEPLOY_SSH_KEY }}
-          script: |
-            export PATH="$HOME/.bun/bin:$HOME/.npm-global/bin:$PATH"
-            cd /opt/mud-proxy
-            git pull origin develop
-            bun install --production
-            bun run build
-            pm2 startOrRestart ecosystem.config.cjs --env production --update-env
-            pm2 save
+      - name: Deploy to production
+        # TODO: Replace with the actual SSH action and host from the ops repo.
+        # The production deploy workflow is in the private mud-web-proxy-ops repo.
+        run: |
+          echo "This is a template. See the private ops repo for the production deploy workflow."
+          echo "Required secrets: DEPLOY_SSH_KEY, DEPLOY_HOST, DEPLOY_USER, DEPLOY_PATH"
