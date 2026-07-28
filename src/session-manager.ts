@@ -1,3 +1,4 @@
+import type { MudTlsMode } from './runtime-config';
 /**
  * SessionManager - Manages all active sessions
  *
@@ -58,8 +59,15 @@ export class SessionManager {
     deviceToken?: string,
     bufferSizeBytes: number = 50 * 1024,
     dialAddress?: string,
+    tlsMode?: MudTlsMode,
   ): Session {
-    const session = new Session(host, port, bufferSizeBytes, dialAddress);
+    const session = new Session(
+      host,
+      port,
+      bufferSizeBytes,
+      dialAddress,
+      tlsMode,
+    );
 
     if (deviceToken) {
       session.setDeviceToken(deviceToken);

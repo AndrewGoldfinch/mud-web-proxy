@@ -165,6 +165,7 @@ const sessionIntegration = new SessionIntegration({
     arbitraryAllowedPorts: runtimeConfig.arbitraryAllowedPorts,
   },
   trustedProxyCidrs: runtimeConfig.trustedProxyCidrs,
+  mudTlsMode: runtimeConfig.mudTlsMode,
   // APNS config from environment
   apns: process.env.APNS_KEY_PATH
     ? {
