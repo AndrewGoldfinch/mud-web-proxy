@@ -62,6 +62,17 @@ function isBlocked(mgr: SessionManager, ip: string): boolean {
 }
 
 /** Returns the parsed JSON of the last message sent to a socket. */
+/**
+ * Find a message by type. Asserting on the LAST message races the real dial:
+ * an unstubbed connection can fail and append `connection_failed` before the
+ * assertion runs, which is what made these tests flaky in CI but not locally.
+ */
+function findMsg(socket: MockSocket, type: string): Record<string, unknown> | undefined {
+  return socket.messages
+    .map((m) => JSON.parse(m) as Record<string, unknown>)
+    .find((m) => m.type === type);
+}
+
 function lastMsg(socket: MockSocket): Record<string, unknown> {
   const raw = socket.messages.at(-1);
   if (!raw) throw new Error('no messages on socket');
@@ -160,7 +171,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     // With trustedProxyCidrs=true: 9.9.9.9 checked via XFF → not at limit → session created.
     // handleConnect awaits DNS resolution in arbitrary mode.
     await Bun.sleep(0);
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 
   test('uses first IP from comma-separated XFF header', () => {
@@ -224,7 +235,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     // Without trustedProxyCidrs: remoteAddress (127.0.0.1) is used, not XFF → session created.
     // handleConnect awaits DNS resolution in arbitrary mode.
     await Bun.sleep(0);
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 
   test('honours XFF from a peer inside a trusted CIDR range', () => {
@@ -316,7 +327,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     // Untrusted peer: the spoofed XFF is ignored, so the peer address is used.
     // handleConnect awaits DNS resolution in arbitrary mode.
     await Bun.sleep(0);
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 });
 

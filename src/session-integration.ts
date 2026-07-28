@@ -283,6 +283,20 @@ export class SessionIntegration {
       }
     }
 
+    // Reserve capacity BEFORE any DNS or TCP work. enforceConnectionLimits
+    // above consults counters that are only incremented once a dial
+    // succeeds, so without this a client could issue many concurrent connect
+    // frames and pass every check — and omitting deviceToken skipped the
+    // device limit entirely. The reservation is released on every path out
+    // of here; a leaked one is capacity that never returns (MWP-92).
+    const reservation = this.sessionManager.reservePendingDial(ip);
+    if (!reservation.allowed) {
+      const reason = reservation.reason || 'Connection limit exceeded';
+      this.log(`connect rejected: ${reason}`, ip);
+      this.sendError(socket, 'rate_limited', reason);
+      return;
+    }
+
     // In arbitrary mode the hostname is client-supplied, so resolve it and
     // confirm every answer is publicly routable before dialling. Resolution
     // happens once and we dial the address it returned — re-resolving between
@@ -298,6 +312,7 @@ export class SessionIntegration {
       const resolve = this.config.resolveTarget ?? resolveTargetAddress;
       const resolved = await resolve(target.host);
       if (!resolved.allowed || !resolved.address) {
+        this.sessionManager.releasePendingDial(ip);
         const reason = resolved.reason || 'Target address is not permitted';
         this.log(`connect rejected: ${reason}`, ip);
         this.sendError(socket, 'invalid_request', reason);
@@ -314,6 +329,9 @@ export class SessionIntegration {
       this.config.buffer.sizeKB * 1024,
       dialAddress,
     );
+    // The session now owns this client's capacity; hand off from the
+    // reservation so it is not counted twice.
+    this.sessionManager.releasePendingDial(ip);
 
     // Set device token and window size
     if (msg.deviceToken) {

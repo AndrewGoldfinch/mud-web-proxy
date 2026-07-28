@@ -125,6 +125,70 @@ const inV4Network = (
  * Fails closed: anything unparseable is treated as reserved. A target we
  * cannot classify is not one to connect to.
  */
+/**
+ * Expand an IPv6 literal into its eight 16-bit groups.
+ *
+ * Returns null if the value is not a well-formed IPv6 address. Comparing
+ * IPv6 as strings does not work: `::1`, `0:0:0:0:0:0:0:1` and
+ * `0000:...:0001` are the same address, and an exact-match check catches
+ * only whichever spelling it was written with.
+ */
+const parseIPv6 = (value: string): number[] | null => {
+  let text = value.split('%')[0]; // drop any zone index
+  if (!text.includes(':')) return null;
+
+  // A trailing IPv4 form (e.g. ::ffff:1.2.3.4) contributes two groups.
+  let tail: number[] = [];
+  const lastColon = text.lastIndexOf(':');
+  const maybeV4 = text.slice(lastColon + 1);
+  if (maybeV4.includes('.')) {
+    const octets = parseIPv4(maybeV4);
+    if (!octets) return null;
+    tail = [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
+    text = text.slice(0, lastColon + 1) + '0';
+  }
+
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+
+  const toGroups = (part: string): number[] | null => {
+    if (part === '') return [];
+    const groups: number[] = [];
+    for (const piece of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/i.test(piece)) return null;
+      groups.push(parseInt(piece, 16));
+    }
+    return groups;
+  };
+
+  const head = toGroups(halves[0]);
+  if (head === null) return null;
+
+  if (halves.length === 1) {
+    const all = tail.length ? head.slice(0, -1).concat(tail) : head;
+    return all.length === 8 ? all : null;
+  }
+
+  const rest = toGroups(halves[1]);
+  if (rest === null) return null;
+
+  const explicit = tail.length
+    ? head.concat(rest.slice(0, -1), tail)
+    : head.concat(rest);
+  if (explicit.length > 8) return null;
+
+  const zeros = new Array(8 - explicit.length).fill(0);
+  const before = tail.length ? head : head;
+  const after = tail.length ? rest.slice(0, -1).concat(tail) : rest;
+  return before.concat(zeros, after);
+};
+
+/**
+ * Is this address one we must never dial on a client's behalf?
+ *
+ * Fails closed: anything unparseable is treated as reserved. A target we
+ * cannot classify is not one to connect to.
+ */
 export const isReservedAddress = (address: string): boolean => {
   if (!address) return true;
 
@@ -137,16 +201,25 @@ export const isReservedAddress = (address: string): boolean => {
     return RESERVED_V4.some(([net, prefix]) => inV4Network(v4, net, prefix));
   }
 
-  // Not IPv4 — treat as IPv6 only if it plausibly is one.
   if (!normalized.includes(':')) return true;
 
-  const v6 = normalized.split('%')[0]; // drop any zone index
-  if (v6 === '::' || v6 === '::1') return true; // unspecified, loopback
+  const v6 = parseIPv6(normalized);
+  if (!v6) return true; // unparseable — fail closed
 
-  const head = v6.split(':')[0];
-  if (!/^[0-9a-f]{0,4}$/.test(head)) return true;
-  const leading = parseInt(head || '0', 16);
+  // An IPv4-mapped address that survived normalizeAddress (e.g. written with
+  // a different prefix spelling) is still IPv4; classify it as such.
+  const isV4Mapped = v6.slice(0, 5).every((g) => g === 0) && v6[5] === 0xffff;
+  if (isV4Mapped) {
+    const octets = [v6[6] >> 8, v6[6] & 0xff, v6[7] >> 8, v6[7] & 0xff];
+    return RESERVED_V4.some(([net, prefix]) =>
+      inV4Network(octets, net, prefix),
+    );
+  }
 
+  if (v6.every((g) => g === 0)) return true; // ::   unspecified
+  if (v6.slice(0, 7).every((g) => g === 0) && v6[7] === 1) return true; // ::1
+
+  const leading = v6[0];
   if ((leading & 0xfe00) === 0xfc00) return true; // fc00::/7  unique-local
   if ((leading & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
   if ((leading & 0xff00) === 0xff00) return true; // ff00::/8  multicast

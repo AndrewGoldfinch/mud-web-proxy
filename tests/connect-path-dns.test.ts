@@ -40,6 +40,17 @@ function makeSocket(): MockSocket {
   return s;
 }
 
+/**
+ * Find a message by type. Asserting on the LAST message races the real dial:
+ * an unstubbed connection can fail and append `connection_failed` before the
+ * assertion runs, which is what made these tests flaky in CI but not locally.
+ */
+function findMsg(s: MockSocket, type: string): Record<string, unknown> | undefined {
+  return s.messages
+    .map((m) => JSON.parse(m) as Record<string, unknown>)
+    .find((m) => m.type === type);
+}
+
 const lastMsg = (s: MockSocket): Record<string, unknown> => {
   const raw = s.messages.at(-1);
   if (!raw) throw new Error('socket has no messages');
@@ -184,6 +195,6 @@ describe('other modes do not resolve', () => {
     await Bun.sleep(10);
 
     expect(called).toBe(false);
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 });

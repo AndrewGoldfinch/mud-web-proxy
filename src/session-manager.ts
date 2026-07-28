@@ -27,6 +27,7 @@ export class SessionManager {
   private socketToSession: Map<SocketExtended, Session> = new Map();
   private deviceSessions: Map<string, Set<Session>> = new Map();
   private ipConnections: Map<string, number> = new Map();
+  private readonly pendingDialCounts = new Map<string, number>();
 
   private config: SessionManagerConfig;
   private cleanupInterval: NodeJS.Timeout | null = null;
@@ -235,6 +236,49 @@ export class SessionManager {
   /**
    * Increment IP connection count
    */
+  /**
+   * Reserve capacity for a dial that has not happened yet.
+   *
+   * enforceConnectionLimits consults counters that are only incremented once
+   * a dial succeeds, so concurrent connect frames all pass — nothing has been
+   * counted at the moment they are checked. Holding a pending reservation
+   * across the expensive steps (DNS, TCP) is what makes the limit real, and
+   * is why MWP-92 asks for capacity to be reserved before that work begins.
+   *
+   * Keyed on the resolved client address, so it applies to clients that send
+   * no device token.
+   */
+  reservePendingDial(ip: string): { allowed: boolean; reason?: string } {
+    const established = this.ipConnections.get(ip) || 0;
+    const pending = this.pendingDialCounts.get(ip) || 0;
+
+    if (established + pending >= this.config.maxPerIP) {
+      return {
+        allowed: false,
+        reason: 'Too many connections from this address',
+      };
+    }
+
+    this.pendingDialCounts.set(ip, pending + 1);
+    return { allowed: true };
+  }
+
+  /**
+   * Release a reservation. Must be called on every path out of the dial —
+   * success, rejection, and error alike. A leaked reservation is capacity
+   * that never returns until the process restarts.
+   */
+  releasePendingDial(ip: string): void {
+    const pending = this.pendingDialCounts.get(ip) || 0;
+    if (pending <= 1) this.pendingDialCounts.delete(ip);
+    else this.pendingDialCounts.set(ip, pending - 1);
+  }
+
+  /** Pending reservations for an address. Exposed for tests. */
+  pendingDials(ip: string): number {
+    return this.pendingDialCounts.get(ip) || 0;
+  }
+
   incrementIPCount(ip: string): void {
     const count = this.ipConnections.get(ip) || 0;
     this.ipConnections.set(ip, count + 1);
