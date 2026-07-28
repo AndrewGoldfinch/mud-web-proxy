@@ -41,38 +41,67 @@ export type TlsFallbackTrigger = 'error' | 'close';
  * Fails closed: an error we cannot classify is not evidence of plaintext, so
  * it is not grounds to retry without encryption.
  */
+/**
+ * Node reports a peer closing during the TLS handshake as an *error* carrying
+ * ECONNRESET, not as a close event. It is the primary signal that a MUD does
+ * not speak TLS, so it has to be recognized before transport codes are used
+ * to rule an error out.
+ */
+const TLS_HANDSHAKE_CLOSE =
+  /socket disconnected before secure tls connection was established/;
+
+/**
+ * Diagnostics that only a TLS stack produces. Deliberately specific: matching
+ * a bare "tls" or "ssl" substring also matches the *hostname* in messages like
+ * `getaddrinfo ENOTFOUND ssl.example.org`, which would turn a DNS failure into
+ * grounds for a plaintext retry.
+ */
+const TLS_DIAGNOSTICS = [
+  'wrong version number',
+  'packet length',
+  'unable to verify',
+  'certificate',
+  'ssl routines',
+  'tls_process',
+  'tlsv1',
+  'sslv3',
+  'alert handshake failure',
+  'unsupported protocol',
+  'no cipher',
+  'decryption failed',
+  'bad record mac',
+];
+
+/** Transport failures: the host is unreachable, not asking for cleartext. */
+const TRANSPORT_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ETIMEDOUT',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+]);
+
+/**
+ * Is this error evidence that the peer does not speak TLS, as opposed to a
+ * transport problem?
+ *
+ * Fails closed: an error we cannot classify is not evidence of plaintext, so
+ * it is not grounds to retry without encryption.
+ */
 export const isTlsNegotiationError = (err: Error): boolean => {
   const msg = err.message.toLowerCase();
 
-  // Classify on message content FIRST. Node reports a peer closing during the
-  // handshake as an error carrying ECONNRESET — "Client network socket
-  // disconnected before secure TLS connection was established" — and that is
-  // precisely the signal that a MUD speaks plaintext. Excluding on the code
-  // alone discards it and breaks autodetect for every plaintext server.
-  const mentionsTls =
-    msg.includes('tls') ||
-    msg.includes('ssl') ||
-    msg.includes('certificate') ||
-    msg.includes('packet length') ||
-    msg.includes('wrong version number');
+  // The one transport-coded error that genuinely is a TLS signal.
+  if (TLS_HANDSHAKE_CLOSE.test(msg)) return true;
 
-  if (mentionsTls) return true;
-
-  // Otherwise a transport failure means the host is unreachable, not that it
-  // wants cleartext. Retrying in the clear on a bare reset is exactly the
-  // lever an active network attacker has.
+  // Otherwise a transport code settles it, before any substring matching can
+  // be fooled by a hostname.
   const code = (err as NodeJS.ErrnoException).code;
-  if (
-    code === 'ECONNREFUSED' ||
-    code === 'ECONNRESET' ||
-    code === 'ETIMEDOUT' ||
-    code === 'ENOTFOUND' ||
-    code === 'EHOSTUNREACH'
-  ) {
-    return false;
-  }
+  if (code && TRANSPORT_CODES.has(code)) return false;
 
-  return false;
+  return TLS_DIAGNOSTICS.some((pattern) => msg.includes(pattern));
 };
 
 /** Should a TLS connection be attempted at all? */

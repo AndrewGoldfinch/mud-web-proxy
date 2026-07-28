@@ -181,3 +181,45 @@ describe("Node's real mid-handshake close message", () => {
     expect(shouldFallBackToPlain('prefer', 'error', bare)).toBe(false);
   });
 });
+
+describe('a hostname containing "tls" or "ssl" is not a TLS diagnostic', () => {
+  // Raised in review of #36. Classifying on a bare "tls"/"ssl" substring means
+  // `getaddrinfo ENOTFOUND ssl.example.org` reads as a TLS failure, so a
+  // transient DNS error triggers a plaintext retry for a host that was never
+  // negotiated with. MUD hostnames like ssl.aardmud.org make this ordinary,
+  // not contrived.
+
+  const dnsFailures = [
+    ['getaddrinfo ENOTFOUND tls.invalid', 'ENOTFOUND'],
+    ['getaddrinfo ENOTFOUND ssl.example.org', 'ENOTFOUND'],
+    ['getaddrinfo EAI_AGAIN ssl-mud.example.org', 'EAI_AGAIN'],
+  ] as const;
+  for (const [m, code] of dnsFailures) {
+    test(`treats "${m}" as transport`, () => {
+      expect(isTlsNegotiationError(err(m, code))).toBe(false);
+      expect(shouldFallBackToPlain('prefer', 'error', err(m, code))).toBe(false);
+    });
+  }
+
+  test('a refused connection to an ssl-named host is still transport', () => {
+    const e = err('connect ECONNREFUSED ssl.example.org:4000', 'ECONNREFUSED');
+    expect(isTlsNegotiationError(e)).toBe(false);
+  });
+
+  test('the mid-handshake close is still recognized despite ECONNRESET', () => {
+    // The reason content was checked first in the first place; it must
+    // survive putting transport codes ahead of the generic patterns.
+    const e = err(
+      'Client network socket disconnected before secure TLS connection was established',
+      'ECONNRESET',
+    );
+    expect(isTlsNegotiationError(e)).toBe(true);
+  });
+
+  test('genuine TLS diagnostics with no transport code still match', () => {
+    expect(isTlsNegotiationError(err('ssl routines:tls_process: alert'))).toBe(
+      true,
+    );
+    expect(isTlsNegotiationError(err('wrong version number'))).toBe(true);
+  });
+});
