@@ -450,12 +450,44 @@ export const parseRuntimeConfig = (
 
   // ---- Cross-field validation ----
 
-  // TARGET_MODE + AUTH_MODE: arbitrary requires shared-secret
-  if (targetMode === 'arbitrary' && authMode === 'none') {
+  // TARGET_MODE=arbitrary is not yet supported.
+  //
+  // It lets a client name any host, which is only safe once authentication
+  // (MWP-85) and reserved-network rejection on the connect path (MWP-88) are
+  // both in place. AUTH_MODE=shared-secret is currently parsed but enforced
+  // nowhere, and resolveTargetAddress is not yet called when dialling — so
+  // arbitrary + shared-secret would pass validation and yield arbitrary
+  // outbound TCP with no authentication and no SSRF protection, while reading
+  // as configured.
+  //
+  // Remove this guard once MWP-85 and MWP-88 are both complete.
+  if (targetMode === 'arbitrary') {
     errors.push(
-      'TARGET_MODE=arbitrary requires AUTH_MODE=shared-secret. ' +
-        'Set AUTH_MODE=shared-secret and PROXY_SHARED_SECRET to enable arbitrary targets.',
+      'TARGET_MODE=arbitrary is not supported yet. It requires enforced ' +
+        'authentication (MWP-85) and reserved-network rejection on the ' +
+        'connect path (MWP-88); neither is implemented, so this mode would ' +
+        'permit unauthenticated connections to arbitrary hosts, including ' +
+        'private and cloud-metadata addresses. Use TARGET_MODE=fixed or ' +
+        'TARGET_MODE=allowlist.',
     );
+  }
+
+  // TARGET_MODE=allowlist requires a non-empty, parseable ALLOWED_TARGETS.
+  // An empty list must be a startup error, never a permissive fallback.
+  if (targetMode === 'allowlist') {
+    const parsed = allowedTargets.filter((entry) => {
+      const separator = entry.lastIndexOf(':');
+      if (separator <= 0 || separator === entry.length - 1) return false;
+      const port = Number(entry.slice(separator + 1));
+      return Number.isInteger(port) && port >= 1 && port <= 65_535;
+    });
+    if (parsed.length === 0) {
+      errors.push(
+        'TARGET_MODE=allowlist requires ALLOWED_TARGETS to contain at least ' +
+          'one valid host:port entry. An empty or unparseable allowlist is a ' +
+          'configuration error, not a permissive default.',
+      );
+    }
   }
 
   // TARGET_MODE=arbitrary requires ARBITRARY_ALLOWED_PORTS
