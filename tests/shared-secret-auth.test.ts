@@ -244,3 +244,43 @@ describe('FailedAuthLimiter', () => {
     expect(limiter.size()).toBeLessThanOrEqual(10);
   });
 });
+
+describe('a blocked source must not lock out valid credentials', () => {
+  // Raised in review of #33: clients commonly share a source address through
+  // NAT or a forward proxy. Blocking before verifying lets one failing client
+  // deny service to every authorized client on that address — a trivial DoS.
+  //
+  // Rate limiting exists to bound the cost of wrong guesses, not to reject
+  // right ones. Verify first; apply the block only to failures.
+
+  test('a correct secret is accepted even while the source is blocked', () => {
+    const limiter = new FailedAuthLimiter({ maxFailures: 3, windowMs: 60_000 });
+    for (let i = 0; i < 5; i++) limiter.recordFailure('203.0.113.7');
+    expect(limiter.isBlocked('203.0.113.7')).toBe(true);
+
+    // The credential itself is still valid, so authorization must succeed.
+    const result = authorizeSharedSecret(
+      { authorization: `Bearer ${SECRET}` },
+      '/',
+      enabled,
+    );
+    expect(result.authorized).toBe(true);
+
+    // ...and success clears the block for everyone behind that address.
+    limiter.recordSuccess('203.0.113.7');
+    expect(limiter.isBlocked('203.0.113.7')).toBe(false);
+  });
+
+  test('a wrong secret from a blocked source stays blocked', () => {
+    const limiter = new FailedAuthLimiter({ maxFailures: 3, windowMs: 60_000 });
+    for (let i = 0; i < 3; i++) limiter.recordFailure('203.0.113.7');
+
+    const result = authorizeSharedSecret(
+      { authorization: 'Bearer wrong' },
+      '/',
+      enabled,
+    );
+    expect(result.authorized).toBe(false);
+    expect(limiter.isBlocked('203.0.113.7')).toBe(true);
+  });
+});

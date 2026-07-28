@@ -1655,31 +1655,36 @@ const srv: ServerConfig = {
         if (runtimeConfig.authMode === 'shared-secret') {
           const peer = getClientIP(req);
 
-          if (failedAuthLimiter.isBlocked(peer)) {
-            srv.logWarn(
-              'Rejected upgrade: too many failed authentication attempts',
-              undefined,
-              'auth',
-            );
-            rejectUpgrade(socket, 429, 'Too Many Requests');
-            return;
-          }
-
+          // Verify BEFORE consulting the rate limiter. Clients routinely
+          // share a source address through NAT or a forward proxy, so
+          // blocking first would let one failing client deny service to
+          // every authorized client behind that address. The limiter exists
+          // to bound the cost of wrong guesses, not to reject right ones.
           const auth = authorizeSharedSecret(req.headers, req.url, {
             authMode: runtimeConfig.authMode,
             sharedSecret: runtimeConfig.proxySharedSecret,
             allowQuerySecret: runtimeConfig.allowQuerySecret,
           });
 
-          if (!auth.authorized) {
+          if (auth.authorized) {
+            // Clears the block for everyone sharing this address.
+            failedAuthLimiter.recordSuccess(peer);
+          } else {
             failedAuthLimiter.recordFailure(peer);
+            const throttled = failedAuthLimiter.isBlocked(peer);
             // auth.reason never contains the supplied or configured secret.
-            srv.logWarn(`Rejected upgrade: ${auth.reason}`, undefined, 'auth');
-            rejectUpgrade(socket, 401, 'Unauthorized');
+            srv.logWarn(
+              `Rejected upgrade: ${auth.reason}${throttled ? ' (throttled)' : ''}`,
+              undefined,
+              'auth',
+            );
+            if (throttled) {
+              rejectUpgrade(socket, 429, 'Too Many Requests');
+            } else {
+              rejectUpgrade(socket, 401, 'Unauthorized');
+            }
             return;
           }
-
-          failedAuthLimiter.recordSuccess(peer);
         }
 
         if (requireAppAuth) {
