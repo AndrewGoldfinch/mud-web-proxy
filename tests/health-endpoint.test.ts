@@ -1,6 +1,7 @@
 import { describe, test, expect, afterAll } from 'bun:test';
 import { spawn } from 'child_process';
 import path from 'path';
+import pkg from '../package.json';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -63,7 +64,7 @@ describe('/health endpoint', () => {
       expect(keys).toEqual(['status', 'version']);
       expect(body.status).toBe('healthy');
       expect(typeof body.version).toBe('string');
-      expect(body.version).toBe('3.0.0');
+      expect(body.version).toBe(pkg.version);
 
       proxyProcess!.kill('SIGTERM');
       proxyProcess = null;
