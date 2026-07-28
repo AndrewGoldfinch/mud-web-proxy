@@ -152,7 +152,7 @@ Healthy in one sentence each: only 3 runtime deps (`ws`, `iconv-lite`, `cbor-x`)
 ### 2.7 DevEx & operations
 
 **D1 [M] — Deploy workflow is hardcoded and unvalidated.** (fact)
-`.github/workflows/deploy.yml:14,19` hardcodes `mud-proxy.kingfrat.com` and `/opt/mud-proxy`; deploy is `git pull` + `pm2 startOrRestart` with no post-deploy health check (a `/health` endpoint exists and is unused here) and no rollback. Acceptable for a single-operator hobby service (judgment), but one bad push silently takes the service down.
+`.github/workflows/deploy.yml:14,19` hardcodes the production hostname and deploy path; deploy is `git pull` + `pm2 startOrRestart` with no post-deploy health check (a `/health` endpoint exists and is unused here) and no rollback. Acceptable for a single-operator hobby service (judgment), but one bad push silently takes the service down.
 
 **D2 [L] — No `uncaughtException`/`unhandledRejection` handlers.** (fact)
 Signals are handled (`wsproxy.ts:2561-2577`) but a stray throw in a callback kills the process; PM2 restart masks it at the cost of dropping all live sessions.
@@ -279,6 +279,6 @@ Add `trustProxy: boolean | string[]` to `getRuntimeConfig` (`src/runtime-config.
 
 1. **License intent:** Given the fork lineage from GPL-3.0 `maldorne/mud-web-proxy`, is there any basis for the MIT header (`wsproxy.ts:11`), or do we standardize on GPL-3.0-or-later everywhere? (Blocks task 1.2.)
 2. **Is the legacy browser-client path still a supported product?** If mud-web-client compatibility can be dropped (iOS app only), Milestone 2.3 becomes *deletion* instead of *migration* — dramatically cheaper. The zlib-deflate-to-browser feature (`srv.compress`, `wsproxy.ts:915`) only matters here.
-3. **Deployment topology:** Is the proxy fronted by nginx/Cloudflare on `mud-proxy.kingfrat.com`, or directly exposed? Determines the right `TRUST_PROXY` default (task 1.3) and how urgent S1 is.
+3. **Deployment topology:** Is the proxy fronted by nginx/Cloudflare, or directly exposed? Determines the right `TRUST_PROXY` default (task 1.3) and how urgent S1 is.
 4. **Scale targets:** Expected concurrent sessions/devices? Current caps (10/IP, 5/device) and in-memory key storage are fine for tens of users, not thousands — if growth is planned, `attested-keys.json` persistence should move to SQLite (not currently recommended).
 5. **`/diagnostic` exposure:** Is a `DIAGNOSTIC_TOKEN` set in production? If not, confirm the endpoint 404s as designed; if yes, consider whether session IDs belong on that page at all (they're usable with the APNS debug panel).
