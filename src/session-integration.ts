@@ -17,6 +17,7 @@ import {
   type ResolvedTarget,
   type TargetPolicyConfig,
 } from './target-policy';
+import type { MudTlsMode } from './runtime-config';
 import { isTrustedPeer } from './wsproxy-utils';
 import type {
   ConnectRequest,
@@ -62,6 +63,8 @@ export interface SessionIntegrationConfig {
   targets?: TargetPolicyConfig;
   /** Injectable for tests; defaults to real DNS resolution. */
   resolveTarget?: (host: string) => Promise<ResolvedTarget>;
+  /** Upstream TLS policy. Defaults to `prefer`, matching prior behaviour. */
+  mudTlsMode?: MudTlsMode;
   trustedProxyCidrs?: boolean | string[];
 }
 
@@ -328,6 +331,7 @@ export class SessionIntegration {
       msg.deviceToken,
       this.config.buffer.sizeKB * 1024,
       dialAddress,
+      this.config.mudTlsMode ?? 'prefer',
     );
     // The session now owns this client's capacity; hand off from the
     // reservation so it is not counted twice.

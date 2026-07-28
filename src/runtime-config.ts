@@ -323,11 +323,15 @@ export const parseRuntimeConfig = (
   const tlsKeyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
 
   // MUD upstream TLS
+  // Defaults to `prefer`, NOT `plain`. Current behaviour is to attempt TLS
+  // and fall back, so defaulting to `plain` would stop attempting TLS
+  // entirely — silently downgrading every deployment that reaches a MUD
+  // supporting it, via the very change meant to prevent downgrades.
   const mudTlsMode = readEnumEnv<MudTlsMode>(
     env,
     'MUD_TLS_MODE',
     ['plain', 'required', 'prefer'],
-    'plain',
+    'prefer',
   );
 
   // Allowed targets

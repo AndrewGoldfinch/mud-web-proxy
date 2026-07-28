@@ -514,6 +514,12 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
       resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      // Dial plaintext directly. This server accepts and immediately destroys,
+      // which surfaces as a reset — and a reset is no longer treated as
+      // evidence the peer wants cleartext (MWP-89), so under `prefer` the
+      // connection would never establish and the drop under test could not
+      // occur. The subject here is termination accounting, not negotiation.
+      mudTlsMode: 'plain' as const,
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
