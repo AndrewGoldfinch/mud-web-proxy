@@ -7,7 +7,9 @@ module.exports = {
         script: "dist/wsproxy.js",
         interpreter: "node",
         node_args: "--env-file=.env.production",
-        cwd: process.env.ECOSYSTEM_CWD || "/opt/mud-proxy",
+        // Deployment paths are not recorded in this public repo (MWP-76).
+        // Defaults to the invoking directory; the deploy runbook cds there.
+        cwd: process.env.ECOSYSTEM_CWD || process.cwd(),
         env: {
           NODE_ENV: "development",
         },
