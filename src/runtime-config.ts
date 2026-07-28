@@ -1,5 +1,7 @@
+import { existsSync as nodeExistsSync } from 'fs';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
+import { parseAllowedTargets } from './target-policy';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -475,13 +477,10 @@ export const parseRuntimeConfig = (
   // TARGET_MODE=allowlist requires a non-empty, parseable ALLOWED_TARGETS.
   // An empty list must be a startup error, never a permissive fallback.
   if (targetMode === 'allowlist') {
-    const parsed = allowedTargets.filter((entry) => {
-      const separator = entry.lastIndexOf(':');
-      if (separator <= 0 || separator === entry.length - 1) return false;
-      const port = Number(entry.slice(separator + 1));
-      return Number.isInteger(port) && port >= 1 && port <= 65_535;
-    });
-    if (parsed.length === 0) {
+    // Validate with the same parser validateTarget uses. A second,
+    // hand-rolled check here could accept entries enforcement later drops,
+    // starting the proxy in a mode that denies everything.
+    if (parseAllowedTargets(allowedTargets).size === 0) {
       errors.push(
         'TARGET_MODE=allowlist requires ALLOWED_TARGETS to contain at least ' +
           'one valid host:port entry. An empty or unparseable allowlist is a ' +
@@ -531,7 +530,7 @@ export const parseRuntimeConfig = (
     bindHost !== '127.0.0.1' &&
     bindHost !== '::1'
   ) {
-    if (!env.ALLOW_INSECURE_INBOUND_NO_TLS) {
+    if (!readBooleanEnv(env, 'ALLOW_INSECURE_INBOUND_NO_TLS', false)) {
       errors.push(
         `INBOUND_TLS_MODE=off on BIND_HOST=${bindHost} is not allowed without explicit acknowledgement. ` +
           'Set ALLOW_INSECURE_INBOUND_NO_TLS=true to acknowledge the risk, or use INBOUND_TLS_MODE=required.',
@@ -589,18 +588,32 @@ export const parseRuntimeConfig = (
  *
  * New code should call parseRuntimeConfig directly.
  */
-export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
+export const getRuntimeConfig = (
+  env: EnvLike,
+  existsSync: (filePath: string) => boolean = nodeExistsSync,
+  basePath: string = process.cwd(),
+): RuntimeConfig => {
+  // Only an *explicitly* configured INBOUND_TLS_MODE=required makes missing
+  // certificates fatal. Previously these errors were filtered out
+  // unconditionally, so `required` fell back to a plaintext listener — the
+  // setting was accepted and then ignored. Defaulted behaviour still defers
+  // to resolveTlsSettings, which existing callers depend on.
+  const explicitlyRequired =
+    env.INBOUND_TLS_MODE?.trim().toLowerCase() === 'required';
+
   const { config, errors } = parseRuntimeConfig(
     env,
-    () => false, // no file checks for legacy tests
-    '/app',
+    explicitlyRequired ? existsSync : () => false,
+    basePath,
   );
-  // Filter out file-existence errors — those belong to resolveTlsSettings.
-  const fatalErrors = errors.filter(
-    (e) =>
-      !e.includes('TLS certificate not found') &&
-      !e.includes('TLS key not found'),
-  );
+
+  const fatalErrors = explicitlyRequired
+    ? errors
+    : errors.filter(
+        (e) =>
+          !e.includes('TLS certificate not found') &&
+          !e.includes('TLS key not found'),
+      );
   if (fatalErrors.length > 0) {
     throw new Error('Configuration errors:\n  ' + fatalErrors.join('\n  '));
   }
