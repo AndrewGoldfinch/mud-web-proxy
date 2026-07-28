@@ -173,3 +173,102 @@ export const formatMissingTypeLogMessage = (
   const keySummary = keys.length ? keys.join(',') : '<none>';
   return `Ignoring JSON message without type field bytes=${byteLength} keys=${keySummary}`;
 };
+
+const IPV4_MAPPED = /^::ffff:(.+)$/;
+const OCTET = /^\d{1,3}$/;
+const PREFIX = /^\d{1,2}$/;
+const IPV4_MAX_PREFIX = 32;
+
+/** Parse a dotted-quad into octets, or null if it is not a valid IPv4 address. */
+const parseIPv4 = (value: string): number[] | null => {
+  const parts = value.split('.');
+  if (parts.length !== 4) return null;
+
+  const octets: number[] = [];
+  for (const part of parts) {
+    if (!OCTET.test(part)) return null;
+    const octet = Number(part);
+    if (octet > 255) return null;
+    octets.push(octet);
+  }
+  return octets;
+};
+
+/**
+ * Normalize an address for comparison.
+ *
+ * Node reports IPv4 peers as `::ffff:a.b.c.d` on a dual-stack listener, which
+ * is the default when the server binds all interfaces. Operators write the
+ * bare IPv4 form in TRUST_PROXY, so both forms must compare equal. Only strip
+ * the mapping prefix when what remains is genuinely IPv4, to avoid mangling
+ * real IPv6 addresses.
+ */
+const normalizeAddress = (address: string): string => {
+  const trimmed = address.trim().toLowerCase();
+  const mapped = trimmed.match(IPV4_MAPPED);
+  if (mapped && parseIPv4(mapped[1])) return mapped[1];
+  return trimmed;
+};
+
+/** Compare two IPv4 addresses under a prefix length. */
+const matchesPrefix = (
+  peer: number[],
+  network: number[],
+  prefix: number,
+): boolean => {
+  for (let i = 0; i < 4; i++) {
+    const bits = Math.min(8, Math.max(0, prefix - i * 8));
+    if (bits === 0) break;
+    const mask = (0xff << (8 - bits)) & 0xff;
+    if ((peer[i] & mask) !== (network[i] & mask)) return false;
+  }
+  return true;
+};
+
+/**
+ * Decide whether forwarded client-IP headers from this peer may be trusted.
+ *
+ * Shared by wsproxy.ts (getClientIP, requestPeer) and SessionIntegration so
+ * the rate limiter and the logger never disagree about who the client is.
+ * Accepts `true` (trust every peer), `false`/undefined (trust none, the
+ * default), or a list of exact addresses and IPv4 CIDR ranges.
+ *
+ * Malformed entries never match; they are skipped so a typo fails closed
+ * rather than widening trust.
+ */
+export const isTrustedPeer = (
+  peerAddress: string | undefined,
+  trustList: boolean | string[] | undefined,
+): boolean => {
+  if (!peerAddress || !trustList) return false;
+  if (trustList === true) return true;
+
+  const peer = normalizeAddress(peerAddress);
+  const peerOctets = parseIPv4(peer);
+
+  for (const rawEntry of trustList) {
+    const entry = rawEntry.trim().toLowerCase();
+    if (!entry) continue;
+
+    if (!entry.includes('/')) {
+      if (normalizeAddress(entry) === peer) return true;
+      continue;
+    }
+
+    if (!peerOctets) continue;
+
+    const parts = entry.split('/');
+    if (parts.length !== 2) continue;
+    const [network, prefixText] = parts;
+    if (!PREFIX.test(prefixText)) continue;
+    const prefix = Number(prefixText);
+    if (prefix > IPV4_MAX_PREFIX) continue;
+
+    const networkOctets = parseIPv4(normalizeAddress(network));
+    if (!networkOctets) continue;
+
+    if (matchesPrefix(peerOctets, networkOctets, prefix)) return true;
+  }
+
+  return false;
+};

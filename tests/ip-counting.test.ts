@@ -204,6 +204,69 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     // Without trustProxy: remoteAddress (127.0.0.1) is used, not XFF → session created.
     expect(lastMsg(socket)).toMatchObject({ type: 'session' });
   });
+
+  test('honours XFF from a peer inside a trusted CIDR range', () => {
+    si.shutdown();
+    si = new SessionIntegration({
+      sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
+      trustProxy: ['10.0.0.0/8'],
+    });
+
+    si.sessionManager.incrementIPCount('1.2.3.4');
+
+    const socket = makeSocket({ remoteAddress: '10.1.2.3', xff: '1.2.3.4' });
+    si.parseNewMessage(
+      socket,
+      Buffer.from(
+        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+      ),
+    );
+
+    // The proxy at 10.1.2.3 is inside 10.0.0.0/8, so XFF is honoured and the
+    // real client 1.2.3.4 is already at its limit.
+    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+  });
+
+  test('honours XFF from an IPv4-mapped IPv6 peer matching a trusted entry', () => {
+    si.shutdown();
+    si = new SessionIntegration({
+      sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
+      trustProxy: ['127.0.0.1'],
+    });
+
+    si.sessionManager.incrementIPCount('1.2.3.4');
+
+    const socket = makeSocket({ remoteAddress: '::ffff:127.0.0.1', xff: '1.2.3.4' });
+    si.parseNewMessage(
+      socket,
+      Buffer.from(
+        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+      ),
+    );
+
+    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+  });
+
+  test('ignores XFF from a peer outside the trusted CIDR range', () => {
+    si.shutdown();
+    si = new SessionIntegration({
+      sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
+      trustProxy: ['10.0.0.0/8'],
+    });
+
+    si.sessionManager.incrementIPCount('1.2.3.4');
+
+    const socket = makeSocket({ remoteAddress: '203.0.113.9', xff: '1.2.3.4' });
+    si.parseNewMessage(
+      socket,
+      Buffer.from(
+        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+      ),
+    );
+
+    // Untrusted peer: the spoofed XFF is ignored, so the peer address is used.
+    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+  });
 });
 
 // ---------------------------------------------------------------------------

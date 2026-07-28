@@ -12,6 +12,7 @@ import { TriggerMatcher } from './trigger-matcher';
 import { NotificationManager } from './notification-manager';
 import { BackgroundPushScheduler } from './background-push-scheduler';
 import { validateTarget, type TargetPolicyConfig } from './target-policy';
+import { isTrustedPeer } from './wsproxy-utils';
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -659,20 +660,16 @@ export class SessionIntegration {
    * Check if socket is part of a session
    */
   private getClientIP(socket: SocketExtended): string {
-    const trustProxy = this.config.trustProxy;
     const peerAddress =
       socket.remoteAddress || socket.req?.connection?.remoteAddress;
 
-    const isTrustedPeer = (
-      peer: string | undefined,
-      trustList: boolean | string[] | undefined,
-    ): boolean => {
-      if (!peer || !trustList) return false;
-      if (trustList === true) return true;
-      return trustList.includes(peer);
-    };
+    if (isTrustedPeer(peerAddress, this.config.trustProxy)) {
+      const realIP = socket.req?.headers['x-real-ip'];
+      if (realIP) {
+        const first = (Array.isArray(realIP) ? realIP[0] : realIP).trim();
+        if (first) return first;
+      }
 
-    if (isTrustedPeer(peerAddress, trustProxy)) {
       const xff = socket.req?.headers['x-forwarded-for'];
       if (xff) {
         const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
@@ -680,7 +677,7 @@ export class SessionIntegration {
       }
     }
 
-    return peerAddress || socket.req?.connection?.remoteAddress || 'unknown';
+    return peerAddress || 'unknown';
   }
 
   hasSession(socket: SocketExtended): boolean {

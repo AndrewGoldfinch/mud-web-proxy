@@ -70,6 +70,7 @@ import {
   authorizeApnsDebugRequest,
   encodeTelnetOutbound,
   formatMissingTypeLogMessage,
+  isTrustedPeer,
   readLimitedRequestBody,
   resolveBackgroundPushEnvConfig,
   sendBase64IfOpen,
@@ -183,39 +184,6 @@ const PACKAGE_VERSION = '3.0.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
-
-const isTrustedPeer = (
-  peerAddress: string | undefined,
-  trustList: boolean | string[],
-): boolean => {
-  if (!peerAddress || !trustList) return false;
-  if (trustList === true) return true;
-
-  for (const cidr of trustList) {
-    if (cidr.includes('/')) {
-      const [network, prefixStr] = cidr.split('/');
-      const prefix = parseInt(prefixStr, 10);
-      if (isNaN(prefix)) continue;
-      const peerParts = peerAddress.split('.').map(Number);
-      const netParts = network.split('.').map(Number);
-      if (peerParts.length !== 4 || netParts.length !== 4) continue;
-      let match = true;
-      for (let i = 0; i < 4; i++) {
-        if (prefix < i * 8) break;
-        const bitsInOctet = Math.min(8, prefix - i * 8);
-        const mask = (0xff << (8 - bitsInOctet)) & 0xff;
-        if ((peerParts[i] & mask) !== (netParts[i] & mask)) {
-          match = false;
-          break;
-        }
-      }
-      if (match) return true;
-    } else if (peerAddress === cidr) {
-      return true;
-    }
-  }
-  return false;
-};
 
 /**
  * Resolve the real client IP from proxy headers or the socket.

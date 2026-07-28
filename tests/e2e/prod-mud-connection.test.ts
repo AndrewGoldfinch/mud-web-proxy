@@ -1,17 +1,20 @@
 /**
  * Production Proxy MUD Connection Tests
- * Connects directly to the live proxy (configured via PROD_PROXY_URL env)
- * and tests real MUD connections to Aardwolf (aardmud.org:4000).
+ * Connects to a live proxy deployment and tests real MUD connections to
+ * Aardwolf (aardmud.org:4000).
  *
- * NOTE: This test targets the production proxy and should be skipped or
- * configured in CI. The production URL is stored in the private ops repo.
+ * The proxy URL is deliberately NOT hardcoded: deployment hostnames live in
+ * the private ops repository, not in this public repo (MWP-76). Set
+ * PROD_PROXY_URL to run these tests; they skip entirely when it is unset.
  */
 
 import { describe, it, expect, afterAll } from 'bun:test';
 import { E2EConnection } from './connection-helper';
 import type { E2EConfig } from './config-loader';
 
-const PROXY_URL = process.env.PROD_PROXY_URL || 'wss://mud-proxy.kingfrat.com';
+const configuredProxyUrl = process.env.PROD_PROXY_URL;
+const describeProd = configuredProxyUrl ? describe : describe.skip;
+const PROXY_URL = configuredProxyUrl ?? '';
 
 const config: E2EConfig = {
   enabled: true,
@@ -28,7 +31,7 @@ const config: E2EConfig = {
   testTimeoutMs: 15000,
 };
 
-describe('Production Proxy — Aardwolf MUD', () => {
+describeProd('Production Proxy — Aardwolf MUD', () => {
   let connection: E2EConnection | null = null;
   let sessionId: string | undefined;
   let token: string | undefined;
