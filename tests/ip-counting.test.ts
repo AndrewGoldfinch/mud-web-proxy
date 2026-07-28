@@ -111,6 +111,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
 
   beforeEach(() => {
     si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: true,
     });
@@ -186,6 +192,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
   test('ignores XFF headers when trustedProxyCidrs is false (default)', () => {
     si.shutdown();
     si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: false,
     });
@@ -208,6 +220,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
   test('honours XFF from a peer inside a trusted CIDR range', () => {
     si.shutdown();
     si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['10.0.0.0/8'],
     });
@@ -230,6 +248,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
   test('honours XFF from an IPv4-mapped IPv6 peer matching a trusted entry', () => {
     si.shutdown();
     si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['127.0.0.1'],
     });
@@ -250,6 +274,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
   test('ignores XFF from a peer outside the trusted CIDR range', () => {
     si.shutdown();
     si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['10.0.0.0/8'],
     });
@@ -348,6 +378,12 @@ describe('SessionManager: device-limit eviction decrements IP count', () => {
 describe('handleSocketClose: backgrounding a socket does not decrement IP count', () => {
   test('count stays at 1 after client backgrounds (socket close, session alive)', () => {
     const si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
@@ -380,6 +416,12 @@ describe('handleSocketClose: backgrounding a socket does not decrement IP count'
 describe('Failed MUD connect: IP count not incremented', () => {
   test('count remains 0 after connection refused, allowing retry', async () => {
     const si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
@@ -425,6 +467,12 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
     const { port } = server.address() as net.AddressInfo;
 
     const si = new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 

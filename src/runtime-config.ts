@@ -1,31 +1,19 @@
+import { existsSync as nodeExistsSync } from 'fs';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
+import { parseAllowedTargets } from './target-policy';
 
-export interface EnvLike {
-  [key: string]: string | undefined;
-}
-
-export interface RuntimeConfig {
-  wsPort: number;
-  tnHost: string;
-  tnPort: number;
-  onlyAllowDefaultServer: boolean;
-  allowedTargets: string[];
-  requireAppAuth: boolean;
-  diagnosticsEnabled: boolean;
-  adminToken: string;
-  trustedProxyCidrs: boolean | string[];
-}
-
-export interface TlsSettings {
-  useTls: boolean;
-  certPath: string;
-  keyPath: string;
-  reason: 'configured' | 'disabled' | 'missing_certs';
-}
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+/** Throw when a present-but-unparseable value is encountered. */
+const fail = (name: string, value: string, accepted: string): never => {
+  throw new Error(`${name}="${value}" is invalid. Accepted form: ${accepted}`);
+};
 
 export const readBooleanEnv = (
   env: EnvLike,
@@ -36,7 +24,11 @@ export const readBooleanEnv = (
   if (!raw) return defaultValue;
   if (TRUE_VALUES.has(raw)) return true;
   if (FALSE_VALUES.has(raw)) return false;
-  return defaultValue;
+  return fail(
+    name,
+    env[name]!,
+    Array.from(TRUE_VALUES).concat(Array.from(FALSE_VALUES)).join(', '),
+  );
 };
 
 export const readIntegerEnv = (
@@ -46,28 +38,314 @@ export const readIntegerEnv = (
 ): number => {
   const raw = env[name];
   if (!raw) return defaultValue;
-  const parsed = Number(raw);
-  return Number.isInteger(parsed) ? parsed : defaultValue;
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    fail(name, raw, 'an integer');
+  }
+  return parsed;
 };
 
-export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
-  const allowedTargets = (env.ALLOWED_TARGETS ?? '')
-    .split(',')
-    .map((target) => target.trim())
-    .filter(Boolean);
+export const readOptionalIntegerEnv = (
+  env: EnvLike,
+  name: string,
+): number | undefined => {
+  const raw = env[name];
+  if (raw === undefined || raw.trim() === '') return undefined;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    fail(name, raw, 'an integer or empty');
+  }
+  return parsed;
+};
 
-  // TRUST_PROXY was the name during development and never shipped in a
-  // release, but it did reach `develop` and may be set on a deployed host.
-  // Silently ignoring it would leave the proxy trusting nothing, collapsing
-  // every client behind the reverse proxy onto a single address and tripping
-  // per-IP limits service-wide — so refuse to start instead.
-  if (env.TRUST_PROXY !== undefined) {
-    throw new Error(
-      'TRUST_PROXY has been renamed to TRUSTED_PROXY_CIDRS. ' +
-        'Update the environment; the old name is no longer honoured.',
+export const readEnumEnv = <T extends string>(
+  env: EnvLike,
+  name: string,
+  options: T[],
+  defaultValue: T,
+): T => {
+  const raw = env[name]?.trim().toLowerCase();
+  if (!raw) return defaultValue;
+  const normalized = options.map((o) => o.toLowerCase());
+  const idx = normalized.indexOf(raw);
+  if (idx === -1) {
+    fail(name, env[name]!, options.join(' | '));
+  }
+  return options[idx] as T;
+};
+
+export const readListEnv = (
+  env: EnvLike,
+  name: string,
+  separator = ',',
+): string[] => {
+  const raw = env[name];
+  if (!raw) return [];
+  return raw
+    .split(separator)
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
+
+const safeEqual = (actual: string, expected: string): boolean => {
+  const actualBuffer = Buffer.from(actual);
+  const expectedBuffer = Buffer.from(expected);
+  if (actualBuffer.length !== expectedBuffer.length) return false;
+  return timingSafeEqual(actualBuffer, expectedBuffer);
+};
+
+// ---------------------------------------------------------------------------
+// Public interfaces
+// ---------------------------------------------------------------------------
+
+export interface EnvLike {
+  [key: string]: string | undefined;
+}
+
+export interface LogConfig {
+  level: LogLevel;
+  noColor: boolean;
+}
+
+export enum LogLevel {
+  DEBUG = 0,
+  INFO = 1,
+  WARN = 2,
+  ERROR = 3,
+}
+
+const LOG_LEVEL_BY_NAME: Record<string, LogLevel> = {
+  debug: LogLevel.DEBUG,
+  info: LogLevel.INFO,
+  warn: LogLevel.WARN,
+  error: LogLevel.ERROR,
+};
+
+export type InboundTlsMode = 'off' | 'required';
+export type MudTlsMode = 'plain' | 'required' | 'prefer';
+export type AuthMode = 'shared-secret' | 'none';
+export type TargetMode = 'fixed' | 'allowlist' | 'arbitrary';
+
+export interface ApnsConfig {
+  keyPath: string;
+  keyId: string;
+  teamId: string;
+  topic: string;
+  environment: 'sandbox' | 'production';
+}
+
+export interface BackgroundPushEnvConfig {
+  silentPushIntervalMs?: number;
+  activityPushIntervalMs?: number;
+  activityAckTimeoutMs?: number;
+  fallbackCooldownMs?: number;
+  maxFallbacksPerHour?: number;
+  maxSnippetLength?: number;
+}
+
+export interface AppAttestConfig {
+  bundleId: string;
+  teamId: string;
+  allowAssertionBypass: boolean;
+  diagCrosskey: boolean;
+  attestedKeysPath: string;
+}
+
+export interface RuntimeConfig {
+  // Listener
+  bindHost: string;
+  wsPort: number;
+
+  // Telnet target
+  tnHost: string;
+  tnPort: number;
+
+  // Target policy (sibling MWP-86)
+  targetMode: TargetMode;
+  arbitraryAllowedPorts: string[];
+
+  // Authentication (sibling MWP-85)
+  authMode: AuthMode;
+
+  // Inbound TLS (sibling MWP-81)
+  inboundTlsMode: InboundTlsMode;
+
+  // MUD upstream TLS (sibling MWP-89)
+  mudTlsMode: MudTlsMode;
+
+  // Legacy / migration flags
+  onlyAllowDefaultServer: boolean;
+
+  // Allowed targets
+  allowedTargets: string[];
+
+  // Origin checking (sibling MWP-84)
+  allowedOrigins: string[];
+  allowMissingOrigin: boolean;
+
+  // Security / auth
+  requireAppAuth: boolean;
+  adminToken: string;
+  proxySharedSecret: string;
+
+  // Trusted proxy
+  trustedProxyCidrs: boolean | string[];
+
+  // Diagnostics
+  diagnosticsEnabled: boolean;
+
+  // TLS
+  tlsCertPath: string;
+  tlsKeyPath: string;
+
+  // Logging
+  log: LogConfig;
+
+  // Platform
+  nodeEnv: string;
+
+  // APNS
+  apns: ApnsConfig | undefined;
+
+  // APNS test
+  apnsTestSecret: string;
+
+  // App Attest
+  appAttest: AppAttestConfig;
+
+  // mTLS
+  mtlsClientCaPath: string;
+  allowMtlsFallback: boolean;
+
+  // Background push
+  backgroundPush: BackgroundPushEnvConfig;
+
+  // Internal: raw env copy for testing
+  _raw: EnvLike;
+}
+
+export interface TlsSettings {
+  useTls: boolean;
+  certPath: string;
+  keyPath: string;
+  reason: 'configured' | 'disabled' | 'missing_certs';
+}
+
+export interface ConfigValidationErrors {
+  errors: string[];
+}
+
+// ---------------------------------------------------------------------------
+// parseRuntimeConfig — single entry point
+// ---------------------------------------------------------------------------
+
+export const parseRuntimeConfig = (
+  env: EnvLike,
+  existsSync: (filePath: string) => boolean,
+  basePath: string,
+): { config: Readonly<RuntimeConfig>; errors: string[] } => {
+  const errors: string[] = [];
+
+  // ---- Parse every env var ----
+
+  // Listener
+  const bindHost = env.BIND_HOST || '127.0.0.1';
+  const wsPort = readIntegerEnv(env, 'WS_PORT', 6200);
+
+  // Telnet target
+  const tnHost = env.TN_HOST || 'muds.maldorne.org';
+  const tnPort = readIntegerEnv(env, 'TN_PORT', 5010);
+
+  // Target policy
+  const targetMode = readEnumEnv<TargetMode>(
+    env,
+    'TARGET_MODE',
+    ['fixed', 'allowlist', 'arbitrary'],
+    'fixed',
+  );
+  const arbitraryAllowedPorts = readListEnv(env, 'ARBITRARY_ALLOWED_PORTS');
+
+  // Legacy flag — must fail if set
+  if (env.ONLY_ALLOW_DEFAULT_SERVER !== undefined) {
+    errors.push(
+      'ONLY_ALLOW_DEFAULT_SERVER has been removed. ' +
+        'Use TARGET_MODE=fixed (default) to restrict to a single target, ' +
+        'or TARGET_MODE=allowlist/arbitrary for more flexibility.',
     );
   }
 
+  // Authentication
+  const authMode = readEnumEnv<AuthMode>(
+    env,
+    'AUTH_MODE',
+    ['shared-secret', 'none'],
+    'none',
+  );
+  const proxySharedSecret = env.PROXY_SHARED_SECRET ?? '';
+
+  // Inbound TLS
+  const inboundTlsMode = readEnumEnv<InboundTlsMode>(
+    env,
+    'INBOUND_TLS_MODE',
+    ['off', 'required'],
+    'required',
+  );
+
+  // Legacy TLS flags — must fail if set
+  if (env.DISABLE_TLS !== undefined) {
+    errors.push(
+      'DISABLE_TLS has been removed. ' +
+        'Use INBOUND_TLS_MODE=off to disable inbound TLS. ' +
+        'Note: INBOUND_TLS_MODE=off is only allowed when BIND_HOST is loopback.',
+    );
+  }
+  if (env.ALLOW_INSECURE_PRODUCTION_NO_TLS !== undefined) {
+    errors.push(
+      'ALLOW_INSECURE_PRODUCTION_NO_TLS has been removed. ' +
+        'Use INBOUND_TLS_MODE=off (loopback only) or ' +
+        'INBOUND_TLS_MODE=required with valid TLS_CERT_PATH/TLS_KEY_PATH.',
+    );
+  }
+
+  // TLS paths
+  const tlsCertPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
+  const tlsKeyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
+
+  // MUD upstream TLS
+  const mudTlsMode = readEnumEnv<MudTlsMode>(
+    env,
+    'MUD_TLS_MODE',
+    ['plain', 'required', 'prefer'],
+    'plain',
+  );
+
+  // Allowed targets
+  const allowedTargets = readListEnv(env, 'ALLOWED_TARGETS');
+
+  // Origin checking
+  const allowedOrigins = readListEnv(env, 'ALLOWED_ORIGINS');
+  const allowMissingOrigin = readBooleanEnv(
+    env,
+    'ALLOW_MISSING_ORIGIN',
+    false,
+  );
+
+  // Validate origin entries
+  for (const origin of allowedOrigins) {
+    if (origin === '*') {
+      errors.push(
+        `ALLOWED_ORIGINS contains "*" wildcard. Wildcards are not accepted; list exact origins (e.g. "https://app.example.com").`,
+      );
+    }
+    if (!/^https?:\/\/[^/]+$/.test(origin)) {
+      errors.push(
+        `ALLOWED_ORIGINS contains malformed entry "${origin}". Expected scheme + host + optional port (e.g. "https://app.example.com:8443").`,
+      );
+    }
+  }
+
+  // Trusted proxy
   const trustedProxyRaw = env.TRUSTED_PROXY_CIDRS?.trim().toLowerCase();
   let trustedProxyCidrs: boolean | string[] = false;
   if (trustedProxyRaw === 'true') {
@@ -79,28 +357,280 @@ export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
       .filter(Boolean);
   }
 
-  return {
-    wsPort: readIntegerEnv(env, 'WS_PORT', 6200),
-    tnHost: env.TN_HOST || 'muds.maldorne.org',
-    tnPort: readIntegerEnv(env, 'TN_PORT', 5010),
-    onlyAllowDefaultServer: readBooleanEnv(
+  // Retired TRUST_PROXY name
+  if (env.TRUST_PROXY !== undefined) {
+    errors.push(
+      'TRUST_PROXY has been renamed to TRUSTED_PROXY_CIDRS. ' +
+        'Update the environment; the old name is no longer honoured.',
+    );
+  }
+
+  // Diagnostics
+  const diagnosticsEnabled = readBooleanEnv(env, 'ENABLE_DIAGNOSTICS', false);
+  const adminToken = env.ADMIN_TOKEN || '';
+
+  // Logging
+  const logLevelName = readEnumEnv<'debug' | 'info' | 'warn' | 'error'>(
+    env,
+    'LOG_LEVEL',
+    ['debug', 'info', 'warn', 'error'],
+    'info',
+  );
+  const logLevel = LOG_LEVEL_BY_NAME[logLevelName];
+  const noColor = env.NO_COLOR === '1';
+
+  // Platform
+  const nodeEnv = env.NODE_ENV || 'development';
+
+  // APNS
+  const apnsKeyPath = env.APNS_KEY_PATH;
+  let apns: ApnsConfig | undefined = undefined;
+  if (apnsKeyPath) {
+    apns = {
+      keyPath: apnsKeyPath,
+      keyId: env.APNS_KEY_ID || '',
+      teamId: env.APNS_TEAM_ID || '',
+      topic: env.APNS_TOPIC || '',
+      environment: readEnumEnv<'sandbox' | 'production'>(
+        env,
+        'APNS_ENVIRONMENT',
+        ['sandbox', 'production'],
+        'sandbox',
+      ),
+    };
+  }
+
+  // APNS test secret
+  const apnsTestSecret = env.APNS_TEST_SECRET ?? '';
+
+  // App Attest
+  const appAttest: AppAttestConfig = {
+    bundleId: env.APPATTEST_BUNDLE_ID ?? '',
+    teamId: env.APPATTEST_TEAM_ID ?? '',
+    allowAssertionBypass: readBooleanEnv(
       env,
-      'ONLY_ALLOW_DEFAULT_SERVER',
-      true,
+      'APPATTEST_ALLOW_ASSERTION_BYPASS',
+      false,
     ),
-    allowedTargets,
-    requireAppAuth: readBooleanEnv(env, 'REQUIRE_APP_AUTH', false),
-    diagnosticsEnabled: readBooleanEnv(env, 'ENABLE_DIAGNOSTICS', false),
-    adminToken: env.ADMIN_TOKEN || '',
-    trustedProxyCidrs,
+    diagCrosskey: readBooleanEnv(env, 'APPATTEST_DIAG_CROSSKEY', false),
+    attestedKeysPath:
+      env.ATTESTED_KEYS_PATH ||
+      path.resolve(basePath, 'config/attested-keys.json'),
   };
+
+  // mTLS
+  const mtlsClientCaPath = env.MTLS_CLIENT_CA_PATH || '';
+  const allowMtlsFallback = readBooleanEnv(env, 'ALLOW_MTLS_FALLBACK', false);
+
+  // Background push
+  const backgroundPush: BackgroundPushEnvConfig = {
+    silentPushIntervalMs: readOptionalIntegerEnv(
+      env,
+      'SILENT_PUSH_INTERVAL_MS',
+    ),
+    activityPushIntervalMs: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_INTERVAL_MS',
+    ),
+    activityAckTimeoutMs: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_ACK_TIMEOUT_MS',
+    ),
+    fallbackCooldownMs: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS',
+    ),
+    maxFallbacksPerHour: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR',
+    ),
+    maxSnippetLength: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_MAX_SNIPPET_LENGTH',
+    ),
+  };
+
+  // ---- Cross-field validation ----
+
+  // TARGET_MODE=arbitrary is not yet supported.
+  //
+  // It lets a client name any host, which is only safe once authentication
+  // (MWP-85) and reserved-network rejection on the connect path (MWP-88) are
+  // both in place. AUTH_MODE=shared-secret is currently parsed but enforced
+  // nowhere, and resolveTargetAddress is not yet called when dialling — so
+  // arbitrary + shared-secret would pass validation and yield arbitrary
+  // outbound TCP with no authentication and no SSRF protection, while reading
+  // as configured.
+  //
+  // Remove this guard once MWP-85 and MWP-88 are both complete.
+  if (targetMode === 'arbitrary') {
+    errors.push(
+      'TARGET_MODE=arbitrary is not supported yet. It requires enforced ' +
+        'authentication (MWP-85) and reserved-network rejection on the ' +
+        'connect path (MWP-88); neither is implemented, so this mode would ' +
+        'permit unauthenticated connections to arbitrary hosts, including ' +
+        'private and cloud-metadata addresses. Use TARGET_MODE=fixed or ' +
+        'TARGET_MODE=allowlist.',
+    );
+  }
+
+  // TARGET_MODE=allowlist requires a non-empty, parseable ALLOWED_TARGETS.
+  // An empty list must be a startup error, never a permissive fallback.
+  if (targetMode === 'allowlist') {
+    // Validate with the same parser validateTarget uses. A second,
+    // hand-rolled check here could accept entries enforcement later drops,
+    // starting the proxy in a mode that denies everything.
+    if (parseAllowedTargets(allowedTargets).size === 0) {
+      errors.push(
+        'TARGET_MODE=allowlist requires ALLOWED_TARGETS to contain at least ' +
+          'one valid host:port entry. An empty or unparseable allowlist is a ' +
+          'configuration error, not a permissive default.',
+      );
+    }
+  }
+
+  // TARGET_MODE=arbitrary requires ARBITRARY_ALLOWED_PORTS
+  if (targetMode === 'arbitrary' && arbitraryAllowedPorts.length === 0) {
+    errors.push(
+      'TARGET_MODE=arbitrary requires ARBITRARY_ALLOWED_PORTS to be set ' +
+        '(e.g. "23,4000-4100").',
+    );
+  }
+
+  // AUTH_MODE=shared-secret requires PROXY_SHARED_SECRET >= 32 bytes
+  if (authMode === 'shared-secret') {
+    if (!proxySharedSecret) {
+      errors.push(
+        'AUTH_MODE=shared-secret requires PROXY_SHARED_SECRET to be set.',
+      );
+    } else if (proxySharedSecret.length < 32) {
+      errors.push(
+        `PROXY_SHARED_SECRET must be at least 32 bytes (current length: ${proxySharedSecret.length}).`,
+      );
+    }
+  }
+
+  // INBOUND_TLS_MODE=required requires valid certs
+  if (inboundTlsMode === 'required') {
+    if (!existsSync(tlsCertPath)) {
+      errors.push(
+        `TLS certificate not found at ${tlsCertPath}. INBOUND_TLS_MODE=required requires both TLS_CERT_PATH and TLS_KEY_PATH to point to existing files.`,
+      );
+    }
+    if (!existsSync(tlsKeyPath)) {
+      errors.push(
+        `TLS key not found at ${tlsKeyPath}. INBOUND_TLS_MODE=required requires both TLS_CERT_PATH and TLS_KEY_PATH to point to existing files.`,
+      );
+    }
+  }
+
+  // INBOUND_TLS_MODE=off on non-loopback requires acknowledgement
+  if (
+    inboundTlsMode === 'off' &&
+    bindHost !== '127.0.0.1' &&
+    bindHost !== '::1'
+  ) {
+    if (!readBooleanEnv(env, 'ALLOW_INSECURE_INBOUND_NO_TLS', false)) {
+      errors.push(
+        `INBOUND_TLS_MODE=off on BIND_HOST=${bindHost} is not allowed without explicit acknowledgement. ` +
+          'Set ALLOW_INSECURE_INBOUND_NO_TLS=true to acknowledge the risk, or use INBOUND_TLS_MODE=required.',
+      );
+    }
+  }
+
+  // TARGET_MODE=arbitrary with AUTH_MODE=none is already covered above
+  // ALLOWED_ORIGINS requires allowlist to be set (unset = no restriction)
+
+  // Build config object
+  const config: RuntimeConfig = {
+    bindHost,
+    wsPort,
+    tnHost,
+    tnPort,
+    targetMode,
+    arbitraryAllowedPorts,
+    authMode,
+    inboundTlsMode,
+    mudTlsMode,
+    onlyAllowDefaultServer: targetMode === 'fixed',
+    allowedTargets,
+    allowedOrigins,
+    allowMissingOrigin,
+    requireAppAuth: readBooleanEnv(env, 'REQUIRE_APP_AUTH', false),
+    adminToken,
+    proxySharedSecret,
+    trustedProxyCidrs,
+    diagnosticsEnabled,
+    tlsCertPath,
+    tlsKeyPath,
+    log: { level: logLevel, noColor },
+    nodeEnv,
+    apns,
+    apnsTestSecret,
+    appAttest,
+    mtlsClientCaPath,
+    allowMtlsFallback,
+    backgroundPush,
+    _raw: env,
+  };
+
+  return { config: Object.freeze(config), errors };
 };
+
+// ---------------------------------------------------------------------------
+// getRuntimeConfig — thin wrapper for existing callers (backward compat)
+// ---------------------------------------------------------------------------
+
+/**
+ * Legacy entry point. Uses the defaults from the sibling issues
+ * (TARGET_MODE=fixed, AUTH_MODE=none, INBOUND_TLS_MODE=required)
+ * and delegates to parseRuntimeConfig.
+ *
+ * New code should call parseRuntimeConfig directly.
+ */
+export const getRuntimeConfig = (
+  env: EnvLike,
+  existsSync: (filePath: string) => boolean = nodeExistsSync,
+  basePath: string = process.cwd(),
+): RuntimeConfig => {
+  // Only an *explicitly* configured INBOUND_TLS_MODE=required makes missing
+  // certificates fatal. Previously these errors were filtered out
+  // unconditionally, so `required` fell back to a plaintext listener — the
+  // setting was accepted and then ignored. Defaulted behaviour still defers
+  // to resolveTlsSettings, which existing callers depend on.
+  const explicitlyRequired =
+    env.INBOUND_TLS_MODE?.trim().toLowerCase() === 'required';
+
+  const { config, errors } = parseRuntimeConfig(
+    env,
+    explicitlyRequired ? existsSync : () => false,
+    basePath,
+  );
+
+  const fatalErrors = explicitlyRequired
+    ? errors
+    : errors.filter(
+        (e) =>
+          !e.includes('TLS certificate not found') &&
+          !e.includes('TLS key not found'),
+      );
+  if (fatalErrors.length > 0) {
+    throw new Error('Configuration errors:\n  ' + fatalErrors.join('\n  '));
+  }
+  return config;
+};
+
+// ---------------------------------------------------------------------------
+// resolveTlsSettings — backward compatible wrapper
+// ---------------------------------------------------------------------------
 
 export const resolveTlsSettings = (
   env: EnvLike,
   basePath: string,
   existsSync: (filePath: string) => boolean,
 ): TlsSettings => {
+  // Use the legacy logic for backward compatibility with existing tests
+  // that test resolveTlsSettings directly.
   let certPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
   let keyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
   const production = env.NODE_ENV === 'production';
@@ -114,6 +644,21 @@ export const resolveTlsSettings = (
     if (production && !allowInsecureProductionNoTls) {
       throw new Error(
         'DISABLE_TLS=1 is not allowed in production without ALLOW_INSECURE_PRODUCTION_NO_TLS=true',
+      );
+    }
+    return { useTls: false, certPath, keyPath, reason: 'disabled' };
+  }
+
+  const inboundTlsMode = readEnumEnv(
+    env,
+    'INBOUND_TLS_MODE',
+    ['required', 'off', 'optional'],
+    'required',
+  );
+  if (inboundTlsMode === 'off') {
+    if (production && !allowInsecureProductionNoTls) {
+      throw new Error(
+        'INBOUND_TLS_MODE=off is not allowed in production without ALLOW_INSECURE_PRODUCTION_NO_TLS=true',
       );
     }
     return { useTls: false, certPath, keyPath, reason: 'disabled' };
@@ -146,21 +691,9 @@ export const resolveTlsSettings = (
   return { useTls: false, certPath, keyPath, reason: 'missing_certs' };
 };
 
-const readHeader = (
-  headers: Record<string, string | string[] | undefined>,
-  name: string,
-): string => {
-  const value = headers[name.toLowerCase()] ?? headers[name];
-  if (Array.isArray(value)) return value[0] ?? '';
-  return value ?? '';
-};
-
-const safeEqual = (actual: string, expected: string): boolean => {
-  const actualBuffer = Buffer.from(actual);
-  const expectedBuffer = Buffer.from(expected);
-  if (actualBuffer.length !== expectedBuffer.length) return false;
-  return timingSafeEqual(actualBuffer, expectedBuffer);
-};
+// ---------------------------------------------------------------------------
+// isDiagnosticRequestAuthorized — kept for backward compat
+// ---------------------------------------------------------------------------
 
 export const isDiagnosticRequestAuthorized = (
   headers: Record<string, string | string[] | undefined>,
@@ -181,6 +714,10 @@ export const isDiagnosticRequestAuthorized = (
   );
 };
 
+// ---------------------------------------------------------------------------
+// escapeDiagnosticHtml — kept for backward compat
+// ---------------------------------------------------------------------------
+
 export const escapeDiagnosticHtml = (value: unknown): string => {
   return String(value)
     .replace(/&/g, '&amp;')
@@ -188,4 +725,17 @@ export const escapeDiagnosticHtml = (value: unknown): string => {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&#39;');
+};
+
+// ---------------------------------------------------------------------------
+// Internal helpers
+// ---------------------------------------------------------------------------
+
+const readHeader = (
+  headers: Record<string, string | string[] | undefined>,
+  name: string,
+): string => {
+  const value = headers[name.toLowerCase()] ?? headers[name];
+  if (Array.isArray(value)) return value[0] ?? '';
+  return value ?? '';
 };

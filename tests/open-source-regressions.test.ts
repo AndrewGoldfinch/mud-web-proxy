@@ -54,7 +54,7 @@ function makeSessionIntegration(): SessionIntegration {
   const integration = new SessionIntegration({
     sessions: { timeoutHours: 24, maxPerDevice: 5, maxPerIP: 10 },
     targets: {
-      onlyAllowDefaultServer: true,
+      targetMode: 'fixed' as const,
       defaultHost: 'allowed.example.com',
       defaultPort: 4000,
     },
@@ -119,7 +119,7 @@ describe('open-source release regression coverage', () => {
 
   test('target allowlist rejects targets not explicitly listed', () => {
     const policy = {
-      onlyAllowDefaultServer: false,
+      targetMode: 'allowlist' as const,
       defaultHost: 'default.example.com',
       defaultPort: 4000,
       allowedTargets: ['aardmud.org:4000', 'achaea.com:23'],

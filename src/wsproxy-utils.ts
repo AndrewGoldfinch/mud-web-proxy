@@ -180,7 +180,7 @@ const PREFIX = /^\d{1,2}$/;
 const IPV4_MAX_PREFIX = 32;
 
 /** Parse a dotted-quad into octets, or null if it is not a valid IPv4 address. */
-const parseIPv4 = (value: string): number[] | null => {
+export const parseIPv4 = (value: string): number[] | null => {
   const parts = value.split('.');
   if (parts.length !== 4) return null;
 
@@ -203,7 +203,7 @@ const parseIPv4 = (value: string): number[] | null => {
  * the mapping prefix when what remains is genuinely IPv4, to avoid mangling
  * real IPv6 addresses.
  */
-const normalizeAddress = (address: string): string => {
+export const normalizeAddress = (address: string): string => {
   const trimmed = address.trim().toLowerCase();
   const mapped = trimmed.match(IPV4_MAPPED);
   if (mapped && parseIPv4(mapped[1])) return mapped[1];
