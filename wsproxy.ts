@@ -887,6 +887,7 @@ setInterval(tick, 1000);
 interface ServerConfig {
   path: string;
   ws_port: number;
+  bind_host: string;
   tn_host: string;
   tn_port: number;
   debug: boolean;
@@ -926,6 +927,7 @@ const srv: ServerConfig = {
   path: __dirname,
   /* this websocket proxy port - can be overridden with WS_PORT env var */
   ws_port: runtimeConfig.wsPort,
+  bind_host: runtimeConfig.bindHost,
   /* default telnet host - can be overridden with TN_HOST env var */
   tn_host: runtimeConfig.tnHost,
   /* default telnet/target port - can be overridden with TN_PORT env var */
@@ -1149,8 +1151,17 @@ const srv: ServerConfig = {
       return Buffer.from(padded, 'base64');
     };
 
-    webserver.listen(srv.ws_port, function () {
-      srv.logInfo('server listening: port ' + srv.ws_port, undefined, 'init');
+    // Bind the validated host, not the unspecified address. Startup
+    // validation treats BIND_HOST=127.0.0.1 as loopback-only and waives the
+    // plaintext-listener acknowledgment on that basis; listening without the
+    // host would expose the same listener on every interface, making that
+    // check a statement about a socket we never actually created.
+    webserver.listen(srv.ws_port, srv.bind_host, function () {
+      srv.logInfo(
+        `server listening: ${srv.bind_host}:${srv.ws_port}`,
+        undefined,
+        'init',
+      );
     });
 
     // Add HTTP endpoints
