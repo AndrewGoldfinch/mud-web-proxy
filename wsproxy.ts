@@ -73,6 +73,7 @@ import {
   authorizeSharedSecret,
   formatMissingTypeLogMessage,
   isTrustedPeer,
+  resolveClientAddress,
   readLimitedRequestBody,
   resolveBackgroundPushEnvConfig,
   sendBase64IfOpen,
@@ -197,24 +198,12 @@ const SOCKET_CLOSE_DELAY_MS = 500;
  * preventing IP-spoofing attacks against per-IP connection limits
  * and logging.
  */
-const getClientIP = (req: IncomingMessage): string => {
-  const trusted = isTrustedPeer(
+const getClientIP = (req: IncomingMessage): string =>
+  resolveClientAddress(
     req.socket?.remoteAddress,
+    req.headers,
     srv.trustedProxyCidrs,
   );
-
-  if (trusted) {
-    const realIP = req.headers['x-real-ip'];
-    if (typeof realIP === 'string' && realIP) return realIP;
-
-    const forwarded = req.headers['x-forwarded-for'];
-    if (typeof forwarded === 'string' && forwarded) {
-      return forwarded.split(',')[0].trim();
-    }
-  }
-
-  return req.socket?.remoteAddress || '';
-};
 
 /**
  * Rate limit on failed shared-secret attempts, keyed on the resolved client

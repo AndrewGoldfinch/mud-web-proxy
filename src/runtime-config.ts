@@ -2,6 +2,7 @@ import { existsSync as nodeExistsSync } from 'fs';
 import path from 'path';
 import { timingSafeEqual } from 'crypto';
 import { parseAllowedTargets } from './target-policy';
+import { isValidTrustedProxyEntry } from './wsproxy-utils';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -365,10 +366,27 @@ export const parseRuntimeConfig = (
   if (trustedProxyRaw === 'true') {
     trustedProxyCidrs = true;
   } else if (trustedProxyRaw && trustedProxyRaw !== 'false') {
-    trustedProxyCidrs = trustedProxyRaw
+    const entries = trustedProxyRaw
       .split(',')
       .map((cidr) => cidr.trim())
       .filter(Boolean);
+
+    // A malformed entry must abort rather than be accepted and match nothing.
+    // Silently ignoring it leaves forwarded headers unhonoured, collapsing
+    // every client onto the proxy's own address and tripping per-IP limits
+    // service-wide — while reading as configured.
+    const invalid = entries.filter((e) => !isValidTrustedProxyEntry(e));
+    if (invalid.length > 0) {
+      errors.push(
+        `TRUSTED_PROXY_CIDRS contains invalid ${
+          invalid.length === 1 ? 'entry' : 'entries'
+        }: ${invalid.join(', ')}. Expected IPv4/IPv6 addresses or CIDR ` +
+          'ranges (e.g. "127.0.0.1,10.0.0.0/8,2001:db8::/32"), or ' +
+          'true/false.',
+      );
+    }
+
+    trustedProxyCidrs = entries;
   }
 
   // Retired TRUST_PROXY name

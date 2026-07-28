@@ -176,7 +176,6 @@ export const formatMissingTypeLogMessage = (
 
 const IPV4_MAPPED = /^::ffff:(.+)$/;
 const OCTET = /^\d{1,3}$/;
-const PREFIX = /^\d{1,2}$/;
 const IPV4_MAX_PREFIX = 32;
 
 /** Parse a dotted-quad into octets, or null if it is not a valid IPv4 address. */
@@ -255,19 +254,50 @@ export const isTrustedPeer = (
       continue;
     }
 
-    if (!peerOctets) continue;
-
     const parts = entry.split('/');
     if (parts.length !== 2) continue;
     const [network, prefixText] = parts;
-    if (!PREFIX.test(prefixText)) continue;
     const prefix = Number(prefixText);
-    if (prefix > IPV4_MAX_PREFIX) continue;
+    if (!/^\d{1,3}$/.test(prefixText) || !Number.isInteger(prefix)) continue;
 
-    const networkOctets = parseIPv4(normalizeAddress(network));
-    if (!networkOctets) continue;
+    // Decide the family from how the entry was WRITTEN. normalizeAddress
+    // collapses ::ffff:a.b.c.d to bare IPv4, so a mapped range like
+    // ::ffff:0:0/96 would otherwise be read as IPv4 and its prefix rejected
+    // as out of range.
+    if (!network.includes(':')) {
+      const networkOctets = parseIPv4(network);
+      if (!networkOctets || !peerOctets) continue;
+      if (prefix > IPV4_MAX_PREFIX) continue;
+      if (matchesPrefix(peerOctets, networkOctets, prefix)) return true;
+      continue;
+    }
 
-    if (matchesPrefix(peerOctets, networkOctets, prefix)) return true;
+    // IPv6 range. Previously unsupported, so only exact IPv6 addresses
+    // matched — the limitation carried in MWP-88's notes.
+    const networkGroups = parseIPv6Groups(network);
+    if (!networkGroups) continue;
+
+    // normalizeAddress reduces ::ffff:a.b.c.d to bare IPv4, so a peer
+    // compared against an IPv6 range needs its mapped form back. Without
+    // this, ::ffff:0:0/96 — the canonical range for mapped addresses —
+    // matches nothing and forwarded headers are silently ignored.
+    const peerGroups =
+      parseIPv6Groups(peer) ??
+      (peerOctets
+        ? [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0xffff,
+            (peerOctets[0] << 8) | peerOctets[1],
+            (peerOctets[2] << 8) | peerOctets[3],
+          ]
+        : null);
+    if (!peerGroups) continue;
+    if (prefix > 128) continue;
+    if (matchesPrefixV6(peerGroups, networkGroups, prefix)) return true;
   }
 
   return false;
@@ -424,3 +454,141 @@ export class FailedAuthLimiter {
     return this.failures.size;
   }
 }
+
+/** Expand an IPv6 literal into eight 16-bit groups, or null if malformed. */
+export const parseIPv6Groups = (value: string): number[] | null => {
+  let text = value.trim().toLowerCase().split('%')[0];
+  if (!text.includes(':')) return null;
+
+  let tail: number[] = [];
+  const lastColon = text.lastIndexOf(':');
+  const maybeV4 = text.slice(lastColon + 1);
+  if (maybeV4.includes('.')) {
+    const octets = parseIPv4(maybeV4);
+    if (!octets) return null;
+    tail = [(octets[0] << 8) | octets[1], (octets[2] << 8) | octets[3]];
+    text = text.slice(0, lastColon + 1) + '0';
+  }
+
+  const halves = text.split('::');
+  if (halves.length > 2) return null;
+
+  const toGroups = (part: string): number[] | null => {
+    if (part === '') return [];
+    const groups: number[] = [];
+    for (const piece of part.split(':')) {
+      if (!/^[0-9a-f]{1,4}$/.test(piece)) return null;
+      groups.push(parseInt(piece, 16));
+    }
+    return groups;
+  };
+
+  const head = toGroups(halves[0]);
+  if (head === null) return null;
+
+  if (halves.length === 1) {
+    const all = tail.length ? head.slice(0, -1).concat(tail) : head;
+    return all.length === 8 ? all : null;
+  }
+
+  const rest = toGroups(halves[1]);
+  if (rest === null) return null;
+  const after = tail.length ? rest.slice(0, -1).concat(tail) : rest;
+  const explicit = head.length + after.length;
+  // RFC 4291: `::` replaces at least one group of zeros, so eight explicit
+  // groups alongside it is malformed. Accepting it would let a mistyped trust
+  // entry through the fail-fast validation.
+  if (explicit >= 8) return null;
+  return head.concat(new Array(8 - explicit).fill(0), after);
+};
+
+const matchesPrefixV6 = (
+  peer: number[],
+  network: number[],
+  prefix: number,
+): boolean => {
+  for (let i = 0; i < 8; i++) {
+    const bits = Math.min(16, Math.max(0, prefix - i * 16));
+    if (bits === 0) break;
+    const mask = (0xffff << (16 - bits)) & 0xffff;
+    if ((peer[i] & mask) !== (network[i] & mask)) return false;
+  }
+  return true;
+};
+
+/**
+ * Validate a trusted-proxy entry. Exported so startup can reject a malformed
+ * list rather than accepting one that silently matches nothing — an operator
+ * who typos this believes forwarded headers are honoured when they are not.
+ */
+export const isValidTrustedProxyEntry = (entry: string): boolean => {
+  const value = entry.trim().toLowerCase();
+  if (!value) return false;
+
+  if (!value.includes('/')) {
+    const bare = normalizeAddress(value);
+    return !!parseIPv4(bare) || !!parseIPv6Groups(bare);
+  }
+
+  const parts = value.split('/');
+  if (parts.length !== 2) return false;
+  const [network, prefixText] = parts;
+  if (!/^\d{1,3}$/.test(prefixText)) return false;
+  const prefix = Number(prefixText);
+
+  if (!network.includes(':')) {
+    return !!parseIPv4(network) && prefix <= 32;
+  }
+  return !!parseIPv6Groups(network) && prefix <= 128;
+};
+
+/**
+ * Resolve the client's real address.
+ *
+ * Defined once because two copies of this logic already diverged (#28), with
+ * the rate limiter and the logger disagreeing about who the client was.
+ *
+ * An untrusted peer is taken at face value; its headers are ignored entirely.
+ * For a trusted peer, `x-real-ip` wins because a proxy *sets* it, whereas
+ * `x-forwarded-for` is conventionally *appended* to — so the forwarded chain
+ * is walked right to left, discarding trusted hops, and the first untrusted
+ * entry is the client. Reading the leftmost entry instead returns whatever
+ * the caller prepended.
+ */
+export const resolveClientAddress = (
+  peerAddress: string | undefined,
+  headers: Record<string, string | string[] | undefined>,
+  trustList: boolean | string[] | undefined,
+): string => {
+  const peer = peerAddress || '';
+  if (!isTrustedPeer(peer, trustList)) return peer;
+
+  const first = (v: string | string[] | undefined): string =>
+    (Array.isArray(v) ? v[0] : v || '').trim();
+
+  const realIP = first(headers['x-real-ip']);
+  if (realIP) return realIP;
+
+  const forwarded = first(headers['x-forwarded-for']);
+  if (forwarded) {
+    const hops = forwarded
+      .split(',')
+      .map((h) => h.trim())
+      .filter(Boolean);
+
+    if (trustList === true) {
+      // `true` says "trust any peer" and so cannot say which hops are
+      // proxies — stripping trusted hops would consume the entire chain and
+      // resolve every client to the peer. Take the leftmost entry, the
+      // conventional reading. This is why a CIDR list is the safer setting:
+      // it can distinguish a proxy hop from a client-supplied one.
+      if (hops.length > 0) return hops[0];
+    } else {
+      for (let i = hops.length - 1; i >= 0; i--) {
+        if (!isTrustedPeer(hops[i], trustList)) return hops[i];
+      }
+    }
+  }
+
+  return peer;
+};
