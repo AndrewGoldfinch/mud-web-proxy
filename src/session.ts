@@ -13,6 +13,7 @@ import net from 'net';
 import tls from 'tls';
 import crypto from 'crypto';
 import { WebSocket } from 'ws';
+import { parseIPv4 } from './wsproxy-utils';
 import type {
   BufferChunk,
   ProcessedData,
@@ -22,6 +23,21 @@ import type {
 } from './types';
 import { CircularBuffer } from './circular-buffer';
 import { TelnetParser } from './telnet-parser';
+
+/**
+ * The value to present as TLS SNI, or undefined when there is none.
+ *
+ * Node rejects an IP address outright ("Setting the TLS ServerName to an IP
+ * address is not permitted"), so a target given as a literal must be dialled
+ * without SNI rather than with its own address.
+ */
+export const sniServerName = (host: string): string | undefined => {
+  if (!host) return undefined;
+  const bare = host.startsWith('::ffff:') ? host.slice(7) : host;
+  if (parseIPv4(bare)) return undefined;
+  if (host.includes(':')) return undefined; // IPv6 literal
+  return host;
+};
 
 export class Session {
   id: string;
@@ -192,7 +208,11 @@ export class Session {
         };
 
         const tlsSocket = tls.connect(this.mudPort, this.dialAddress, {
-          servername: this.mudHost,
+          // Present the requested hostname so certificate verification still
+          // works against the name the user asked for, not the IP we dialled.
+          // Omitted when the target is itself a literal — Node rejects an IP
+          // as SNI.
+          servername: sniServerName(this.mudHost),
         }) as unknown as TelnetSocket;
         this.telnet = tlsSocket;
         tlsSocket.once('secureConnect', () => {
