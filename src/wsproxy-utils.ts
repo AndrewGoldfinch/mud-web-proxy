@@ -260,9 +260,13 @@ export const isTrustedPeer = (
     const prefix = Number(prefixText);
     if (!/^\d{1,3}$/.test(prefixText) || !Number.isInteger(prefix)) continue;
 
-    const networkOctets = parseIPv4(normalizeAddress(network));
-    if (networkOctets) {
-      if (!peerOctets) continue;
+    // Decide the family from how the entry was WRITTEN. normalizeAddress
+    // collapses ::ffff:a.b.c.d to bare IPv4, so a mapped range like
+    // ::ffff:0:0/96 would otherwise be read as IPv4 and its prefix rejected
+    // as out of range.
+    if (!network.includes(':')) {
+      const networkOctets = parseIPv4(network);
+      if (!networkOctets || !peerOctets) continue;
       if (prefix > IPV4_MAX_PREFIX) continue;
       if (matchesPrefix(peerOctets, networkOctets, prefix)) return true;
       continue;
@@ -271,8 +275,27 @@ export const isTrustedPeer = (
     // IPv6 range. Previously unsupported, so only exact IPv6 addresses
     // matched — the limitation carried in MWP-88's notes.
     const networkGroups = parseIPv6Groups(network);
-    const peerGroups = parseIPv6Groups(peer);
-    if (!networkGroups || !peerGroups) continue;
+    if (!networkGroups) continue;
+
+    // normalizeAddress reduces ::ffff:a.b.c.d to bare IPv4, so a peer
+    // compared against an IPv6 range needs its mapped form back. Without
+    // this, ::ffff:0:0/96 — the canonical range for mapped addresses —
+    // matches nothing and forwarded headers are silently ignored.
+    const peerGroups =
+      parseIPv6Groups(peer) ??
+      (peerOctets
+        ? [
+            0,
+            0,
+            0,
+            0,
+            0,
+            0xffff,
+            (peerOctets[0] << 8) | peerOctets[1],
+            (peerOctets[2] << 8) | peerOctets[3],
+          ]
+        : null);
+    if (!peerGroups) continue;
     if (prefix > 128) continue;
     if (matchesPrefixV6(peerGroups, networkGroups, prefix)) return true;
   }
@@ -472,7 +495,10 @@ export const parseIPv6Groups = (value: string): number[] | null => {
   if (rest === null) return null;
   const after = tail.length ? rest.slice(0, -1).concat(tail) : rest;
   const explicit = head.length + after.length;
-  if (explicit > 8) return null;
+  // RFC 4291: `::` replaces at least one group of zeros, so eight explicit
+  // groups alongside it is malformed. Accepting it would let a mistyped trust
+  // entry through the fail-fast validation.
+  if (explicit >= 8) return null;
   return head.concat(new Array(8 - explicit).fill(0), after);
 };
 
@@ -510,9 +536,10 @@ export const isValidTrustedProxyEntry = (entry: string): boolean => {
   if (!/^\d{1,3}$/.test(prefixText)) return false;
   const prefix = Number(prefixText);
 
-  if (parseIPv4(normalizeAddress(network))) return prefix <= 32;
-  if (parseIPv6Groups(network)) return prefix <= 128;
-  return false;
+  if (!network.includes(':')) {
+    return !!parseIPv4(network) && prefix <= 32;
+  }
+  return !!parseIPv6Groups(network) && prefix <= 128;
 };
 
 /**

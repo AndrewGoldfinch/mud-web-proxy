@@ -172,3 +172,53 @@ describe('trustedProxyCidrs = true cannot strip hops', () => {
     ).toBe('10.0.0.1');
   });
 });
+
+describe('IPv4-mapped peers against IPv6 CIDRs', () => {
+  // Raised in review of #37. `::ffff:0:0/96` is the canonical range covering
+  // every IPv4-mapped address, and startup accepts it — but the peer is
+  // normalized to bare IPv4 before comparison, so the range matched nothing
+  // and forwarded headers were silently ignored.
+
+  test('a mapped peer matches ::ffff:0:0/96', () => {
+    expect(isTrustedPeer('::ffff:127.0.0.1', ['::ffff:0:0/96'])).toBe(true);
+  });
+
+  test('a bare IPv4 peer matches ::ffff:0:0/96 too', () => {
+    // Node hands back either spelling depending on the listener; they are the
+    // same address and must classify the same way.
+    expect(isTrustedPeer('127.0.0.1', ['::ffff:0:0/96'])).toBe(true);
+  });
+
+  test('a narrower mapped range still discriminates', () => {
+    expect(isTrustedPeer('127.0.0.1', ['::ffff:127.0.0.0/104'])).toBe(true);
+    expect(isTrustedPeer('10.0.0.1', ['::ffff:127.0.0.0/104'])).toBe(false);
+  });
+
+  test('a genuine IPv6 peer does not match a mapped range', () => {
+    expect(isTrustedPeer('2001:db8::1', ['::ffff:0:0/96'])).toBe(false);
+  });
+});
+
+describe('malformed IPv6 with a pointless :: is rejected', () => {
+  // RFC 4291: `::` must replace at least one group of zeros. An entry with
+  // eight explicit groups plus `::` is malformed, and accepting it defeats
+  // the fail-fast validation that mistyped trust boundaries depend on.
+
+  test('eight explicit groups plus :: does not parse', () => {
+    expect(isTrustedPeer('2001:db8::1', ['2001:db8:0:0:0:0:0:1::/128'])).toBe(
+      false,
+    );
+  });
+
+  test('the equivalent well-formed entry still works', () => {
+    expect(isTrustedPeer('2001:db8::1', ['2001:db8:0:0:0:0:0:1/128'])).toBe(
+      true,
+    );
+  });
+
+  test(':: compressing one or more groups is still valid', () => {
+    expect(isTrustedPeer('2001:db8::1', ['2001:db8:0:0:0:0:0::/112'])).toBe(
+      true,
+    );
+  });
+});
