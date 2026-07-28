@@ -1,6 +1,6 @@
 {
   "name": "mud-web-proxy",
-  "version": "3.0.0",
+  "version": "3.1.0",
   "description": "Web proxy, websockets to telnet",
   "type": "module",
   "keywords": ["mud", "proxy", "websockets", "telnet"],

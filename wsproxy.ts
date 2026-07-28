@@ -180,7 +180,7 @@ const sessionIntegration = new SessionIntegration({
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = runtimeConfig.onlyAllowDefaultServer;
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
-const PACKAGE_VERSION = '3.0.0';
+const PACKAGE_VERSION = '3.1.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
