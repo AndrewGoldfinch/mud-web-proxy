@@ -199,7 +199,7 @@ const parseIPv4 = (value: string): number[] | null => {
  *
  * Node reports IPv4 peers as `::ffff:a.b.c.d` on a dual-stack listener, which
  * is the default when the server binds all interfaces. Operators write the
- * bare IPv4 form in TRUST_PROXY, so both forms must compare equal. Only strip
+ * bare IPv4 form in TRUSTED_PROXY_CIDRS, so both forms must compare equal. Only strip
  * the mapping prefix when what remains is genuinely IPv4, to avoid mangling
  * real IPv6 addresses.
  */
