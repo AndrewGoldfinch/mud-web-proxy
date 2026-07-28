@@ -1124,16 +1124,23 @@ const srv: ServerConfig = {
       const pathOnly = rawUrl.split('?')[0];
 
       if (pathOnly === '/health') {
-        const stats = sessionIntegration.getStats();
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(
-          JSON.stringify({
-            status: 'healthy',
-            timestamp: new Date().toISOString(),
-            version: PACKAGE_VERSION,
-            ...stats,
-          }),
-        );
+        if (!srv.open) {
+          res.writeHead(503, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+          });
+          res.end(
+            JSON.stringify({ status: 'draining', version: PACKAGE_VERSION }),
+          );
+        } else {
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store',
+          });
+          res.end(
+            JSON.stringify({ status: 'healthy', version: PACKAGE_VERSION }),
+          );
+        }
       } else if (pathOnly === '/diagnostic') {
         if (!isDiagnosticRequestAuthorized(req.headers, runtimeConfig)) {
           res.writeHead(404, { 'Content-Type': 'application/json' });
