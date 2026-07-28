@@ -10,9 +10,7 @@ const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
 
 /** Throw when a present-but-unparseable value is encountered. */
 const fail = (name: string, value: string, accepted: string): never => {
-  throw new Error(
-    `${name}="${value}" is invalid. Accepted form: ${accepted}`,
-  );
+  throw new Error(`${name}="${value}" is invalid. Accepted form: ${accepted}`);
 };
 
 export const readBooleanEnv = (
@@ -24,9 +22,11 @@ export const readBooleanEnv = (
   if (!raw) return defaultValue;
   if (TRUE_VALUES.has(raw)) return true;
   if (FALSE_VALUES.has(raw)) return false;
-  fail(name, env[name]!, TRUE_VALUES.size + FALSE_VALUES.size > 0
-    ? Array.from(TRUE_VALUES).concat(Array.from(FALSE_VALUES)).join(', ')
-    : 'true|false');
+  return fail(
+    name,
+    env[name]!,
+    Array.from(TRUE_VALUES).concat(Array.from(FALSE_VALUES)).join(', '),
+  );
 };
 
 export const readIntegerEnv = (
@@ -112,6 +112,13 @@ export enum LogLevel {
   WARN = 2,
   ERROR = 3,
 }
+
+const LOG_LEVEL_BY_NAME: Record<string, LogLevel> = {
+  debug: LogLevel.DEBUG,
+  info: LogLevel.INFO,
+  warn: LogLevel.WARN,
+  error: LogLevel.ERROR,
+};
 
 export type InboundTlsMode = 'off' | 'required';
 export type MudTlsMode = 'plain' | 'required' | 'prefer';
@@ -316,7 +323,11 @@ export const parseRuntimeConfig = (
 
   // Origin checking
   const allowedOrigins = readListEnv(env, 'ALLOWED_ORIGINS');
-  const allowMissingOrigin = readBooleanEnv(env, 'ALLOW_MISSING_ORIGIN', false);
+  const allowMissingOrigin = readBooleanEnv(
+    env,
+    'ALLOW_MISSING_ORIGIN',
+    false,
+  );
 
   // Validate origin entries
   for (const origin of allowedOrigins) {
@@ -357,13 +368,13 @@ export const parseRuntimeConfig = (
   const adminToken = env.ADMIN_TOKEN || '';
 
   // Logging
-  const logLevelStr = env.LOG_LEVEL?.toUpperCase() || 'INFO';
-  const logLevel = readEnumEnv<LogLevel>(
+  const logLevelName = readEnumEnv<'debug' | 'info' | 'warn' | 'error'>(
     env,
     'LOG_LEVEL',
     ['debug', 'info', 'warn', 'error'],
     'info',
   );
+  const logLevel = LOG_LEVEL_BY_NAME[logLevelName];
   const noColor = env.NO_COLOR === '1';
 
   // Platform
@@ -401,7 +412,8 @@ export const parseRuntimeConfig = (
     ),
     diagCrosskey: readBooleanEnv(env, 'APPATTEST_DIAG_CROSSKEY', false),
     attestedKeysPath:
-      env.ATTESTED_KEYS_PATH || path.resolve(basePath, 'config/attested-keys.json'),
+      env.ATTESTED_KEYS_PATH ||
+      path.resolve(basePath, 'config/attested-keys.json'),
   };
 
   // mTLS
@@ -410,12 +422,30 @@ export const parseRuntimeConfig = (
 
   // Background push
   const backgroundPush: BackgroundPushEnvConfig = {
-    silentPushIntervalMs: readOptionalIntegerEnv(env, 'SILENT_PUSH_INTERVAL_MS'),
-    activityPushIntervalMs: readOptionalIntegerEnv(env, 'ACTIVITY_PUSH_INTERVAL_MS'),
-    activityAckTimeoutMs: readOptionalIntegerEnv(env, 'ACTIVITY_PUSH_ACK_TIMEOUT_MS'),
-    fallbackCooldownMs: readOptionalIntegerEnv(env, 'ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS'),
-    maxFallbacksPerHour: readOptionalIntegerEnv(env, 'ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR'),
-    maxSnippetLength: readOptionalIntegerEnv(env, 'ACTIVITY_PUSH_MAX_SNIPPET_LENGTH'),
+    silentPushIntervalMs: readOptionalIntegerEnv(
+      env,
+      'SILENT_PUSH_INTERVAL_MS',
+    ),
+    activityPushIntervalMs: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_INTERVAL_MS',
+    ),
+    activityAckTimeoutMs: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_ACK_TIMEOUT_MS',
+    ),
+    fallbackCooldownMs: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS',
+    ),
+    maxFallbacksPerHour: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR',
+    ),
+    maxSnippetLength: readOptionalIntegerEnv(
+      env,
+      'ACTIVITY_PUSH_MAX_SNIPPET_LENGTH',
+    ),
   };
 
   // ---- Cross-field validation ----
@@ -464,7 +494,11 @@ export const parseRuntimeConfig = (
   }
 
   // INBOUND_TLS_MODE=off on non-loopback requires acknowledgement
-  if (inboundTlsMode === 'off' && bindHost !== '127.0.0.1' && bindHost !== '::1') {
+  if (
+    inboundTlsMode === 'off' &&
+    bindHost !== '127.0.0.1' &&
+    bindHost !== '::1'
+  ) {
     if (!env.ALLOW_INSECURE_INBOUND_NO_TLS) {
       errors.push(
         `INBOUND_TLS_MODE=off on BIND_HOST=${bindHost} is not allowed without explicit acknowledgement. ` +
@@ -531,12 +565,12 @@ export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
   );
   // Filter out file-existence errors — those belong to resolveTlsSettings.
   const fatalErrors = errors.filter(
-    (e) => !e.includes('TLS certificate not found') && !e.includes('TLS key not found'),
+    (e) =>
+      !e.includes('TLS certificate not found') &&
+      !e.includes('TLS key not found'),
   );
   if (fatalErrors.length > 0) {
-    throw new Error(
-      'Configuration errors:\n  ' + fatalErrors.join('\n  '),
-    );
+    throw new Error('Configuration errors:\n  ' + fatalErrors.join('\n  '));
   }
   return config;
 };
@@ -570,11 +604,12 @@ export const resolveTlsSettings = (
     return { useTls: false, certPath, keyPath, reason: 'disabled' };
   }
 
-  const inboundTlsMode = readEnumEnv(env, 'INBOUND_TLS_MODE', [
+  const inboundTlsMode = readEnumEnv(
+    env,
+    'INBOUND_TLS_MODE',
+    ['required', 'off', 'optional'],
     'required',
-    'off',
-    'optional',
-  ], 'required');
+  );
   if (inboundTlsMode === 'off') {
     if (production && !allowInsecureProductionNoTls) {
       throw new Error(

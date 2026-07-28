@@ -156,10 +156,11 @@ const sessionIntegration = new SessionIntegration({
     ...resolveBackgroundPushEnvConfig(process.env),
   },
   targets: {
-    onlyAllowDefaultServer: runtimeConfig.onlyAllowDefaultServer,
+    targetMode: runtimeConfig.targetMode,
     defaultHost: runtimeConfig.tnHost,
     defaultPort: runtimeConfig.tnPort,
     allowedTargets: runtimeConfig.allowedTargets,
+    arbitraryAllowedPorts: runtimeConfig.arbitraryAllowedPorts,
   },
   trustedProxyCidrs: runtimeConfig.trustedProxyCidrs,
   // APNS config from environment
@@ -1953,10 +1954,11 @@ const srv: ServerConfig = {
     s.compressed = 0;
 
     const target = validateTarget(host, port, {
-      onlyAllowDefaultServer: ONLY_ALLOW_DEFAULT_SERVER,
+      targetMode: runtimeConfig.targetMode,
       defaultHost: srv.tn_host,
       defaultPort: srv.tn_port,
       allowedTargets: runtimeConfig.allowedTargets,
+      arbitraryAllowedPorts: runtimeConfig.arbitraryAllowedPorts,
     });
     if (!target.allowed) {
       srv.logWarn(

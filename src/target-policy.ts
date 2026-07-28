@@ -1,8 +1,14 @@
+import { normalizeAddress, parseIPv4 } from './wsproxy-utils';
+
+export type TargetMode = 'fixed' | 'allowlist' | 'arbitrary';
+
 export interface TargetPolicyConfig {
-  onlyAllowDefaultServer: boolean;
+  targetMode: TargetMode;
   defaultHost: string;
   defaultPort: number;
   allowedTargets?: string[];
+  /** Ports and ranges permitted in arbitrary mode, e.g. ['23', '4000-4100']. */
+  arbitraryAllowedPorts?: string[];
 }
 
 export interface TargetValidationResult {
@@ -11,6 +17,11 @@ export interface TargetValidationResult {
   port?: number;
   reason?: string;
 }
+
+const deny = (reason: string): TargetValidationResult => ({
+  allowed: false,
+  reason,
+});
 
 const normalizeHost = (host: unknown): string | null => {
   if (typeof host !== 'string') return null;
@@ -51,6 +62,191 @@ export const parseAllowedTargets = (
   return targets;
 };
 
+/** Does `port` fall inside any entry of a ports-and-ranges list? */
+export const portIsAllowed = (port: number, ranges?: string[]): boolean => {
+  if (!ranges?.length) return false;
+
+  for (const raw of ranges) {
+    const entry = raw.trim();
+    if (!entry) continue;
+
+    const dash = entry.indexOf('-');
+    if (dash === -1) {
+      if (normalizePort(Number(entry)) === port) return true;
+      continue;
+    }
+
+    const low = normalizePort(Number(entry.slice(0, dash)));
+    const high = normalizePort(Number(entry.slice(dash + 1)));
+    if (low === null || high === null || low > high) continue;
+    if (port >= low && port <= high) return true;
+  }
+
+  return false;
+};
+
+// ---------------------------------------------------------------------------
+// Reserved networks
+// ---------------------------------------------------------------------------
+
+/** [network octets, prefix length] */
+const RESERVED_V4: Array<[number[], number]> = [
+  [[0, 0, 0, 0], 8], // "this network"
+  [[10, 0, 0, 0], 8], // private
+  [[100, 64, 0, 0], 10], // carrier-grade NAT
+  [[127, 0, 0, 0], 8], // loopback
+  [[169, 254, 0, 0], 16], // link-local, incl. cloud metadata 169.254.169.254
+  [[172, 16, 0, 0], 12], // private
+  [[192, 0, 0, 0], 24], // IETF protocol assignments
+  [[192, 0, 2, 0], 24], // TEST-NET-1
+  [[192, 168, 0, 0], 16], // private
+  [[198, 18, 0, 0], 15], // benchmarking
+  [[224, 0, 0, 0], 4], // multicast
+  [[240, 0, 0, 0], 4], // reserved, incl. 255.255.255.255
+];
+
+const inV4Network = (
+  addr: number[],
+  network: number[],
+  prefix: number,
+): boolean => {
+  for (let i = 0; i < 4; i++) {
+    const bits = Math.min(8, Math.max(0, prefix - i * 8));
+    if (bits === 0) break;
+    const mask = (0xff << (8 - bits)) & 0xff;
+    if ((addr[i] & mask) !== (network[i] & mask)) return false;
+  }
+  return true;
+};
+
+/**
+ * Is this address one we must never dial on a client's behalf?
+ *
+ * Fails closed: anything unparseable is treated as reserved. A target we
+ * cannot classify is not one to connect to.
+ */
+export const isReservedAddress = (address: string): boolean => {
+  if (!address) return true;
+
+  // Strips ::ffff: only when the remainder is genuinely IPv4, so a real
+  // IPv6 address is left intact.
+  const normalized = normalizeAddress(address);
+
+  const v4 = parseIPv4(normalized);
+  if (v4) {
+    return RESERVED_V4.some(([net, prefix]) => inV4Network(v4, net, prefix));
+  }
+
+  // Not IPv4 — treat as IPv6 only if it plausibly is one.
+  if (!normalized.includes(':')) return true;
+
+  const v6 = normalized.split('%')[0]; // drop any zone index
+  if (v6 === '::' || v6 === '::1') return true; // unspecified, loopback
+
+  const head = v6.split(':')[0];
+  if (!/^[0-9a-f]{0,4}$/.test(head)) return true;
+  const leading = parseInt(head || '0', 16);
+
+  if ((leading & 0xfe00) === 0xfc00) return true; // fc00::/7  unique-local
+  if ((leading & 0xffc0) === 0xfe80) return true; // fe80::/10 link-local
+  if ((leading & 0xff00) === 0xff00) return true; // ff00::/8  multicast
+
+  return false;
+};
+
+// ---------------------------------------------------------------------------
+// DNS resolution
+// ---------------------------------------------------------------------------
+
+export interface ResolveTargetOptions {
+  /** Injectable for tests; defaults to resolving all A/AAAA records. */
+  resolve?: (host: string) => Promise<string[]>;
+}
+
+export interface ResolvedTarget {
+  allowed: boolean;
+  /** The validated address to dial. Never re-resolve the hostname. */
+  address?: string;
+  reason?: string;
+}
+
+const defaultResolve = async (host: string): Promise<string[]> => {
+  const { lookup } = await import('dns/promises');
+  const results = await lookup(host, { all: true, verbatim: true });
+  return results.map((entry) => entry.address);
+};
+
+/**
+ * Resolve a client-supplied hostname and confirm every answer is publicly
+ * routable.
+ *
+ * Resolution happens exactly once and the caller must dial the returned
+ * address. Re-resolving between validation and connection is the DNS
+ * rebinding hole: the second answer can differ from the one we approved.
+ *
+ * Rejects if ANY resolved address is reserved. A hostname answering with
+ * one public and one private address is an attack, not a coincidence.
+ */
+export const resolveTargetAddress = async (
+  host: string,
+  options: ResolveTargetOptions = {},
+): Promise<ResolvedTarget> => {
+  const normalized = normalizeHost(host);
+  if (!normalized) return { allowed: false, reason: 'Invalid target host' };
+
+  // A literal address needs no lookup — classify it directly.
+  const literal = normalizeAddress(normalized);
+  if (parseIPv4(literal) || literal.includes(':')) {
+    if (isReservedAddress(literal)) {
+      return {
+        allowed: false,
+        reason: 'Target address is in a reserved network',
+      };
+    }
+    return { allowed: true, address: literal };
+  }
+
+  const resolve = options.resolve ?? defaultResolve;
+
+  let addresses: string[];
+  try {
+    addresses = await resolve(normalized);
+  } catch {
+    return { allowed: false, reason: 'Target hostname could not be resolved' };
+  }
+
+  if (!addresses?.length) {
+    return { allowed: false, reason: 'Target hostname has no addresses' };
+  }
+
+  for (const address of addresses) {
+    if (isReservedAddress(address)) {
+      return {
+        allowed: false,
+        reason: 'Target resolves to a reserved network',
+      };
+    }
+  }
+
+  return { allowed: true, address: addresses[0] };
+};
+
+// ---------------------------------------------------------------------------
+// Policy
+// ---------------------------------------------------------------------------
+
+/**
+ * Decide whether a target is permitted by policy.
+ *
+ * Every branch terminates in an explicit allow or deny, and the function ends
+ * in a denial — so a mode added without an allow rule fails closed. The
+ * previous implementation returned allowed:true when no policy was supplied
+ * and when the allowlist was empty, either of which made the proxy an open
+ * TCP relay.
+ *
+ * Arbitrary mode is only checked for shape here; DNS and reserved-network
+ * safety is `resolveTargetAddress`, which the connect path must also call.
+ */
 export const validateTarget = (
   hostInput: unknown,
   portInput: unknown,
@@ -59,44 +255,48 @@ export const validateTarget = (
   const host = normalizeHost(hostInput);
   const port = normalizePort(portInput);
 
-  if (!host || !port) {
-    return {
-      allowed: false,
-      reason: 'Invalid target host or port',
-    };
-  }
+  if (!host || !port) return deny('Invalid target host or port');
 
-  if (!policy) {
-    return { allowed: true, host, port };
-  }
+  if (!policy) return deny('Target policy is not configured');
 
-  if (policy.onlyAllowDefaultServer) {
-    const defaultHost = normalizeHost(policy.defaultHost);
-    const defaultPort = normalizePort(policy.defaultPort);
-    if (!defaultHost || !defaultPort) {
-      return {
-        allowed: false,
-        reason: 'Server target policy is misconfigured',
-      };
+  switch (policy.targetMode) {
+    case 'fixed': {
+      const defaultHost = normalizeHost(policy.defaultHost);
+      const defaultPort = normalizePort(policy.defaultPort);
+      if (!defaultHost || !defaultPort) {
+        return deny('Server target policy is misconfigured');
+      }
+      if (host !== defaultHost || port !== defaultPort) {
+        return deny(
+          `This proxy only allows connections to ${defaultHost}:${defaultPort}`,
+        );
+      }
+      return { allowed: true, host, port };
     }
 
-    if (host !== defaultHost || port !== defaultPort) {
-      return {
-        allowed: false,
-        reason: `This proxy only allows connections to ${policy.defaultHost}:${policy.defaultPort}`,
-      };
+    case 'allowlist': {
+      const allowedTargets = parseAllowedTargets(policy.allowedTargets);
+      // An empty allowlist permits nothing. Startup validation should have
+      // rejected this configuration already; deny regardless.
+      if (allowedTargets.size === 0) {
+        return deny('No allowed targets are configured');
+      }
+      if (!allowedTargets.has(targetKey(host, port))) {
+        return deny('Target is not in ALLOWED_TARGETS');
+      }
+      // Exact operator-configured entries may name private networks; that is
+      // a deliberate choice, unlike a client-supplied hostname.
+      return { allowed: true, host, port };
     }
 
-    return { allowed: true, host, port };
-  }
+    case 'arbitrary': {
+      if (!portIsAllowed(port, policy.arbitraryAllowedPorts)) {
+        return deny('Target port is not permitted');
+      }
+      return { allowed: true, host, port };
+    }
 
-  const allowedTargets = parseAllowedTargets(policy.allowedTargets);
-  if (allowedTargets.size > 0 && !allowedTargets.has(targetKey(host, port))) {
-    return {
-      allowed: false,
-      reason: 'Target is not in ALLOWED_TARGETS',
-    };
+    default:
+      return deny('Target policy mode is not recognized');
   }
-
-  return { allowed: true, host, port };
 };

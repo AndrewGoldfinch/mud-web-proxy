@@ -215,7 +215,14 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
   // and any real TCP/TLS negotiation, which this suite has no need to exercise) so the
   // segment-forwarding logic under test runs deterministically and fast.
   function makeIntegration(): SessionIntegration {
-    return new SessionIntegration();
+    return new SessionIntegration({
+      targets: {
+        targetMode: 'arbitrary' as const,
+        defaultHost: 'mud.test',
+        defaultPort: 23,
+        arbitraryAllowedPorts: ['1-65535'],
+      },
+    });
   }
 
   test('session response advertises the echoState capability', () => {
