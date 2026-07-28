@@ -160,6 +160,7 @@ const sessionIntegration = new SessionIntegration({
     defaultPort: runtimeConfig.tnPort,
     allowedTargets: runtimeConfig.allowedTargets,
   },
+  trustProxy: runtimeConfig.trustProxy,
   // APNS config from environment
   apns: process.env.APNS_KEY_PATH
     ? {
@@ -183,18 +184,58 @@ const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
 
+const isTrustedPeer = (
+  peerAddress: string | undefined,
+  trustList: boolean | string[],
+): boolean => {
+  if (!peerAddress || !trustList) return false;
+  if (trustList === true) return true;
+
+  for (const cidr of trustList) {
+    if (cidr.includes('/')) {
+      const [network, prefixStr] = cidr.split('/');
+      const prefix = parseInt(prefixStr, 10);
+      if (isNaN(prefix)) continue;
+      const peerParts = peerAddress.split('.').map(Number);
+      const netParts = network.split('.').map(Number);
+      if (peerParts.length !== 4 || netParts.length !== 4) continue;
+      let match = true;
+      for (let i = 0; i < 4; i++) {
+        if (prefix < i * 8) break;
+        const bitsInOctet = Math.min(8, prefix - i * 8);
+        const mask = (0xff << (8 - bitsInOctet)) & 0xff;
+        if ((peerParts[i] & mask) !== (netParts[i] & mask)) {
+          match = false;
+          break;
+        }
+      }
+      if (match) return true;
+    } else if (peerAddress === cidr) {
+      return true;
+    }
+  }
+  return false;
+};
+
 /**
  * Resolve the real client IP from proxy headers or the socket.
- * Reads X-Real-IP then X-Forwarded-For (first entry) before falling
- * back to the raw socket address.
+ * Only honours X-Real-IP / X-Forwarded-For when the socket peer is
+ * in the trusted-proxy allowlist (srv.trustProxy).  Without that
+ * configuration the caller-supplied headers are silently ignored,
+ * preventing IP-spoofing attacks against per-IP connection limits
+ * and logging.
  */
 const getClientIP = (req: IncomingMessage): string => {
-  const realIP = req.headers['x-real-ip'];
-  if (typeof realIP === 'string' && realIP) return realIP;
+  const trusted = isTrustedPeer(req.socket?.remoteAddress, srv.trustProxy);
 
-  const forwarded = req.headers['x-forwarded-for'];
-  if (typeof forwarded === 'string' && forwarded) {
-    return forwarded.split(',')[0].trim();
+  if (trusted) {
+    const realIP = req.headers['x-real-ip'];
+    if (typeof realIP === 'string' && realIP) return realIP;
+
+    const forwarded = req.headers['x-forwarded-for'];
+    if (typeof forwarded === 'string' && forwarded) {
+      return forwarded.split(',')[0].trim();
+    }
   }
 
   return req.socket?.remoteAddress || '';
@@ -868,6 +909,7 @@ interface ServerConfig {
   debug: boolean;
   compress: boolean;
   open: boolean;
+  trustProxy: boolean | string[];
   ttype: TTypeConfig;
   gmcp: GMCPConfig;
   prt: ProtocolConstants;
@@ -911,6 +953,9 @@ const srv: ServerConfig = {
   compress: true,
   /* set to false while server is shutting down */
   open: true,
+
+  /* trusted proxy CIDRs for client-IP header validation (default: none trusted) */
+  trustProxy: runtimeConfig.trustProxy,
 
   ttype: {
     enabled: 1,
@@ -1080,11 +1125,15 @@ const srv: ServerConfig = {
     );
 
     const requestPeer = (req: IncomingMessage): string => {
-      const forwardedFor = req.headers['x-forwarded-for'];
-      const forwarded = Array.isArray(forwardedFor)
-        ? forwardedFor[0]
-        : forwardedFor;
-      return forwarded || req.socket.remoteAddress || 'unknown';
+      const trusted = isTrustedPeer(req.socket.remoteAddress, srv.trustProxy);
+      if (trusted) {
+        const forwardedFor = req.headers['x-forwarded-for'];
+        const forwarded = Array.isArray(forwardedFor)
+          ? forwardedFor[0]
+          : forwardedFor;
+        if (forwarded) return forwarded;
+      }
+      return req.socket.remoteAddress || 'unknown';
     };
 
     const summarizeUpgradeHeaders = (req: IncomingMessage): string => {

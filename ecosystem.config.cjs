@@ -1,4 +1,4 @@
-/* global module */
+/* global module, process */
 
 module.exports = {
     apps: [
@@ -7,7 +7,7 @@ module.exports = {
         script: "dist/wsproxy.js",
         interpreter: "node",
         node_args: "--env-file=.env.production",
-        cwd: "/opt/mud-proxy",
+        cwd: process.env.ECOSYSTEM_CWD || "/opt/mud-proxy",
         env: {
           NODE_ENV: "development",
         },

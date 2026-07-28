@@ -535,7 +535,7 @@ class Session {
 {
   "type": "session",
   "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "token": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+   "token": "EXAMPLE_ADMIN_TOKEN_REPLACE_ME_NOT_A_REAL_SECRET"
 }
 ```
 
@@ -544,7 +544,7 @@ class Session {
 {
   "type": "resume",
   "sessionId": "550e8400-e29b-41d4-a716-446655440000",
-  "token": "9f86d081...",
+  "token": "EXAMPLE_TOKEN_TRUNCATED...",
   "lastSeq": 1042
 }
 ```
