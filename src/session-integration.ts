@@ -18,7 +18,7 @@ import {
   type TargetPolicyConfig,
 } from './target-policy';
 import type { MudTlsMode } from './runtime-config';
-import { isTrustedPeer } from './wsproxy-utils';
+import { resolveClientAddress } from './wsproxy-utils';
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -713,24 +713,15 @@ export class SessionIntegration {
    * Check if socket is part of a session
    */
   private getClientIP(socket: SocketExtended): string {
-    const peerAddress =
-      socket.remoteAddress || socket.req?.connection?.remoteAddress;
-
-    if (isTrustedPeer(peerAddress, this.config.trustedProxyCidrs)) {
-      const realIP = socket.req?.headers['x-real-ip'];
-      if (realIP) {
-        const first = (Array.isArray(realIP) ? realIP[0] : realIP).trim();
-        if (first) return first;
-      }
-
-      const xff = socket.req?.headers['x-forwarded-for'];
-      if (xff) {
-        const first = (Array.isArray(xff) ? xff[0] : xff).split(',')[0].trim();
-        if (first) return first;
-      }
-    }
-
-    return peerAddress || 'unknown';
+    // Shared with wsproxy.ts. Two copies of this diverged once already,
+    // leaving the rate limiter and the logger disagreeing about the client.
+    return (
+      resolveClientAddress(
+        socket.remoteAddress || socket.req?.connection?.remoteAddress,
+        socket.req?.headers ?? {},
+        this.config.trustedProxyCidrs,
+      ) || 'unknown'
+    );
   }
 
   hasSession(socket: SocketExtended): boolean {
