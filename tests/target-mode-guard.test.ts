@@ -1,19 +1,11 @@
 /**
- * Arbitrary target mode must not be reachable until the controls it depends
- * on actually exist.
+ * Arbitrary target mode and its prerequisites.
  *
- * TARGET_MODE=arbitrary lets a client name any host. That is only safe with
- * two things in place: authentication (MWP-85) and reserved-network rejection
- * on the connect path (MWP-88). AUTH_MODE=shared-secret is currently declared
- * by the config but enforced nowhere, and resolveTargetAddress is not yet
- * called when dialling.
- *
- * So the combination that passes the existing checks —
- *   TARGET_MODE=arbitrary + AUTH_MODE=shared-secret
- * — would yield arbitrary outbound TCP with no authentication and no SSRF
- * protection, while reading as configured. Refuse to start instead.
- *
- * Delete this guard when MWP-85 and MWP-88 are both complete.
+ * TARGET_MODE=arbitrary lets a client name any host, so it is only safe with
+ * two things in place: enforced authentication (MWP-85, landed) and
+ * reserved-network rejection on the connect path (MWP-88, landed). A
+ * temporary guard refused the mode outright while those were missing; it has
+ * been removed now that both hold, and what remains is the auth requirement.
  */
 
 import { describe, expect, test } from 'bun:test';
@@ -27,8 +19,10 @@ const base = {
   BIND_HOST: '127.0.0.1',
 };
 
-describe('arbitrary target mode is gated on its prerequisites', () => {
-  test('refuses to start even with AUTH_MODE=shared-secret', () => {
+describe('arbitrary mode requires enforced authentication', () => {
+  test('starts with AUTH_MODE=shared-secret', () => {
+    // Previously refused outright, because shared-secret was declared and
+    // enforced nowhere. It is enforced at the upgrade now.
     expect(() =>
       getRuntimeConfig({
         ...base,
@@ -37,10 +31,11 @@ describe('arbitrary target mode is gated on its prerequisites', () => {
         PROXY_SHARED_SECRET: 'x'.repeat(32),
         ARBITRARY_ALLOWED_PORTS: '23,4000-4100',
       }),
-    ).toThrow(/arbitrary/i);
+    ).not.toThrow();
   });
 
-  test('still refuses with AUTH_MODE=none', () => {
+  test('refuses with AUTH_MODE=none', () => {
+    // An unauthenticated arbitrary mode is an open SSRF relay.
     expect(() =>
       getRuntimeConfig({
         ...base,
@@ -48,25 +43,18 @@ describe('arbitrary target mode is gated on its prerequisites', () => {
         AUTH_MODE: 'none',
         ARBITRARY_ALLOWED_PORTS: '23',
       }),
-    ).toThrow(/arbitrary/i);
+    ).toThrow(/AUTH_MODE/);
   });
 
-  test('names the issues that must land first', () => {
-    let message = '';
-    try {
+  test('refuses without ARBITRARY_ALLOWED_PORTS', () => {
+    expect(() =>
       getRuntimeConfig({
         ...base,
         TARGET_MODE: 'arbitrary',
         AUTH_MODE: 'shared-secret',
         PROXY_SHARED_SECRET: 'x'.repeat(32),
-        ARBITRARY_ALLOWED_PORTS: '23',
-      });
-    } catch (err) {
-      message = (err as Error).message;
-    }
-    // An operator hitting this needs to know why, not just that.
-    expect(message).toMatch(/MWP-85/);
-    expect(message).toMatch(/MWP-88/);
+      }),
+    ).toThrow(/ARBITRARY_ALLOWED_PORTS/);
   });
 });
 

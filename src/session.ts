@@ -13,6 +13,7 @@ import net from 'net';
 import tls from 'tls';
 import crypto from 'crypto';
 import { WebSocket } from 'ws';
+import { parseIPv4 } from './wsproxy-utils';
 import type {
   BufferChunk,
   ProcessedData,
@@ -23,6 +24,21 @@ import type {
 import { CircularBuffer } from './circular-buffer';
 import { TelnetParser } from './telnet-parser';
 
+/**
+ * The value to present as TLS SNI, or undefined when there is none.
+ *
+ * Node rejects an IP address outright ("Setting the TLS ServerName to an IP
+ * address is not permitted"), so a target given as a literal must be dialled
+ * without SNI rather than with its own address.
+ */
+export const sniServerName = (host: string): string | undefined => {
+  if (!host) return undefined;
+  const bare = host.startsWith('::ffff:') ? host.slice(7) : host;
+  if (parseIPv4(bare)) return undefined;
+  if (host.includes(':')) return undefined; // IPv6 literal
+  return host;
+};
+
 export class Session {
   id: string;
   authToken: string;
@@ -30,6 +46,7 @@ export class Session {
   lastClientConnection: number;
 
   mudHost: string;
+  dialAddress: string;
   mudPort: number;
 
   telnet: TelnetSocket | null = null;
@@ -62,6 +79,7 @@ export class Session {
     host: string,
     port: number,
     bufferSizeBytes: number = 50 * 1024,
+    dialAddress?: string,
   ) {
     this.id = crypto.randomUUID();
     this.authToken = crypto.randomBytes(32).toString('hex');
@@ -69,6 +87,11 @@ export class Session {
     this.lastClientConnection = Date.now();
     this.mudHost = host;
     this.mudPort = port;
+    // The address actually dialled. In arbitrary mode this is the IP that was
+    // validated against the reserved ranges; connecting to the name instead
+    // would re-resolve it and reopen the rebinding hole. Defaults to the host
+    // so every other mode is unchanged.
+    this.dialAddress = dialAddress || host;
     this.buffer = new CircularBuffer(bufferSizeBytes);
     this.telnetParser = new TelnetParser(this);
   }
@@ -146,7 +169,7 @@ export class Session {
         try {
           const plainSocket = net.createConnection(
             this.mudPort,
-            this.mudHost,
+            this.dialAddress,
             () => {
               if (abortIfClosing(plainSocket)) return;
               this.telnetConnected = true;
@@ -184,11 +207,13 @@ export class Session {
           tryPlain();
         };
 
-        const tlsSocket = tls.connect(
-          this.mudPort,
-          this.mudHost,
-          {},
-        ) as unknown as TelnetSocket;
+        const tlsSocket = tls.connect(this.mudPort, this.dialAddress, {
+          // Present the requested hostname so certificate verification still
+          // works against the name the user asked for, not the IP we dialled.
+          // Omitted when the target is itself a literal — Node rejects an IP
+          // as SNI.
+          servername: sniServerName(this.mudHost),
+        }) as unknown as TelnetSocket;
         this.telnet = tlsSocket;
         tlsSocket.once('secureConnect', () => {
           tlsSocket.off('error', onTlsConnectError);

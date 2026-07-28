@@ -222,10 +222,13 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
     });
   }
 
-  test('session response advertises the echoState capability', () => {
+  test('session response advertises the echoState capability', async () => {
     // Stub out the real network connect (TLS-vs-plain auto-detection + an actual MUD
     // socket) since this test only cares about the synchronous "session" response
     // handleConnect sends before it ever calls connect(). The data/close handlers it
@@ -243,9 +246,11 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
         Buffer.from(JSON.stringify({ type: 'connect', host: 'mud.test', port: 4000 })),
       );
 
-      // handleConnect runs synchronously up to its first `await` (session.connect()),
-      // so the "session" response is already in socket.messages by the time
-      // parseNewMessage returns — no waiting required.
+      // handleConnect now awaits DNS resolution in arbitrary mode before it
+      // sends the "session" response, so this no longer completes within
+      // parseNewMessage. Yield once before reading the socket.
+      await Bun.sleep(0);
+
       const [sessionMsg] = socket.messages.map((m) => JSON.parse(m));
       expect(sessionMsg.type).toBe('session');
       expect(sessionMsg.capabilities).toContain('echoState');

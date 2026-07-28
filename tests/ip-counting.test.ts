@@ -62,6 +62,17 @@ function isBlocked(mgr: SessionManager, ip: string): boolean {
 }
 
 /** Returns the parsed JSON of the last message sent to a socket. */
+/**
+ * Find a message by type. Asserting on the LAST message races the real dial:
+ * an unstubbed connection can fail and append `connection_failed` before the
+ * assertion runs, which is what made these tests flaky in CI but not locally.
+ */
+function findMsg(socket: MockSocket, type: string): Record<string, unknown> | undefined {
+  return socket.messages
+    .map((m) => JSON.parse(m) as Record<string, unknown>)
+    .find((m) => m.type === type);
+}
+
 function lastMsg(socket: MockSocket): Record<string, unknown> {
   const raw = socket.messages.at(-1);
   if (!raw) throw new Error('no messages on socket');
@@ -117,6 +128,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: true,
     });
@@ -142,7 +156,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
   });
 
-  test('allows connection when XFF IP is not at limit even if remoteAddress is', () => {
+  test('allows connection when XFF IP is not at limit even if remoteAddress is', async () => {
     // remoteAddress is at limit; XFF points to a different, uncapped IP.
     si.sessionManager.incrementIPCount('127.0.0.1');
 
@@ -155,7 +169,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     );
 
     // With trustedProxyCidrs=true: 9.9.9.9 checked via XFF → not at limit → session created.
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    // handleConnect awaits DNS resolution in arbitrary mode.
+    await Bun.sleep(0);
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 
   test('uses first IP from comma-separated XFF header', () => {
@@ -189,7 +205,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
   });
 
-  test('ignores XFF headers when trustedProxyCidrs is false (default)', () => {
+  test('ignores XFF headers when trustedProxyCidrs is false (default)', async () => {
     si.shutdown();
     si = new SessionIntegration({
       targets: {
@@ -198,6 +214,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: false,
     });
@@ -214,7 +233,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     );
 
     // Without trustedProxyCidrs: remoteAddress (127.0.0.1) is used, not XFF → session created.
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    // handleConnect awaits DNS resolution in arbitrary mode.
+    await Bun.sleep(0);
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 
   test('honours XFF from a peer inside a trusted CIDR range', () => {
@@ -226,6 +247,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['10.0.0.0/8'],
     });
@@ -254,6 +278,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['127.0.0.1'],
     });
@@ -271,7 +298,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
   });
 
-  test('ignores XFF from a peer outside the trusted CIDR range', () => {
+  test('ignores XFF from a peer outside the trusted CIDR range', async () => {
     si.shutdown();
     si = new SessionIntegration({
       targets: {
@@ -280,6 +307,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['10.0.0.0/8'],
     });
@@ -295,7 +325,9 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     );
 
     // Untrusted peer: the spoofed XFF is ignored, so the peer address is used.
-    expect(lastMsg(socket)).toMatchObject({ type: 'session' });
+    // handleConnect awaits DNS resolution in arbitrary mode.
+    await Bun.sleep(0);
+    expect(findMsg(socket, 'session')).toBeDefined();
   });
 });
 
@@ -384,6 +416,9 @@ describe('handleSocketClose: backgrounding a socket does not decrement IP count'
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
@@ -422,6 +457,9 @@ describe('Failed MUD connect: IP count not incremented', () => {
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
@@ -473,6 +511,9 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
         defaultPort: 23,
         arbitraryAllowedPorts: ['1-65535'],
       },
+      // These fixtures exercise session accounting, not DNS. Stub resolution
+      // so arbitrary mode does not perform real lookups for test hostnames.
+      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 

@@ -462,25 +462,13 @@ export const parseRuntimeConfig = (
 
   // ---- Cross-field validation ----
 
-  // TARGET_MODE=arbitrary is not yet supported.
-  //
-  // It lets a client name any host, which is only safe once authentication
-  // (MWP-85) and reserved-network rejection on the connect path (MWP-88) are
-  // both in place. AUTH_MODE=shared-secret is currently parsed but enforced
-  // nowhere, and resolveTargetAddress is not yet called when dialling — so
-  // arbitrary + shared-secret would pass validation and yield arbitrary
-  // outbound TCP with no authentication and no SSRF protection, while reading
-  // as configured.
-  //
-  // Remove this guard once MWP-85 and MWP-88 are both complete.
-  if (targetMode === 'arbitrary') {
+  // TARGET_MODE=arbitrary requires enforced authentication. The client names
+  // the host, so an unauthenticated arbitrary mode is an open SSRF relay.
+  // Reserved-network rejection is applied on the connect path (MWP-88).
+  if (targetMode === 'arbitrary' && authMode === 'none') {
     errors.push(
-      'TARGET_MODE=arbitrary is not supported yet. It requires enforced ' +
-        'authentication (MWP-85) and reserved-network rejection on the ' +
-        'connect path (MWP-88); neither is implemented, so this mode would ' +
-        'permit unauthenticated connections to arbitrary hosts, including ' +
-        'private and cloud-metadata addresses. Use TARGET_MODE=fixed or ' +
-        'TARGET_MODE=allowlist.',
+      'TARGET_MODE=arbitrary requires AUTH_MODE=shared-secret. Without it, ' +
+        'any client could direct the proxy to connect to any host.',
     );
   }
 

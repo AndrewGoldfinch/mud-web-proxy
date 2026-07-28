@@ -297,3 +297,52 @@ describe('resolveTargetAddress', () => {
     expect(result.allowed).toBe(false);
   });
 });
+
+describe('IPv6 literals are canonicalized before classification', () => {
+  // Raised in review of #35. isReservedAddress compared exact strings, so
+  // only `::` and `::1` were caught — an authenticated arbitrary-mode client
+  // could ask for the same addresses written differently and reach loopback.
+
+  const loopbackForms = [
+    '::1',
+    '0:0:0:0:0:0:0:1',
+    '0000:0000:0000:0000:0000:0000:0000:0001',
+    '::0001',
+    '0::1',
+  ];
+  for (const form of loopbackForms) {
+    test(`rejects loopback written as ${form}`, () => {
+      expect(isReservedAddress(form)).toBe(true);
+    });
+  }
+
+  const unspecifiedForms = ['::', '0:0:0:0:0:0:0:0', '0000::0000', '0::0'];
+  for (const form of unspecifiedForms) {
+    test(`rejects the unspecified address written as ${form}`, () => {
+      expect(isReservedAddress(form)).toBe(true);
+    });
+  }
+
+  test('rejects expanded unique-local and link-local forms', () => {
+    expect(isReservedAddress('fc00:0:0:0:0:0:0:1')).toBe(true);
+    expect(isReservedAddress('fe80:0000:0000:0000:0000:0000:0000:0001')).toBe(
+      true,
+    );
+    expect(isReservedAddress('ff02:0:0:0:0:0:0:1')).toBe(true);
+  });
+
+  test('still permits a genuinely public IPv6 address in expanded form', () => {
+    expect(isReservedAddress('2606:4700:4700:0000:0000:0000:0000:1111')).toBe(
+      false,
+    );
+  });
+
+  test('rejects an IPv6 address with a zone index onto loopback', () => {
+    expect(isReservedAddress('fe80::1%eth0')).toBe(true);
+  });
+
+  test('treats an unparseable IPv6-looking value as reserved', () => {
+    expect(isReservedAddress('1:2:3:4:5:6:7:8:9')).toBe(true);
+    expect(isReservedAddress('::gggg')).toBe(true);
+  });
+});

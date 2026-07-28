@@ -11,7 +11,12 @@ import type { SocketExtended } from './types';
 import { TriggerMatcher } from './trigger-matcher';
 import { NotificationManager } from './notification-manager';
 import { BackgroundPushScheduler } from './background-push-scheduler';
-import { validateTarget, type TargetPolicyConfig } from './target-policy';
+import {
+  resolveTargetAddress,
+  validateTarget,
+  type ResolvedTarget,
+  type TargetPolicyConfig,
+} from './target-policy';
 import { isTrustedPeer } from './wsproxy-utils';
 import type {
   ConnectRequest,
@@ -55,6 +60,8 @@ export interface SessionIntegrationConfig {
     maxSnippetLength?: number;
   };
   targets?: TargetPolicyConfig;
+  /** Injectable for tests; defaults to real DNS resolution. */
+  resolveTarget?: (host: string) => Promise<ResolvedTarget>;
   trustedProxyCidrs?: boolean | string[];
 }
 
@@ -276,13 +283,55 @@ export class SessionIntegration {
       }
     }
 
+    // Reserve capacity BEFORE any DNS or TCP work. enforceConnectionLimits
+    // above consults counters that are only incremented once a dial
+    // succeeds, so without this a client could issue many concurrent connect
+    // frames and pass every check — and omitting deviceToken skipped the
+    // device limit entirely. The reservation is released on every path out
+    // of here; a leaked one is capacity that never returns (MWP-92).
+    const reservation = this.sessionManager.reservePendingDial(ip);
+    if (!reservation.allowed) {
+      const reason = reservation.reason || 'Connection limit exceeded';
+      this.log(`connect rejected: ${reason}`, ip);
+      this.sendError(socket, 'rate_limited', reason);
+      return;
+    }
+
+    // In arbitrary mode the hostname is client-supplied, so resolve it and
+    // confirm every answer is publicly routable before dialling. Resolution
+    // happens once and we dial the address it returned — re-resolving between
+    // validation and connect is the DNS rebinding hole.
+    //
+    // Deliberately last of the three checks: policy and connection limits are
+    // both cheap and must gate the expensive step, so a client cannot drive
+    // unbounded DNS lookups without consuming quota (MWP-92). Skipped entirely
+    // in fixed and allowlist mode, where the target is operator-configured
+    // rather than client-supplied.
+    let dialAddress = target.host;
+    if (this.config.targets?.targetMode === 'arbitrary') {
+      const resolve = this.config.resolveTarget ?? resolveTargetAddress;
+      const resolved = await resolve(target.host);
+      if (!resolved.allowed || !resolved.address) {
+        this.sessionManager.releasePendingDial(ip);
+        const reason = resolved.reason || 'Target address is not permitted';
+        this.log(`connect rejected: ${reason}`, ip);
+        this.sendError(socket, 'invalid_request', reason);
+        return;
+      }
+      dialAddress = resolved.address;
+    }
+
     // Create new session
     const session = this.sessionManager.create(
       target.host,
       target.port,
       msg.deviceToken,
       this.config.buffer.sizeKB * 1024,
+      dialAddress,
     );
+    // The session now owns this client's capacity; hand off from the
+    // reservation so it is not counted twice.
+    this.sessionManager.releasePendingDial(ip);
 
     // Set device token and window size
     if (msg.deviceToken) {
