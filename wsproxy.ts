@@ -69,6 +69,8 @@ import {
 import {
   authorizeApnsDebugRequest,
   encodeTelnetOutbound,
+  FailedAuthLimiter,
+  authorizeSharedSecret,
   formatMissingTypeLogMessage,
   isTrustedPeer,
   readLimitedRequestBody,
@@ -212,6 +214,15 @@ const getClientIP = (req: IncomingMessage): string => {
 
   return req.socket?.remoteAddress || '';
 };
+
+/**
+ * Rate limit on failed shared-secret attempts, keyed on the resolved client
+ * address. Without it the secret is only as strong as the attacker's patience.
+ */
+const failedAuthLimiter = new FailedAuthLimiter({
+  maxFailures: 10,
+  windowMs: 60_000,
+});
 
 const rejectUpgrade = (
   socket: Socket,
@@ -1625,6 +1636,39 @@ const srv: ServerConfig = {
         if (!srv.originAllowed(req)) {
           rejectUpgrade(socket, 403, 'Forbidden');
           return;
+        }
+
+        // Shared-secret auth (MWP-85). Deliberately before App Attest and
+        // before handleUpgrade, so a failed attempt allocates no session and
+        // consumes no connection-limit capacity.
+        if (runtimeConfig.authMode === 'shared-secret') {
+          const peer = getClientIP(req);
+
+          if (failedAuthLimiter.isBlocked(peer)) {
+            srv.logWarn(
+              'Rejected upgrade: too many failed authentication attempts',
+              undefined,
+              'auth',
+            );
+            rejectUpgrade(socket, 429, 'Too Many Requests');
+            return;
+          }
+
+          const auth = authorizeSharedSecret(req.headers, req.url, {
+            authMode: runtimeConfig.authMode,
+            sharedSecret: runtimeConfig.proxySharedSecret,
+            allowQuerySecret: runtimeConfig.allowQuerySecret,
+          });
+
+          if (!auth.authorized) {
+            failedAuthLimiter.recordFailure(peer);
+            // auth.reason never contains the supplied or configured secret.
+            srv.logWarn(`Rejected upgrade: ${auth.reason}`, undefined, 'auth');
+            rejectUpgrade(socket, 401, 'Unauthorized');
+            return;
+          }
+
+          failedAuthLimiter.recordSuccess(peer);
         }
 
         if (requireAppAuth) {
