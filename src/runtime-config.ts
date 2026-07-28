@@ -14,7 +14,7 @@ export interface RuntimeConfig {
   requireAppAuth: boolean;
   diagnosticsEnabled: boolean;
   adminToken: string;
-  trustProxy: boolean | string[];
+  trustedProxyCidrs: boolean | string[];
 }
 
 export interface TlsSettings {
@@ -56,12 +56,24 @@ export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
     .map((target) => target.trim())
     .filter(Boolean);
 
-  const trustProxyRaw = env.TRUST_PROXY?.trim().toLowerCase();
-  let trustProxy: boolean | string[] = false;
-  if (trustProxyRaw === 'true') {
-    trustProxy = true;
-  } else if (trustProxyRaw && trustProxyRaw !== 'false') {
-    trustProxy = trustProxyRaw
+  // TRUST_PROXY was the name during development and never shipped in a
+  // release, but it did reach `develop` and may be set on a deployed host.
+  // Silently ignoring it would leave the proxy trusting nothing, collapsing
+  // every client behind the reverse proxy onto a single address and tripping
+  // per-IP limits service-wide — so refuse to start instead.
+  if (env.TRUST_PROXY !== undefined) {
+    throw new Error(
+      'TRUST_PROXY has been renamed to TRUSTED_PROXY_CIDRS. ' +
+        'Update the environment; the old name is no longer honoured.',
+    );
+  }
+
+  const trustedProxyRaw = env.TRUSTED_PROXY_CIDRS?.trim().toLowerCase();
+  let trustedProxyCidrs: boolean | string[] = false;
+  if (trustedProxyRaw === 'true') {
+    trustedProxyCidrs = true;
+  } else if (trustedProxyRaw && trustedProxyRaw !== 'false') {
+    trustedProxyCidrs = trustedProxyRaw
       .split(',')
       .map((cidr) => cidr.trim())
       .filter(Boolean);
@@ -80,7 +92,7 @@ export const getRuntimeConfig = (env: EnvLike): RuntimeConfig => {
     requireAppAuth: readBooleanEnv(env, 'REQUIRE_APP_AUTH', false),
     diagnosticsEnabled: readBooleanEnv(env, 'ENABLE_DIAGNOSTICS', false),
     adminToken: env.ADMIN_TOKEN || '',
-    trustProxy,
+    trustedProxyCidrs,
   };
 };
 

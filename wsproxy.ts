@@ -161,7 +161,7 @@ const sessionIntegration = new SessionIntegration({
     defaultPort: runtimeConfig.tnPort,
     allowedTargets: runtimeConfig.allowedTargets,
   },
-  trustProxy: runtimeConfig.trustProxy,
+  trustedProxyCidrs: runtimeConfig.trustedProxyCidrs,
   // APNS config from environment
   apns: process.env.APNS_KEY_PATH
     ? {
@@ -188,13 +188,16 @@ const SOCKET_CLOSE_DELAY_MS = 500;
 /**
  * Resolve the real client IP from proxy headers or the socket.
  * Only honours X-Real-IP / X-Forwarded-For when the socket peer is
- * in the trusted-proxy allowlist (srv.trustProxy).  Without that
+ * in the trusted-proxy allowlist (srv.trustedProxyCidrs).  Without that
  * configuration the caller-supplied headers are silently ignored,
  * preventing IP-spoofing attacks against per-IP connection limits
  * and logging.
  */
 const getClientIP = (req: IncomingMessage): string => {
-  const trusted = isTrustedPeer(req.socket?.remoteAddress, srv.trustProxy);
+  const trusted = isTrustedPeer(
+    req.socket?.remoteAddress,
+    srv.trustedProxyCidrs,
+  );
 
   if (trusted) {
     const realIP = req.headers['x-real-ip'];
@@ -877,7 +880,7 @@ interface ServerConfig {
   debug: boolean;
   compress: boolean;
   open: boolean;
-  trustProxy: boolean | string[];
+  trustedProxyCidrs: boolean | string[];
   ttype: TTypeConfig;
   gmcp: GMCPConfig;
   prt: ProtocolConstants;
@@ -923,7 +926,7 @@ const srv: ServerConfig = {
   open: true,
 
   /* trusted proxy CIDRs for client-IP header validation (default: none trusted) */
-  trustProxy: runtimeConfig.trustProxy,
+  trustedProxyCidrs: runtimeConfig.trustedProxyCidrs,
 
   ttype: {
     enabled: 1,
@@ -1093,7 +1096,10 @@ const srv: ServerConfig = {
     );
 
     const requestPeer = (req: IncomingMessage): string => {
-      const trusted = isTrustedPeer(req.socket.remoteAddress, srv.trustProxy);
+      const trusted = isTrustedPeer(
+        req.socket.remoteAddress,
+        srv.trustedProxyCidrs,
+      );
       if (trusted) {
         const forwardedFor = req.headers['x-forwarded-for'];
         const forwarded = Array.isArray(forwardedFor)

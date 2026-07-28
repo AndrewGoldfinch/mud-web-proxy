@@ -112,7 +112,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
   beforeEach(() => {
     si = new SessionIntegration({
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
-      trustProxy: true,
+      trustedProxyCidrs: true,
     });
   });
 
@@ -132,7 +132,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       ),
     );
 
-    // With trustProxy=true: 1.2.3.4 checked via XFF → at limit → rate_limited.
+    // With trustedProxyCidrs=true: 1.2.3.4 checked via XFF → at limit → rate_limited.
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
   });
 
@@ -148,7 +148,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       ),
     );
 
-    // With trustProxy=true: 9.9.9.9 checked via XFF → not at limit → session created.
+    // With trustedProxyCidrs=true: 9.9.9.9 checked via XFF → not at limit → session created.
     expect(lastMsg(socket)).toMatchObject({ type: 'session' });
   });
 
@@ -183,11 +183,11 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
   });
 
-  test('ignores XFF headers when trustProxy is false (default)', () => {
+  test('ignores XFF headers when trustedProxyCidrs is false (default)', () => {
     si.shutdown();
     si = new SessionIntegration({
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
-      trustProxy: false,
+      trustedProxyCidrs: false,
     });
 
     // XFF IP is at limit, but remoteAddress is NOT.
@@ -201,7 +201,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       ),
     );
 
-    // Without trustProxy: remoteAddress (127.0.0.1) is used, not XFF → session created.
+    // Without trustedProxyCidrs: remoteAddress (127.0.0.1) is used, not XFF → session created.
     expect(lastMsg(socket)).toMatchObject({ type: 'session' });
   });
 
@@ -209,7 +209,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.shutdown();
     si = new SessionIntegration({
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
-      trustProxy: ['10.0.0.0/8'],
+      trustedProxyCidrs: ['10.0.0.0/8'],
     });
 
     si.sessionManager.incrementIPCount('1.2.3.4');
@@ -231,7 +231,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.shutdown();
     si = new SessionIntegration({
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
-      trustProxy: ['127.0.0.1'],
+      trustedProxyCidrs: ['127.0.0.1'],
     });
 
     si.sessionManager.incrementIPCount('1.2.3.4');
@@ -251,7 +251,7 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.shutdown();
     si = new SessionIntegration({
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
-      trustProxy: ['10.0.0.0/8'],
+      trustedProxyCidrs: ['10.0.0.0/8'],
     });
 
     si.sessionManager.incrementIPCount('1.2.3.4');

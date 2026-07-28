@@ -55,7 +55,7 @@ export interface SessionIntegrationConfig {
     maxSnippetLength?: number;
   };
   targets?: TargetPolicyConfig;
-  trustProxy?: boolean | string[];
+  trustedProxyCidrs?: boolean | string[];
 }
 
 export class SessionIntegration {
@@ -663,7 +663,7 @@ export class SessionIntegration {
     const peerAddress =
       socket.remoteAddress || socket.req?.connection?.remoteAddress;
 
-    if (isTrustedPeer(peerAddress, this.config.trustProxy)) {
+    if (isTrustedPeer(peerAddress, this.config.trustedProxyCidrs)) {
       const realIP = socket.req?.headers['x-real-ip'];
       if (realIP) {
         const first = (Array.isArray(realIP) ? realIP[0] : realIP).trim();

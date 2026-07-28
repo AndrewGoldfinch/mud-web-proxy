@@ -2,7 +2,7 @@
  * Tests for the shared trusted-proxy peer matcher.
  *
  * Both wsproxy.ts (getClientIP / requestPeer) and SessionIntegration
- * (getClientIP) must reach the SAME trust decision for a given TRUST_PROXY
+ * (getClientIP) must reach the SAME trust decision for a given TRUSTED_PROXY_CIDRS
  * value — otherwise per-IP rate limiting and logging disagree about who the
  * client is.
  */
@@ -81,7 +81,7 @@ describe('isTrustedPeer: IPv4 CIDR ranges', () => {
 describe('isTrustedPeer: IPv4-mapped IPv6 peers', () => {
   // Node reports peers as ::ffff:a.b.c.d on a dual-stack listener, which is
   // the default when the server binds all interfaces. Operators configure
-  // TRUST_PROXY with the bare IPv4 form.
+  // TRUSTED_PROXY_CIDRS with the bare IPv4 form.
 
   test('matches a bare IPv4 entry against a mapped peer', () => {
     expect(isTrustedPeer('::ffff:127.0.0.1', ['127.0.0.1'])).toBe(true);
