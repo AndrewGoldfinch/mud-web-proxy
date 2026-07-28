@@ -72,6 +72,7 @@ import {
   FailedAuthLimiter,
   authorizeSharedSecret,
   formatMissingTypeLogMessage,
+  isOriginAllowed,
   isTrustedPeer,
   resolveClientAddress,
   readLimitedRequestBody,
@@ -1146,6 +1147,26 @@ const srv: ServerConfig = {
     // plaintext-listener acknowledgment on that basis; listening without the
     // host would expose the same listener on every interface, making that
     // check a statement about a socket we never actually created.
+    // An unset allowlist accepts every Origin. That is a deliberate default
+    // for the public fixed-target deployment, but it is security-relevant, so
+    // say so rather than leaving the operator to infer it from silence.
+    if (runtimeConfig.allowedOrigins.length === 0) {
+      srv.logWarn(
+        'ALLOWED_ORIGINS is not set: connections from any Origin are ' +
+          'accepted. Set it for internet-facing deployments. Note Origin is ' +
+          'browser hardening, not authentication — see AUTH_MODE.',
+        undefined,
+        'init',
+      );
+    } else if (runtimeConfig.allowMissingOrigin) {
+      srv.logWarn(
+        'ALLOW_MISSING_ORIGIN=true: clients sending no Origin header bypass ' +
+          'the allowlist. Such clients are gated only by AUTH_MODE.',
+        undefined,
+        'init',
+      );
+    }
+
     webserver.listen(srv.ws_port, srv.bind_host, function () {
       srv.logInfo(
         `server listening: ${srv.bind_host}:${srv.ws_port}`,
@@ -2422,11 +2443,16 @@ const srv: ServerConfig = {
   },
 
   originAllowed: function (req?: IncomingMessage): number {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS;
-    if (!allowedOrigins) return 1; // backward compatible
-    const origin = req?.headers?.origin || '';
-    const allowed = allowedOrigins.split(',').map((s) => s.trim());
-    return allowed.includes(origin) || allowed.includes('*') ? 1 : 0;
+    // Reads the parsed config, not process.env. The ad-hoc read here meant
+    // the startup wildcard rejection was bypassed and ALLOW_MISSING_ORIGIN
+    // could not be turned on at all.
+    return isOriginAllowed(
+      req?.headers?.origin,
+      runtimeConfig.allowedOrigins,
+      runtimeConfig.allowMissingOrigin,
+    )
+      ? 1
+      : 0;
   },
 
   log: function (
