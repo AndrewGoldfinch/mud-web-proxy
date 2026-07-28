@@ -257,7 +257,9 @@ export const isTrustedPeer = (
 
     if (!peerOctets) continue;
 
-    const [network, prefixText] = entry.split('/');
+    const parts = entry.split('/');
+    if (parts.length !== 2) continue;
+    const [network, prefixText] = parts;
     if (!PREFIX.test(prefixText)) continue;
     const prefix = Number(prefixText);
     if (prefix > IPV4_MAX_PREFIX) continue;

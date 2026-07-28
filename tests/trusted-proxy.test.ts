@@ -130,4 +130,14 @@ describe('isTrustedPeer: malformed configuration fails closed', () => {
   test('does not throw on an empty entry', () => {
     expect(isTrustedPeer('10.0.0.1', [''])).toBe(false);
   });
+
+  test('rejects a CIDR carrying extra slash components', () => {
+    // Destructuring `split('/')` silently drops anything past the second
+    // component, which would treat this as a valid 10.0.0.0/8.
+    expect(isTrustedPeer('10.0.0.1', ['10.0.0.0/8/oops'])).toBe(false);
+  });
+
+  test('rejects an entry with a trailing slash and no prefix', () => {
+    expect(isTrustedPeer('10.0.0.1', ['10.0.0.0/'])).toBe(false);
+  });
 });
