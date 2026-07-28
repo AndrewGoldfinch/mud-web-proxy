@@ -56,8 +56,9 @@ export class SessionManager {
     port: number,
     deviceToken?: string,
     bufferSizeBytes: number = 50 * 1024,
+    dialAddress?: string,
   ): Session {
-    const session = new Session(host, port, bufferSizeBytes);
+    const session = new Session(host, port, bufferSizeBytes, dialAddress);
 
     if (deviceToken) {
       session.setDeviceToken(deviceToken);

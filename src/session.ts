@@ -30,6 +30,7 @@ export class Session {
   lastClientConnection: number;
 
   mudHost: string;
+  dialAddress: string;
   mudPort: number;
 
   telnet: TelnetSocket | null = null;
@@ -62,6 +63,7 @@ export class Session {
     host: string,
     port: number,
     bufferSizeBytes: number = 50 * 1024,
+    dialAddress?: string,
   ) {
     this.id = crypto.randomUUID();
     this.authToken = crypto.randomBytes(32).toString('hex');
@@ -69,6 +71,11 @@ export class Session {
     this.lastClientConnection = Date.now();
     this.mudHost = host;
     this.mudPort = port;
+    // The address actually dialled. In arbitrary mode this is the IP that was
+    // validated against the reserved ranges; connecting to the name instead
+    // would re-resolve it and reopen the rebinding hole. Defaults to the host
+    // so every other mode is unchanged.
+    this.dialAddress = dialAddress || host;
     this.buffer = new CircularBuffer(bufferSizeBytes);
     this.telnetParser = new TelnetParser(this);
   }
@@ -146,7 +153,7 @@ export class Session {
         try {
           const plainSocket = net.createConnection(
             this.mudPort,
-            this.mudHost,
+            this.dialAddress,
             () => {
               if (abortIfClosing(plainSocket)) return;
               this.telnetConnected = true;
@@ -184,11 +191,9 @@ export class Session {
           tryPlain();
         };
 
-        const tlsSocket = tls.connect(
-          this.mudPort,
-          this.mudHost,
-          {},
-        ) as unknown as TelnetSocket;
+        const tlsSocket = tls.connect(this.mudPort, this.dialAddress, {
+          servername: this.mudHost,
+        }) as unknown as TelnetSocket;
         this.telnet = tlsSocket;
         tlsSocket.once('secureConnect', () => {
           tlsSocket.off('error', onTlsConnectError);
