@@ -1902,21 +1902,29 @@ const srv: ServerConfig = {
   parse: function (s: SocketExtended, d: Buffer): number {
     if (d[0] !== '{'.charCodeAt(0)) return 0;
 
-    try {
-      const msg = d.toString();
-      const parsed = JSON.parse(msg);
-      if (parsed && parsed.type) {
-        const handled = sessionIntegration.parseNewMessage(s, d);
-        if (handled) return 1;
-      } else if (parsed) {
-        srv.logError(
-          formatMissingTypeLogMessage(parsed, d.length, msg),
-          s,
-          'parse',
-        );
-      }
-    } catch (_err) {
-      // Invalid JSON, forward to MUD
+    const outcome = sessionIntegration.parseNewMessage(s, d);
+
+    if (outcome.kind === 'handled') return 1;
+
+    if (outcome.kind === 'invalid') {
+      sessionIntegration.sendProtocolError(s, outcome);
+      srv.logWarn(
+        `rejected client message: field=${outcome.field ?? '-'} ${outcome.reason}`,
+        s,
+        'parse',
+      );
+      // Returning 1 is what stops the caller forwarding this to the MUD.
+      return 1;
+    }
+
+    if (outcome.parsedObject) {
+      // A JSON object carrying neither `type` nor `connect` is player input
+      // that happens to be JSON, so this is debug rather than error.
+      srv.logDebug(
+        formatMissingTypeLogMessage(outcome.parsedObject, d.length),
+        s,
+        'parse',
+      );
     }
 
     return 0;

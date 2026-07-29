@@ -19,6 +19,13 @@ import {
 } from './target-policy';
 import type { MudTlsMode } from './runtime-config';
 import { resolveClientAddress } from './wsproxy-utils';
+import {
+  recognize,
+  validateTyped,
+  KNOWN_TYPES,
+  type ParseOutcome,
+  type KnownType,
+} from './client-protocol';
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -175,66 +182,121 @@ export class SessionIntegration {
   }
 
   /**
-   * Parse new-style client messages (connect, resume, input, naws, disconnect)
-   * Returns true if message was handled, false otherwise
+   * Classify and dispatch one client message.
+   *
+   * Three outcomes, not two. The old boolean conflated "not my message,
+   * forward it to the MUD" with "my message, but I could not handle it",
+   * which is how malformed control messages ended up typed into the game.
    */
-  parseNewMessage(socket: SocketExtended, data: Buffer): boolean {
+  parseNewMessage(socket: SocketExtended, data: Buffer): ParseOutcome {
+    let parsed: unknown;
     try {
-      const msg = data.toString();
-
-      // Check if it's JSON (starts with {)
-      if (msg.trim()[0] !== '{') {
-        return false;
-      }
-
-      const parsed = JSON.parse(msg) as ClientMessage;
-
-      // Only handle messages with type field
-      if (!('type' in parsed)) {
-        return false;
-      }
-
-      const clientMsg = parsed;
-
-      if (socket.debug) {
-        // Redact sensitive fields before logging
-        const sanitized = { ...parsed };
-        if ('token' in sanitized) sanitized.token = '***';
-        if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
-        this.log(
-          `client msg: ${JSON.stringify(sanitized)}`,
-          this.getClientIP(socket),
-        );
-      }
-
-      switch (clientMsg.type) {
-        case 'connect':
-          this.handleConnect(socket, clientMsg);
-          return true;
-        case 'resume':
-          this.handleResume(socket, clientMsg);
-          return true;
-        case 'activityToken':
-          this.handleActivityToken(socket, clientMsg);
-          return true;
-        case 'syncAck':
-          this.handleSyncAck(socket, clientMsg);
-          return true;
-        case 'input':
-          this.handleInput(socket, clientMsg);
-          return true;
-        case 'naws':
-          this.handleNAWS(socket, clientMsg);
-          return true;
-        case 'disconnect':
-          this.handleDisconnect(socket);
-          return true;
-        default:
-          return false;
-      }
+      parsed = JSON.parse(data.toString());
     } catch (_err) {
-      // Not valid JSON or new format
-      return false;
+      // Not JSON: ordinary player input, belongs to the MUD.
+      return { kind: 'not-ours' };
+    }
+
+    const recognition = recognize(parsed);
+    if (recognition.shape === 'unrecognized') {
+      return {
+        kind: 'not-ours',
+        parsedObject:
+          parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : undefined,
+      };
+    }
+
+    const o = parsed as Record<string, unknown>;
+
+    if (recognition.shape === 'legacy') {
+      // Wired in Task 4. Until then a legacy message is rejected rather than
+      // forwarded, which is already an improvement on the current behaviour.
+      return {
+        kind: 'invalid',
+        code: 'invalid_request',
+        field: 'connect',
+        reason: 'Legacy connect is not yet supported',
+      };
+    }
+
+    if (!(KNOWN_TYPES as readonly string[]).includes(recognition.type)) {
+      return {
+        kind: 'invalid',
+        code: 'invalid_request',
+        field: 'type',
+        reason: `Unknown message type: ${recognition.type}`,
+      };
+    }
+
+    const validation = validateTyped(recognition.type, o);
+    if (!validation.ok) {
+      return {
+        kind: 'invalid',
+        code: 'invalid_request',
+        field: validation.field,
+        reason: validation.reason,
+      };
+    }
+
+    const clientMsg = parsed as ClientMessage;
+
+    if (socket.debug) {
+      // Redact sensitive fields before logging
+      const sanitized = { ...o };
+      if ('token' in sanitized) sanitized.token = '***';
+      if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
+      this.log(
+        `client msg: ${JSON.stringify(sanitized)}`,
+        this.getClientIP(socket),
+      );
+    }
+
+    switch (recognition.type as KnownType) {
+      case 'connect':
+        void this.handleConnect(socket, clientMsg as ConnectRequest);
+        return { kind: 'handled' };
+      case 'resume':
+        this.handleResume(socket, clientMsg as ResumeRequest);
+        return { kind: 'handled' };
+      case 'activityToken':
+        this.handleActivityToken(socket, clientMsg as ActivityTokenRequest);
+        return { kind: 'handled' };
+      case 'syncAck':
+        this.handleSyncAck(socket, clientMsg as SyncAckRequest);
+        return { kind: 'handled' };
+      case 'input':
+        this.handleInput(socket, clientMsg as InputRequest);
+        return { kind: 'handled' };
+      case 'naws':
+        this.handleNAWS(socket, clientMsg as NAWSRequest);
+        return { kind: 'handled' };
+      case 'disconnect':
+        this.handleDisconnect(socket);
+        return { kind: 'handled' };
+    }
+  }
+
+  /**
+   * Render a protocol-level rejection to a typed client. Legacy clients are
+   * handled separately in openTelnetSession, which writes plaintext into the
+   * telnet stream instead.
+   */
+  sendProtocolError(
+    socket: SocketExtended,
+    outcome: { code: string; field?: string; reason: string },
+  ): void {
+    const response = {
+      type: 'error',
+      code: outcome.code,
+      field: outcome.field,
+      message: outcome.reason,
+    };
+    try {
+      socket.sendUTF(JSON.stringify(response));
+    } catch (_err) {
+      // Socket might be closed
     }
   }
 
