@@ -2,14 +2,19 @@
 
 This guide covers everything needed to connect an iOS app to mud-web-proxy with App Attest authentication enabled (`REQUIRE_APP_AUTH=true`).
 
+> **App Attest is EXPERIMENTAL and optional.**
+>
+> It is **disabled by default**. Until you set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`, the `/attest/*` routes are not registered at all and return 404 — you can ignore this entire guide if you are not shipping an iOS app.
+>
+> The Apple attestation and assertion verification in `src/app-attest.ts` **has not received an independent cryptographic review**. It is a from-scratch implementation of Apple's format, and bugs in that kind of code are not self-announcing: a verifier that is too permissive still accepts every genuine client, so it looks like it works. Do not rely on App Attest as your only access control. Pair it with `AUTH_MODE=shared-secret`, which is checked first and independently.
+
 ## Overview
 
-Two paths depending on build type:
-
-- **Release / TestFlight** — Apple App Attest. The Secure Enclave holds a key pair; Apple cryptographically proves it belongs to your genuine app binary.
-- **Simulator / Debug** — Mutual TLS (mTLS). A client certificate bundled into the debug build is verified by the server.
+Apple App Attest is the only supported path, and it requires a physical device: the Secure Enclave holds a key pair, and Apple cryptographically proves it belongs to your genuine app binary.
 
 Each WebSocket connection requires a fresh server challenge signed by the device. Registration (generating and attesting the key) happens once per device install and is stored in the iOS Keychain.
+
+The Simulator cannot attest and there is no certificate-based fallback any more — see [Part 2](#part-2-simulator-and-debug-builds).
 
 ---
 
@@ -17,7 +22,8 @@ Each WebSocket connection requires a fresh server challenge signed by the device
 
 - Xcode project with a valid bundle ID and Apple Developer team
 - App Attest capability enabled in your entitlements (`com.apple.developer.devicecheck.appattest-environment` set to `production` or `development`)
-- Server running with `REQUIRE_APP_AUTH=true`, `APPATTEST_BUNDLE_ID`, and `APPATTEST_TEAM_ID` set
+- Server running with `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID` set — both, or startup aborts — and `REQUIRE_APP_AUTH=true` once you are ready to enforce
+- A physical iOS device. The Simulator cannot produce an attestation.
 
 ---
 
@@ -198,146 +204,57 @@ func openWebSocket(
 
 ---
 
-## Part 2: mTLS Fallback (Simulator / Debug Builds)
+## Part 2: Simulator and Debug Builds
 
-### 2.1 Generate the client certificate (server-side, one time)
+The iOS Simulator has no Secure Enclave, so `DCAppAttestService.shared.isSupported` is `false` there and no assertion can be produced. Earlier versions of this proxy papered over that with a mutual-TLS fallback: a client certificate bundled into debug builds was accepted in place of an assertion.
 
-Run this on your dev machine. Keep `ca.key` private — never commit it.
+**That fallback has been removed.** `ALLOW_MTLS_FALLBACK` and `MTLS_CLIENT_CA_PATH` no longer exist, and the proxy aborts at startup if either is still set in your environment.
+
+It was removed because of how it was gated. The condition was `ALLOW_MTLS_FALLBACK && NODE_ENV !== 'production'` — and `NODE_ENV` is unset on a plain `bun start`, which is not `'production'`. A deployment that never set `NODE_ENV` therefore had the fallback available, meaning any client holding a certificate signed by the configured CA could skip attestation entirely. The guard read as a production safeguard and behaved as the opposite.
+
+### What to use instead
+
+Run the Simulator against a proxy configured with a shared secret rather than App Attest:
 
 ```bash
-mkdir -p config/client-ca
-
-# Generate CA key + self-signed cert
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -keyout config/client-ca/ca.key \
-  -x509 -days 3650 \
-  -subj "/CN=MudApp Debug CA/O=YourOrg" \
-  -out config/client-ca/ca.pem
-
-# Generate client key + CSR
-openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes \
-  -keyout config/client-ca/client.key \
-  -subj "/CN=MudApp Debug Client" \
-  -out config/client-ca/client.csr
-
-# Sign the client cert with the CA
-openssl x509 -req -days 3650 \
-  -in config/client-ca/client.csr \
-  -CA config/client-ca/ca.pem \
-  -CAkey config/client-ca/ca.key \
-  -CAcreateserial \
-  -out config/client-ca/client.crt
-
-# Bundle into PKCS#12 (no passphrase for simplicity in debug builds)
-openssl pkcs12 -export -passout pass: \
-  -inkey config/client-ca/client.key \
-  -in config/client-ca/client.crt \
-  -out config/client-ca/client.p12
+# Simulator / local development
+AUTH_MODE=shared-secret
+PROXY_SHARED_SECRET=<at least 32 bytes>
+# App Attest left unconfigured, so REQUIRE_APP_AUTH must stay unset
 ```
 
-Set on the server:
-
-```
-MTLS_CLIENT_CA_PATH=./config/client-ca/ca.pem
-```
-
-### 2.2 Add the certificate to Xcode
-
-1. Add `client.p12` to the Xcode project (drag into the project navigator).
-2. In the file's target membership, include it only in the **Debug** configuration — never Release/TestFlight.
-3. Mark it as a resource so it's copied to the app bundle.
-
-### 2.3 Present the client certificate for TLS challenge
-
-```swift
-#if targetEnvironment(simulator) || DEBUG
-
-class DebugTLSDelegate: NSObject, URLSessionDelegate {
-    func urlSession(
-        _ session: URLSession,
-        didReceive challenge: URLAuthenticationChallenge,
-        completionHandler: @escaping (URLSession.AuthChallengeDisposition, URLCredential?) -> Void
-    ) {
-        switch challenge.protectionSpace.authenticationMethod {
-        case NSURLAuthenticationMethodClientCertificate:
-            guard let credential = loadDebugClientCredential() else {
-                completionHandler(.performDefaultHandling, nil)
-                return
-            }
-            completionHandler(.useCredential, credential)
-
-        case NSURLAuthenticationMethodServerTrust:
-            // Accept self-signed server cert in debug (optional — remove if using a real cert)
-            if let trust = challenge.protectionSpace.serverTrust {
-                completionHandler(.useCredential, URLCredential(trust: trust))
-            } else {
-                completionHandler(.performDefaultHandling, nil)
-            }
-
-        default:
-            completionHandler(.performDefaultHandling, nil)
-        }
-    }
-
-    private func loadDebugClientCredential() -> URLCredential? {
-        guard let url = Bundle.main.url(forResource: "client", withExtension: "p12"),
-              let p12Data = try? Data(contentsOf: url)
-        else { return nil }
-
-        var items: CFArray?
-        let options = [kSecImportExportPassphrase as String: ""] as CFDictionary
-        guard SecPKCS12Import(p12Data as CFData, options, &items) == errSecSuccess,
-              let itemArray = items as? [[String: Any]],
-              let first = itemArray.first,
-              let identity = first[kSecImportItemIdentity as String]
-        else { return nil }
-
-        return URLCredential(
-            identity: identity as! SecIdentity,
-            certificates: nil,
-            persistence: .forSession
-        )
-    }
-}
-
-// Use this session for all WebSocket connections in debug/simulator
-let debugSession = URLSession(
-    configuration: .default,
-    delegate: DebugTLSDelegate(),
-    delegateQueue: nil
-)
-
-#endif
-```
-
-### 2.4 Combined connection helper
+The client sends the secret as an `Authorization: Bearer` header on the upgrade request:
 
 ```swift
 func makeWebSocketTask(proxyURL: URL, proxyBaseURL: URL) async throws -> URLSessionWebSocketTask {
     var request = URLRequest(url: proxyURL)
 
-#if targetEnvironment(simulator) || DEBUG
-    // mTLS path — no assertion headers needed
-    let session = URLSession(
-        configuration: .default,
-        delegate: DebugTLSDelegate(),
-        delegateQueue: nil
-    )
+#if targetEnvironment(simulator)
+    // No Secure Enclave here. Authenticate with the shared secret instead;
+    // this build must never ship, so keep the secret out of Release.
+    request.setValue("Bearer \(Config.proxySharedSecret)", forHTTPHeaderField: "Authorization")
 #else
-    // App Attest path — add assertion headers
+    // Device build — App Attest assertion headers.
     let attestManager = AppAttestManager()
     let headers = try await attestManager.assertionHeaders(proxyBaseURL: proxyBaseURL)
     for (key, value) in headers {
         request.setValue(value, forHTTPHeaderField: key)
     }
-    let session = URLSession(configuration: .default)
 #endif
 
+    let session = URLSession(configuration: .default)
     let task = session.webSocketTask(with: request)
     task.resume()
     return task
 }
 ```
+
+Two consequences worth planning around:
+
+- **A shared secret is a shared secret.** Anyone holding it can connect. Use a different one for development than for anything reachable from the internet, and do not compile it into a Release build.
+- **The two modes are independent.** `AUTH_MODE=shared-secret` and App Attest can both be enabled on the same deployment, and pairing them is the recommended posture given the review gap noted at the top of this guide. Shared-secret authentication is checked first, before any App Attest work, so a failed attempt costs nothing.
+
+Testing the real attestation path requires a physical device. There is no way around that, and a fallback that pretends otherwise is a fallback that ships.
 
 ---
 
@@ -395,11 +312,14 @@ struct MudApp: App {
 | Scenario                                                     | Cause                                                          | Fix                                                         |
 | ------------------------------------------------------------ | -------------------------------------------------------------- | ----------------------------------------------------------- |
 | `registrationFailed("Invalid or expired nonce")`             | Nonce expired (60s TTL) before `POST /attest/register` arrived | Reduce latency; retry with a fresh challenge                |
-| `registrationFailed("Server not configured for App Attest")` | `APPATTEST_BUNDLE_ID` or `APPATTEST_TEAM_ID` not set on server | Set env vars on server                                      |
+| HTTP 404 from `/attest/challenge` or `/attest/register`      | App Attest is not configured, so the routes are not registered | Set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`      |
+| HTTP 429 from `/attest/challenge`                            | More than 30 challenges/minute from one source address         | Request one nonce per connection, not per retry             |
+| HTTP 429 from `/attest/register`                             | More than 5 registrations/minute from one source address       | Register once per install; cache the `keyId` in the Keychain |
 | `registrationFailed("rpIdHash does not match bundleId")`     | `APPATTEST_BUNDLE_ID` doesn't match app's actual bundle ID     | Verify env var matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode |
 | `DCError.invalidInput` from Apple                            | Device not eligible (too old, or running iOS < 14)             | Check `DCAppAttestService.shared.isSupported`               |
 | WebSocket connection rejected (no 101)                       | Assertion headers missing or assertion failed                  | Re-register if keyId lost; check nonce freshness            |
-| mTLS: server rejects cert                                    | Wrong CA on server, or cert bundled in wrong target            | Verify `MTLS_CLIENT_CA_PATH` points to the correct `ca.pem` |
+| Previously-working device rejected after a long gap          | Its key passed the 90-day inactivity TTL and was reclaimed     | Re-register; this is expected, not a fault                  |
+| Server aborts at startup naming `ALLOW_MTLS_FALLBACK`        | Retired variable still present in the environment              | Remove it; see [Part 2](#part-2-simulator-and-debug-builds) |
 
 ---
 
@@ -408,18 +328,30 @@ struct MudApp: App {
 Add to your `.env`:
 
 ```bash
-REQUIRE_APP_AUTH=true
+# These two together are what enable App Attest. There is no separate
+# APPATTEST_ENABLED flag, and setting only one aborts startup.
 APPATTEST_BUNDLE_ID=com.example.yourapp   # must match exactly
-APPATTEST_TEAM_ID=AAABBBCCC1             # 10-char Apple Developer team ID
-MTLS_CLIENT_CA_PATH=./config/client-ca/ca.pem  # for simulator fallback
+APPATTEST_TEAM_ID=AAABBBCCC1              # 10-char Apple Developer team ID
+
+# Enforce assertions on every upgrade. Requires the two above; setting it
+# without them aborts startup rather than rejecting every client.
+REQUIRE_APP_AUTH=true
+
+# Recommended: an independent second factor, given the review gap.
+AUTH_MODE=shared-secret
+PROXY_SHARED_SECRET=<at least 32 bytes>
+
+# Optional. Written atomically; entries unused for 90 days are reclaimed and
+# the store is capped at 10,000 keys.
+# ATTESTED_KEYS_PATH=./config/attested-keys.json
 ```
 
-The proxy serves both HTTP endpoints on the same port as WebSockets (default `6200`):
+The proxy serves both HTTP endpoints on the same port as WebSockets (default `6200`), **and only when App Attest is configured** — otherwise they 404 like any unknown path:
 
-| Endpoint            | Method | Used by iOS                    | Description                                         |
-| ------------------- | ------ | ------------------------------ | --------------------------------------------------- |
-| `/attest/challenge` | GET    | Registration + each connection | Returns `{nonce: "hex64chars", expires: timestamp}` |
-| `/attest/register`  | POST   | Registration only              | Body: `{keyId, attestation: base64, nonce: hex}`    |
+| Endpoint            | Method | Used by iOS                    | Rate limit | Description                                         |
+| ------------------- | ------ | ------------------------------ | ---------- | --------------------------------------------------- |
+| `/attest/challenge` | GET    | Registration + each connection | 30/min per source | Returns `{nonce: "hex64chars", expires: timestamp}` |
+| `/attest/register`  | POST   | Registration only              | 5/min per source  | Body: `{keyId, attestation: base64, nonce: hex}`    |
 
 The WebSocket upgrade must include headers:
 

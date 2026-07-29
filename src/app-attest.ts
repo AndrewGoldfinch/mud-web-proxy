@@ -16,16 +16,53 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 // ---------- Nonce store ----------
 
 const NONCE_TTL_MS = 60_000;
+
+/**
+ * Hard ceiling on outstanding challenges (MWP-95).
+ *
+ * `/attest/challenge` is unauthenticated, so this map is the one piece of
+ * server state an anonymous caller can grow directly. TTL alone does not
+ * bound it: expiry is 60s, so the ceiling was however many nonces a caller
+ * could request in 60 seconds — unbounded in practice. The per-source rate
+ * limit in wsproxy.ts is the first line; this is the backstop for a
+ * distributed caller that stays under it from many addresses.
+ *
+ * 10k nonces is roughly 1 MB and far above any real fleet's 60-second
+ * demand, since a client asks for one nonce per connect.
+ */
+const MAX_CHALLENGES = 10_000;
 const challenges = new Map<string, number>(); // nonce → expiry timestamp
 
-export function generateChallenge(): string {
-  const nonce = randomBytes(32).toString('hex');
-  challenges.set(nonce, Date.now() + NONCE_TTL_MS);
-  // Lazy cleanup: remove expired entries
+/** Drop every entry past its TTL. */
+function evictExpiredChallenges(now: number): void {
   for (const [n, exp] of challenges) {
-    if (Date.now() > exp) challenges.delete(n);
+    if (now > exp) challenges.delete(n);
   }
+}
+
+export function generateChallenge(): string {
+  const now = Date.now();
+  evictExpiredChallenges(now);
+
+  // If eviction did not get us under the ceiling, every remaining nonce is
+  // live and we are under load or under attack. Drop the oldest — Map
+  // iterates in insertion order, and insertion order is expiry order because
+  // the TTL is constant — rather than refusing to issue, which would let a
+  // flood deny registration to legitimate clients.
+  while (challenges.size >= MAX_CHALLENGES) {
+    const oldest = challenges.keys().next();
+    if (oldest.done) break;
+    challenges.delete(oldest.value);
+  }
+
+  const nonce = randomBytes(32).toString('hex');
+  challenges.set(nonce, now + NONCE_TTL_MS);
   return nonce;
+}
+
+/** Outstanding challenge count. Exposed for tests and diagnostics. */
+export function challengeCount(): number {
+  return challenges.size;
 }
 
 export function validateAndConsumeNonce(nonce: string): boolean {
@@ -637,7 +674,6 @@ export interface AssertionInput {
   storedPublicKey: string; // PEM
   alternatePublicKey?: string; // PEM
   storedSignCount: number;
-  allowInsecureBypass?: boolean;
 }
 
 export interface AssertionResult {
@@ -657,7 +693,6 @@ export async function verifyAssertion(
     storedPublicKey,
     alternatePublicKey,
     storedSignCount,
-    allowInsecureBypass,
   } = opts;
 
   // 1. Decode CBOR
@@ -923,13 +958,12 @@ export async function verifyAssertion(
   }
 
   if (!valid) {
-    if (allowInsecureBypass) {
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[app-attest] Insecure assertion bypass enabled; accepting assertion with failed signature verify (signCount=${parsed.signCount}, stored=${storedSignCount})`,
-      );
-      return { newSignCount: parsed.signCount };
-    }
+    // A failed signature is the end of the road. MWP-95 removed the opt-in
+    // escape hatch that used to return success here: an assertion that does
+    // not verify carries no evidence about the device that sent it, so
+    // accepting one makes App Attest a decorative header check. There is
+    // deliberately no flag, test hook, or environment variable that reaches
+    // this branch — if you are adding one, you are removing the feature.
     throw new Error(
       `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, keyIdMatchesCandidate=${keyIdMatchesAnyCandidate}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
     );
@@ -945,16 +979,80 @@ export interface AttestedKeyEntry {
   alternatePublicKey?: string; // PEM
   signCount: number;
   registeredAt: string; // ISO timestamp
+  /**
+   * ISO timestamp of the last successful assertion. Absent on entries
+   * written before MWP-95, which fall back to `registeredAt` for TTL.
+   */
+  lastUsedAt?: string;
 }
 
+/**
+ * Bounds on the attested-key store (MWP-95).
+ *
+ * Registration is unauthenticated — it is gated by a valid Apple attestation,
+ * not by a credential we issued — so without a ceiling the store grows with
+ * every device that ever connects and is never reclaimed. The TTL reclaims
+ * keys belonging to devices that stopped coming back: an uninstalled app, a
+ * replaced phone. A returning client past the TTL re-registers, which is one
+ * extra round trip, not a failure.
+ */
+const MAX_ATTESTED_KEYS = 10_000;
+const ATTESTED_KEY_TTL_MS = 90 * 24 * 60 * 60 * 1000; // 90 days
+
 const attestedKeys = new Map<string, AttestedKeyEntry>();
+
+/** When an entry was last useful, for TTL purposes. */
+function lastActivity(entry: AttestedKeyEntry): number {
+  const stamp = Date.parse(entry.lastUsedAt ?? entry.registeredAt);
+  // An unparseable timestamp must not read as "epoch, evict immediately" —
+  // that would silently discard a usable key on a malformed file.
+  return Number.isNaN(stamp) ? Date.now() : stamp;
+}
+
+/** Drop entries whose last activity is older than the TTL. */
+function evictStaleKeys(now: number): void {
+  for (const [keyId, entry] of attestedKeys) {
+    if (now - lastActivity(entry) > ATTESTED_KEY_TTL_MS) {
+      attestedKeys.delete(keyId);
+    }
+  }
+}
 
 export function getAttestedKey(keyId: string): AttestedKeyEntry | undefined {
   return attestedKeys.get(keyId);
 }
 
 export function setAttestedKey(keyId: string, entry: AttestedKeyEntry): void {
+  const now = Date.now();
+  evictStaleKeys(now);
+
+  // Replacing an existing key never grows the store, so only a genuinely new
+  // keyId needs to make room.
+  if (!attestedKeys.has(keyId)) {
+    while (attestedKeys.size >= MAX_ATTESTED_KEYS) {
+      // Evict least-recently-active rather than oldest-inserted: a long-lived
+      // device that still connects daily should outlive one that registered
+      // yesterday and vanished.
+      let stalestKey: string | null = null;
+      let stalestAt = Infinity;
+      for (const [candidateId, candidate] of attestedKeys) {
+        const activity = lastActivity(candidate);
+        if (activity < stalestAt) {
+          stalestAt = activity;
+          stalestKey = candidateId;
+        }
+      }
+      if (stalestKey === null) break;
+      attestedKeys.delete(stalestKey);
+    }
+  }
+
   attestedKeys.set(keyId, entry);
+}
+
+/** Registered key count. Exposed for tests and diagnostics. */
+export function attestedKeyCount(): number {
+  return attestedKeys.size;
 }
 
 export function getAllAttestedKeys(): Array<{
@@ -969,14 +1067,28 @@ export function getAllAttestedKeys(): Array<{
 
 export function updateSignCount(keyId: string, newCount: number): void {
   const entry = attestedKeys.get(keyId);
-  if (entry) entry.signCount = newCount;
+  if (!entry) return;
+  entry.signCount = newCount;
+  // This is the only "the device is still here" signal we get, and it is what
+  // keeps an active key from aging out under the TTL.
+  entry.lastUsedAt = new Date().toISOString();
 }
 
 export function loadAttestedKeys(filePath: string): void {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const obj = JSON.parse(raw) as Record<string, AttestedKeyEntry>;
-    for (const [keyId, entry] of Object.entries(obj)) {
+    const now = Date.now();
+    const entries = Object.entries(obj)
+      // Apply the TTL at load too. A file written before a long outage would
+      // otherwise reintroduce keys the running process would have reclaimed,
+      // and restore the store above its ceiling.
+      .filter(([, entry]) => now - lastActivity(entry) <= ATTESTED_KEY_TTL_MS)
+      // Keep the most recently active when the file exceeds the ceiling.
+      .sort(([, a], [, b]) => lastActivity(b) - lastActivity(a))
+      .slice(0, MAX_ATTESTED_KEYS);
+
+    for (const [keyId, entry] of entries) {
       attestedKeys.set(keyId, entry);
     }
   } catch {
@@ -984,6 +1096,18 @@ export function loadAttestedKeys(filePath: string): void {
   }
 }
 
+/**
+ * Persist the key store atomically (MWP-95).
+ *
+ * `writeFileSync` on the live path truncates it first, so a crash, a full
+ * disk, or a container stop mid-write leaves a truncated file — and
+ * `loadAttestedKeys` treats unparseable JSON as "start fresh", silently
+ * deregistering every device. Writing a sibling temp file and renaming makes
+ * the swap atomic on POSIX: readers see either the old file or the new one.
+ *
+ * The temp file is a sibling rather than in /tmp because rename(2) is only
+ * atomic within a filesystem.
+ */
 export function saveAttestedKeys(filePath: string): void {
   const obj: Record<string, AttestedKeyEntry> = {};
   for (const [keyId, entry] of attestedKeys) {
@@ -991,7 +1115,30 @@ export function saveAttestedKeys(filePath: string): void {
   }
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), 'utf-8');
+
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  try {
+    // fsync before rename: rename is atomic with respect to the directory
+    // entry, but without the flush the new file's contents may still be in
+    // page cache when the machine loses power, leaving an intact name over
+    // empty data.
+    const handle = fs.openSync(tempPath, 'w');
+    try {
+      fs.writeFileSync(handle, JSON.stringify(obj, null, 2), 'utf-8');
+      fs.fsyncSync(handle);
+    } finally {
+      fs.closeSync(handle);
+    }
+    fs.renameSync(tempPath, filePath);
+  } catch (err) {
+    // Leave the previous file in place and do not leak the partial temp.
+    try {
+      fs.unlinkSync(tempPath);
+    } catch {
+      // Nothing to clean up.
+    }
+    throw err;
+  }
 }
 
 let saveTimer: ReturnType<typeof setTimeout> | null = null;

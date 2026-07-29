@@ -169,7 +169,51 @@ Rewrite the README and add focused documentation for:
 - Typed and legacy client protocols.
 - TLS boundaries, plaintext upstream Telnet limitations, logs, health,
   diagnostics, upgrades, rollback, backups, and troubleshooting.
-- Optional App Attest/APNS behavior and privacy implications.
+- Optional App Attest/APNS behavior and privacy implications — the substance
+  is in [Optional Apple features](#optional-apple-features-privacy-and-status)
+  below; the README should summarize it and link there.
+
+### Optional Apple features: privacy and status
+
+Both App Attest and APNS are optional and disabled by default. A self-hosting
+operator running the proxy for a browser client should leave both unset and
+will then carry none of what follows.
+
+**App Attest is experimental.** The attestation and assertion verification in
+`src/app-attest.ts` is a from-scratch implementation of Apple's format and has
+not received an independent cryptographic review. That gap matters more than
+it might appear: a verifier that is too permissive still accepts every genuine
+client, so the failure mode is silent. Documentation, the `.env.example`
+comments, and the startup log all say so, and all recommend pairing it with
+`AUTH_MODE=shared-secret` rather than relying on it alone. Enabling it is the
+operator's decision; the proxy's job is to make sure that decision is informed
+and is never made by default.
+
+Enabling it also has a privacy cost worth stating plainly. The proxy persists
+one record per registered device — an Apple-issued key identifier, its public
+key, a signature counter, and timestamps — to `ATTESTED_KEYS_PATH`. That file
+is a durable list of which devices have used this server and roughly when,
+so it should be treated as personal data: keep it on the same footing as
+logs, and note that entries are reclaimed after 90 days of inactivity, which
+bounds retention rather than eliminating it.
+
+**APNS sends data to Apple.** When push is configured, three things follow
+that do not otherwise happen:
+
+- Device tokens supplied by clients are held in memory alongside their
+  sessions, and are sent to Apple with every push. A device token is a stable
+  per-install identifier.
+- Alert pushes carry a snippet of MUD output — by default a trigger match,
+  which is typically someone else's message to the player — through Apple's
+  servers in cleartext-to-Apple form. Apple can read it. `ACTIVITY_PUSH_MAX_SNIPPET_LENGTH`
+  bounds the size but does not change who can see it.
+- Silent and Live Activity pushes reveal connection timing to Apple even when
+  they carry no text: the pattern of pushes is itself a record of when a
+  player is active.
+
+None of this happens with APNS unconfigured, which is the default. Operators
+who enable it should say so in their own privacy policy, because their users
+cannot infer it from the fact that they are playing a MUD.
 
 Add `SECURITY.md`, `SUPPORT.md`, `CONTRIBUTING.md`, `CHANGELOG.md`, `CODEOWNERS`,
 issue forms, and a pull-request template. Enable Issues and Discussions. Keep

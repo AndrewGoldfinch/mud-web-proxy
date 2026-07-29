@@ -210,6 +210,14 @@ export interface ApnsConfig {
   environment: 'sandbox' | 'production';
 }
 
+/** Every APNS field that must be present together for push to work. */
+const APNS_REQUIRED_VARS = [
+  'APNS_KEY_PATH',
+  'APNS_KEY_ID',
+  'APNS_TEAM_ID',
+  'APNS_TOPIC',
+] as const;
+
 export interface BackgroundPushEnvConfig {
   silentPushIntervalMs?: number;
   activityPushIntervalMs?: number;
@@ -220,10 +228,16 @@ export interface BackgroundPushEnvConfig {
 }
 
 export interface AppAttestConfig {
+  /**
+   * Derived, never read directly from the environment: App Attest is on
+   * exactly when it has been given the identifiers it cannot work without.
+   * A separate APPATTEST_ENABLED would let the two disagree, and the
+   * disagreement that matters — enabled but unconfigured — is the one that
+   * registers routes which can only ever return errors.
+   */
+  enabled: boolean;
   bundleId: string;
   teamId: string;
-  allowAssertionBypass: boolean;
-  diagCrosskey: boolean;
   attestedKeysPath: string;
 }
 
@@ -289,9 +303,6 @@ export interface RuntimeConfig {
   // Logging
   log: LogConfig;
 
-  // Platform
-  nodeEnv: string;
-
   // APNS
   apns: ApnsConfig | undefined;
 
@@ -300,10 +311,6 @@ export interface RuntimeConfig {
 
   // App Attest
   appAttest: AppAttestConfig;
-
-  // mTLS
-  mtlsClientCaPath: string;
-  allowMtlsFallback: boolean;
 
   // Background push
   backgroundPush: BackgroundPushEnvConfig;
@@ -503,6 +510,30 @@ export const parseRuntimeConfig = (
     );
   }
 
+  // The two retired App Attest bypass variables are deliberately absent from
+  // this function. Unlike the retired flags above, ignoring a bypass fails
+  // toward the safe side: the setting is simply inert, verification stays on,
+  // and there is no code path left that could consult it. Retiring them with
+  // a startup error would be a weaker guarantee, not a stronger one — it
+  // would mean something still reads them.
+
+  // Retired mTLS fallback (MWP-95). It was gated on NODE_ENV !== 'production',
+  // which is not a security boundary: NODE_ENV is unset far more often than
+  // operators assume, and an unset NODE_ENV enabled the fallback.
+  if (env.ALLOW_MTLS_FALLBACK !== undefined) {
+    errors.push(
+      'ALLOW_MTLS_FALLBACK has been removed. Client certificates are no ' +
+        'longer accepted as a substitute for an App Attest assertion. ' +
+        'Use AUTH_MODE=shared-secret for clients that cannot attest.',
+    );
+  }
+  if (env.MTLS_CLIENT_CA_PATH !== undefined) {
+    errors.push(
+      'MTLS_CLIENT_CA_PATH has been removed along with ALLOW_MTLS_FALLBACK. ' +
+        'The proxy no longer requests client certificates.',
+    );
+  }
+
   // Diagnostics
   const diagnosticsEnabled = readBooleanEnv(env, 'ENABLE_DIAGNOSTICS', false);
   const adminToken = env.ADMIN_TOKEN || '';
@@ -517,57 +548,67 @@ export const parseRuntimeConfig = (
   const logLevel = LOG_LEVEL_BY_NAME[logLevelName];
   const noColor = env.NO_COLOR === '1';
 
-  // Platform
-  const nodeEnv = env.NODE_ENV || 'development';
-
-  // APNS
-  const apnsKeyPath = env.APNS_KEY_PATH;
+  // APNS — optional, off unless fully configured.
+  //
+  // Presence of the whole set is the switch. Partial configuration used to
+  // build an `apns` object out of one variable and empty strings for the
+  // rest, so a typo in APNS_TOPIC produced a "configured" manager that failed
+  // every push at Apple with a 4xx nobody was watching for.
+  const apnsProvided = APNS_REQUIRED_VARS.filter(
+    (name) => !!env[name]?.trim(),
+  );
   let apns: ApnsConfig | undefined = undefined;
-  if (apnsKeyPath) {
-    apns = {
-      keyPath: apnsKeyPath,
-      keyId: env.APNS_KEY_ID || '',
-      teamId: env.APNS_TEAM_ID || '',
-      topic: env.APNS_TOPIC || '',
-      environment: readEnumEnv<'sandbox' | 'production'>(
-        env,
-        'APNS_ENVIRONMENT',
-        ['sandbox', 'production'],
-        'sandbox',
-      ),
-    };
+  if (apnsProvided.length > 0) {
+    const missing = APNS_REQUIRED_VARS.filter((name) => !env[name]?.trim());
+    if (missing.length > 0) {
+      errors.push(
+        `APNS is partially configured: ${apnsProvided.join(', ')} set but ` +
+          `${missing.join(', ')} missing. Set all of ` +
+          `${APNS_REQUIRED_VARS.join(', ')} to enable push, or none to ` +
+          'disable it.',
+      );
+    } else {
+      apns = {
+        keyPath: env.APNS_KEY_PATH!.trim(),
+        keyId: env.APNS_KEY_ID!.trim(),
+        teamId: env.APNS_TEAM_ID!.trim(),
+        topic: env.APNS_TOPIC!.trim(),
+        environment: readEnumEnv<'sandbox' | 'production'>(
+          env,
+          'APNS_ENVIRONMENT',
+          ['sandbox', 'production'],
+          'sandbox',
+        ),
+      };
+    }
   }
 
   // APNS test secret
   const apnsTestSecret = env.APNS_TEST_SECRET ?? '';
 
-  // App Attest
+  // App Attest — optional, off unless fully configured. Both identifiers are
+  // required because verification uses both: bundleId for the rpIdHash and
+  // teamId for the App ID the attestation nonce is bound to.
+  const appAttestBundleId = env.APPATTEST_BUNDLE_ID?.trim() ?? '';
+  const appAttestTeamId = env.APPATTEST_TEAM_ID?.trim() ?? '';
   const appAttest: AppAttestConfig = {
-    bundleId: env.APPATTEST_BUNDLE_ID ?? '',
-    teamId: env.APPATTEST_TEAM_ID ?? '',
-    allowAssertionBypass: readBooleanEnv(
-      env,
-      'APPATTEST_ALLOW_ASSERTION_BYPASS',
-      false,
-    ),
-    diagCrosskey: readBooleanEnv(env, 'APPATTEST_DIAG_CROSSKEY', false),
+    enabled: Boolean(appAttestBundleId && appAttestTeamId),
+    bundleId: appAttestBundleId,
+    teamId: appAttestTeamId,
     attestedKeysPath:
       env.ATTESTED_KEYS_PATH ||
       path.resolve(basePath, 'config/attested-keys.json'),
   };
 
-  // mTLS
-  const mtlsClientCaPath = env.MTLS_CLIENT_CA_PATH || '';
-  // The production guard belongs with the flag. wsproxy.ts computed
-  // `ALLOW_MTLS_FALLBACK === 'true' && NODE_ENV !== 'production'` in three
-  // places while the config parsed the flag alone; centralizing on the config
-  // value without the guard would have enabled the fallback in production.
-  //
-  // MWP-95 removes NODE_ENV-keyed security decisions entirely. Until then the
-  // condition lives here, once, rather than in three copies.
-  const allowMtlsFallback =
-    readBooleanEnv(env, 'ALLOW_MTLS_FALLBACK', false) &&
-    env.NODE_ENV !== 'production';
+  if (Boolean(appAttestBundleId) !== Boolean(appAttestTeamId)) {
+    errors.push(
+      'App Attest is partially configured: ' +
+        `${appAttestBundleId ? 'APPATTEST_BUNDLE_ID' : 'APPATTEST_TEAM_ID'} ` +
+        'is set but ' +
+        `${appAttestBundleId ? 'APPATTEST_TEAM_ID' : 'APPATTEST_BUNDLE_ID'} ` +
+        'is missing. Set both to enable App Attest, or neither to disable it.',
+    );
+  }
 
   // Background push
   const backgroundPush: BackgroundPushEnvConfig = {
@@ -659,20 +700,13 @@ export const parseRuntimeConfig = (
     }
   }
 
-  // Plaintext in production requires the same acknowledgement, even on
-  // loopback: a production deployment terminating TLS elsewhere is a
-  // deliberate topology, not a default.
-  if (
-    inboundTlsMode === 'off' &&
-    nodeEnv === 'production' &&
-    !readBooleanEnv(env, 'ALLOW_INSECURE_INBOUND_NO_TLS', false)
-  ) {
-    errors.push(
-      'INBOUND_TLS_MODE=off in production requires ' +
-        'ALLOW_INSECURE_INBOUND_NO_TLS=true to acknowledge that this process ' +
-        'serves plaintext and must sit behind a proxy that terminates TLS.',
-    );
-  }
+  // There used to be a second plaintext check here that fired when
+  // NODE_ENV === 'production', on loopback as well as off it. MWP-95 removes
+  // it: the bind address is the honest signal about who can reach the
+  // listener, and NODE_ENV is a string the same operator sets — unset far
+  // more often than assumed, so the guard was absent exactly where it was
+  // most needed. The non-loopback check below is what actually protects the
+  // socket, and it is not keyed on the environment name.
 
   // INBOUND_TLS_MODE=off on non-loopback requires acknowledgement
   if (
@@ -719,6 +753,18 @@ export const parseRuntimeConfig = (
     maxGlobal: rawMaxGlobal,
   };
 
+  // REQUIRE_APP_AUTH without App Attest configured is not a stricter posture,
+  // it is a closed door: every upgrade would be rejected for missing headers
+  // the client has no way to obtain, because the routes that mint them are
+  // not registered. Refuse to start rather than fail every connection.
+  const requireAppAuth = readBooleanEnv(env, 'REQUIRE_APP_AUTH', false);
+  if (requireAppAuth && !appAttest.enabled) {
+    errors.push(
+      'REQUIRE_APP_AUTH=true requires App Attest to be configured. Set ' +
+        'APPATTEST_BUNDLE_ID and APPATTEST_TEAM_ID, or unset REQUIRE_APP_AUTH.',
+    );
+  }
+
   // Build config object
   const config: RuntimeConfig = {
     bindHost,
@@ -735,7 +781,7 @@ export const parseRuntimeConfig = (
     allowedTargets,
     allowedOrigins,
     allowMissingOrigin,
-    requireAppAuth: readBooleanEnv(env, 'REQUIRE_APP_AUTH', false),
+    requireAppAuth,
     adminToken,
     proxySharedSecret,
     trustedProxyCidrs,
@@ -744,12 +790,9 @@ export const parseRuntimeConfig = (
     tlsCertPath,
     tlsKeyPath,
     log: { level: logLevel, noColor },
-    nodeEnv,
     apns,
     apnsTestSecret,
     appAttest,
-    mtlsClientCaPath,
-    allowMtlsFallback,
     backgroundPush,
     _raw: env,
   };
@@ -800,30 +843,32 @@ export const getRuntimeConfig = (
 // resolveTlsSettings — backward compatible wrapper
 // ---------------------------------------------------------------------------
 
+/**
+ * Resolve which certificate and key the listener should use.
+ *
+ * This reports what TLS material is available; it does not decide whether
+ * running without TLS is acceptable. That decision belongs to
+ * parseRuntimeConfig, which runs first (`getRuntimeConfig` at the top of
+ * wsproxy.ts) and aborts startup when INBOUND_TLS_MODE=required has no usable
+ * pair, or when a plaintext listener on a non-loopback address has not been
+ * acknowledged.
+ *
+ * The three `NODE_ENV === 'production'` throws that used to live here were
+ * removed in MWP-95. They were a second, weaker copy of those same rules,
+ * keyed on a string rather than on the mode and bind address the operator
+ * actually configured — and two of them named
+ * ALLOW_INSECURE_PRODUCTION_NO_TLS, a variable parseRuntimeConfig retires and
+ * aborts on, so following the error message could never work.
+ */
 export const resolveTlsSettings = (
   env: EnvLike,
   basePath: string,
   existsSync: (filePath: string) => boolean,
 ): TlsSettings => {
-  // Use the legacy logic for backward compatibility with existing tests
-  // that test resolveTlsSettings directly.
   let certPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
   let keyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
-  const production = env.NODE_ENV === 'production';
-  const allowInsecureProductionNoTls = readBooleanEnv(
-    env,
-    // Honour the live variable; the retired one is still accepted here only
-    // so the legacy DISABLE_TLS tests keep exercising this wrapper.
-    'ALLOW_INSECURE_INBOUND_NO_TLS',
-    false,
-  );
 
   if (readBooleanEnv(env, 'DISABLE_TLS', false)) {
-    if (production && !allowInsecureProductionNoTls) {
-      throw new Error(
-        'DISABLE_TLS=1 is not allowed in production without ALLOW_INSECURE_PRODUCTION_NO_TLS=true',
-      );
-    }
     return { useTls: false, certPath, keyPath, reason: 'disabled' };
   }
 
@@ -834,12 +879,6 @@ export const resolveTlsSettings = (
     'required',
   );
   if (inboundTlsMode === 'off') {
-    if (production && !allowInsecureProductionNoTls) {
-      throw new Error(
-        'INBOUND_TLS_MODE=off is not allowed in production without ' +
-          'ALLOW_INSECURE_INBOUND_NO_TLS=true',
-      );
-    }
     return { useTls: false, certPath, keyPath, reason: 'disabled' };
   }
 
@@ -859,13 +898,6 @@ export const resolveTlsSettings = (
       keyPath = parentKeyPath;
       return { useTls: true, certPath, keyPath, reason: 'configured' };
     }
-  }
-
-  if (production && !allowInsecureProductionNoTls) {
-    throw new Error(
-      'TLS certificate and key are required in production unless ' +
-        'ALLOW_INSECURE_INBOUND_NO_TLS=true',
-    );
   }
 
   return { useTls: false, certPath, keyPath, reason: 'missing_certs' };

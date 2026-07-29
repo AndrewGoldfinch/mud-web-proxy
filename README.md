@@ -38,12 +38,18 @@ bun run build
 bun start
 ```
 
-You need to have your certificates available to use wsproxy. If you start the proxy without certificates, you'll see something like this:
+You need to have your certificates available to use wsproxy. Inbound TLS is required by default, so starting without usable certificates aborts at startup rather than quietly falling back to plaintext:
 
 ```bash
 $ bun dev
-Could not find cert and/or privkey files, exiting.
+error: Configuration errors:
+  TLS certificate not found at /path/to/cert.pem. INBOUND_TLS_MODE=required requires both TLS_CERT_PATH and TLS_KEY_PATH to point to existing files.
+  TLS key not found at /path/to/privkey.pem. INBOUND_TLS_MODE=required requires both TLS_CERT_PATH and TLS_KEY_PATH to point to existing files.
 ```
+
+The check is more than a file-existence test: an unreadable file, a malformed certificate, or a certificate that does not match its private key is also refused here, rather than failing later at the first handshake.
+
+To run without TLS during local development — behind a reverse proxy that terminates it, or against a loopback-only listener — set `INBOUND_TLS_MODE=off`. On any non-loopback `BIND_HOST` that additionally requires `ALLOW_INSECURE_INBOUND_NO_TLS=true`, so an exposed plaintext listener is always something you asked for explicitly.
 
 You need to have available both files in the same directory as the proxy, like this:
 
@@ -63,33 +69,38 @@ How to install the certificates is beyond the scope of this project, but you cou
 
 ## Configuration
 
-In `wsproxy.ts` you can change the following options:
+Configuration is environment-driven. Every setting is read once, at startup, in `src/runtime-config.ts`, and an invalid or retired value aborts the process rather than being ignored.
+
+The `srv` object in `wsproxy.ts` is populated from that parsed config, so editing values like `ws_port` or `tn_host` there has no effect — they are overwritten on every start. Two literals in `srv` are genuinely source-only, because nothing reads an environment variable for them:
 
 ```typescript
-  /* this websocket proxy port */
-  ws_port: 6200,
-  /* default telnet host */
-  tn_host: 'muds.maldorne.org',
-  /* default telnet/target port */
-  tn_port: 5010,
   /* enable additional debugging */
   debug: false,
-  /* use node zlib (different from mccp) - you want this turned off unless your server can't do MCCP and your client can inflate data */
+  /* use node zlib (different from mccp) - you want this turned off unless
+     your server can't do MCCP and your client can inflate data */
   compress: true,
-  /* set to false while server is shutting down */
-  open: true,
 ```
 
-These settings can also be overridden via environment variables:
+(`open` also appears there, but it is shutdown state rather than a setting: it flips to `false` while the server drains.)
 
-| Variable      | Description                          | Default             |
-| ------------- | ------------------------------------ | ------------------- |
-| `WS_PORT`     | WebSocket proxy port                 | `6200`              |
-| `TN_HOST`     | Default telnet host                  | `muds.maldorne.org` |
-| `TN_PORT`     | Default telnet port                  | `5010`              |
-| `DISABLE_TLS` | Set to `1` to disable TLS (dev mode) | _(TLS enabled)_     |
+Everything else is set through the environment:
 
-Probably you will only have to change:
+| Variable                        | Description                                                                            | Default                |
+| ------------------------------- | -------------------------------------------------------------------------------------- | ---------------------- |
+| `WS_PORT`                       | WebSocket proxy port                                                                     | `6200`                 |
+| `BIND_HOST`                     | Address to listen on                                                                     | `127.0.0.1`            |
+| `TN_HOST`                       | Default telnet host                                                                      | `muds.maldorne.org`    |
+| `TN_PORT`                       | Default telnet port                                                                      | `5010`                 |
+| `INBOUND_TLS_MODE`              | `required` or `off`. `required` refuses to start without a usable cert/key pair          | `required`             |
+| `TLS_CERT_PATH`                 | Certificate path                                                                         | `./cert.pem`           |
+| `TLS_KEY_PATH`                  | Private key path                                                                         | `./privkey.pem`        |
+| `ALLOW_INSECURE_INBOUND_NO_TLS` | Acknowledge a plaintext listener. Required for `INBOUND_TLS_MODE=off` off loopback       | `false`                |
 
-- `tn_host` (or `TN_HOST`) with your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
-- `tn_port` (or `TN_PORT`) with the port where the mud is running.
+`DISABLE_TLS` and `ALLOW_INSECURE_PRODUCTION_NO_TLS` were removed. Startup aborts if either is still set, naming the replacement — they are listed here only so an upgrade from an older version fails loudly instead of silently serving plaintext.
+
+This table is not exhaustive. The full set — target policy, authentication, origin checks, trusted proxies, diagnostics, and the optional Apple features — is documented with commentary in [`.env.example`](.env.example).
+
+Probably you will only have to set:
+
+- `TN_HOST` to your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
+- `TN_PORT` to the port where the mud is running.

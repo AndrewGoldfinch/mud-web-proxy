@@ -219,23 +219,44 @@ describe('open-source release regression coverage', () => {
     }
   });
 
-  test('production cannot silently run without TLS', () => {
-    const existsSync = () => false;
-
+  test('cannot silently run without TLS', () => {
+    // The refusal moved to getRuntimeConfig, which runs first and is the only
+    // place that decides whether plaintext is acceptable. MWP-95 removed
+    // resolveTlsSettings' NODE_ENV-keyed copy of the same rule.
     expect(() =>
-      resolveTlsSettings({ NODE_ENV: 'production' }, '/app', existsSync),
-    ).toThrow('TLS certificate and key are required in production');
+      getRuntimeConfig({ TLS_CERT_PATH: '/nonexistent/cert.pem' }),
+    ).toThrow(/TLS/i);
 
-    expect(() =>
-      resolveTlsSettings(
-        { NODE_ENV: 'production', DISABLE_TLS: '1' },
-        '/app',
-        existsSync,
-      ),
-    ).toThrow('DISABLE_TLS=1 is not allowed in production');
+    expect(() => getRuntimeConfig({ DISABLE_TLS: '1' })).toThrow(
+      /DISABLE_TLS has been removed/,
+    );
   });
 
-  test('production finds TLS files beside the project when running from dist', () => {
+  test('resolveTlsSettings reports material without judging the environment', () => {
+    // It answers "what certificates are there", not "is this allowed" — so
+    // the same inputs give the same answer whatever NODE_ENV says.
+    const existsSync = () => false;
+
+    for (const nodeEnv of ['production', 'development', undefined]) {
+      expect(
+        resolveTlsSettings(
+          { NODE_ENV: nodeEnv as string },
+          '/app',
+          existsSync,
+        ),
+      ).toMatchObject({ useTls: false, reason: 'missing_certs' });
+
+      expect(
+        resolveTlsSettings(
+          { NODE_ENV: nodeEnv as string, DISABLE_TLS: '1' },
+          '/app',
+          existsSync,
+        ),
+      ).toMatchObject({ useTls: false, reason: 'disabled' });
+    }
+  });
+
+  test('finds TLS files beside the project when running from dist', () => {
     const existingFiles = new Set([
       '/srv/mud-proxy/cert.pem',
       '/srv/mud-proxy/privkey.pem',
@@ -243,35 +264,12 @@ describe('open-source release regression coverage', () => {
     const existsSync = (filePath: string) => existingFiles.has(filePath);
 
     expect(
-      resolveTlsSettings(
-        { NODE_ENV: 'production' },
-        '/srv/mud-proxy/dist',
-        existsSync,
-      ),
+      resolveTlsSettings({}, '/srv/mud-proxy/dist', existsSync),
     ).toMatchObject({
       useTls: true,
       certPath: '/srv/mud-proxy/cert.pem',
       keyPath: '/srv/mud-proxy/privkey.pem',
       reason: 'configured',
     });
-  });
-
-  test('explicit override is required for insecure production no-TLS mode', () => {
-    const existsSync = () => false;
-
-    expect(
-      resolveTlsSettings(
-        {
-          NODE_ENV: 'production',
-          DISABLE_TLS: '1',
-          // ALLOW_INSECURE_PRODUCTION_NO_TLS is retired — getRuntimeConfig
-          // aborts on it, so acknowledging with it could never work in
-          // practice and the error message that named it was a dead end.
-          ALLOW_INSECURE_INBOUND_NO_TLS: 'true',
-        },
-        '/app',
-        existsSync,
-      ),
-    ).toMatchObject({ useTls: false, reason: 'disabled' });
   });
 });
