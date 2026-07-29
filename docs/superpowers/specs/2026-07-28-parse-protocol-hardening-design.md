@@ -101,13 +101,13 @@ type ParseOutcome =
 
 ### 2. `parse()` becomes a three-way switch
 
-| Input | Outcome | Returns | Reaches MUD |
-| --- | --- | --- | --- |
-| First byte is not `{` | — | 0 | yes |
-| `JSON.parse` throws | — | 0 | yes |
-| `handled` | dispatch | 1 | no |
-| `not-ours` | — | 0 | yes |
-| `invalid` | emit error per flavor | **1** | **no** |
+| Input                 | Outcome               | Returns | Reaches MUD |
+| --------------------- | --------------------- | ------- | ----------- |
+| First byte is not `{` | —                     | 0       | yes         |
+| `JSON.parse` throws   | —                     | 0       | yes         |
+| `handled`             | dispatch              | 1       | no          |
+| `not-ours`            | —                     | 0       | yes         |
+| `invalid`             | emit error per flavor | **1**   | **no**      |
 
 The `invalid` branch returning `1` is the fix. It is what stops the caller at
 `wsproxy.ts:1874` from forwarding.
@@ -123,14 +123,14 @@ happens to begin with `{`.
 A new module, `src/client-protocol.ts`, owns shape recognition and field
 validation. It has no socket dependency, so it is unit-testable directly.
 
-| Shape | Outcome |
-| --- | --- |
-| `type` present, known value, fields valid | dispatch |
-| `type` present, known value, bad field | `invalid`, names type and field |
-| `type` present, unknown value | `invalid` |
-| `connect` present, no `type` | legacy — validate `host`, `port` |
-| `connect` present, bad `host` or `port` | `invalid` |
-| Object with neither `type` nor `connect` | `not-ours`, forwarded |
+| Shape                                     | Outcome                          |
+| ----------------------------------------- | -------------------------------- |
+| `type` present, known value, fields valid | dispatch                         |
+| `type` present, known value, bad field    | `invalid`, names type and field  |
+| `type` present, unknown value             | `invalid`                        |
+| `connect` present, no `type`              | legacy — validate `host`, `port` |
+| `connect` present, bad `host` or `port`   | `invalid`                        |
+| Object with neither `type` nor `connect`  | `not-ours`, forwarded            |
 
 Legacy validation: `host` optional, non-empty string when present; `port`
 optional, integer 1–65535 when present.
@@ -154,7 +154,7 @@ legacy protocol through the session stack, with `ctx.flavor` differing in
 "exactly two things" — the success frame and the error rendering. That was
 wrong, and four P1 review findings all traced to it.**
 
-The session stack's *data plane* and *lifecycle* are themselves
+The session stack's _data plane_ and _lifecycle_ are themselves
 typed-protocol concepts. A legacy client cannot consume any of them:
 
 - **Input.** `forward()` writes to `s.ts`. The session path never sets `s.ts`,
@@ -179,7 +179,13 @@ reservation and must release it.
 
 ```ts
 type ConnectDecision =
-  | { allowed: true; host: string; port: number; dialAddress: string; ip: string }
+  | {
+      allowed: true;
+      host: string;
+      port: number;
+      dialAddress: string;
+      ip: string;
+    }
   | { allowed: false; code: string; reason: string };
 ```
 
@@ -190,15 +196,15 @@ microtask changes when a caller — or a test — can observe it.
 
 Each protocol then dials on its own stack:
 
-| | typed | legacy |
-| --- | --- | --- |
-| dial | session stack (`openTelnetSession`) | raw telnet (`initT`, sets `s.ts`) |
-| output | `{"type":"data","seq":…,"payload":…}` | bare base64 |
-| input | `{"type":"input","text":…}` | raw bytes via `forward()` |
-| success frame | `{"type":"session",…}` | none |
-| rejection | `sendError` JSON | base64 plaintext, then close |
-| resume | yes | none — close tears the MUD connection down |
-| IP capacity | owned by the `Session` | `legacyCountedIp`, released in `closeSocket` |
+|               | typed                                 | legacy                                       |
+| ------------- | ------------------------------------- | -------------------------------------------- |
+| dial          | session stack (`openTelnetSession`)   | raw telnet (`initT`, sets `s.ts`)            |
+| output        | `{"type":"data","seq":…,"payload":…}` | bare base64                                  |
+| input         | `{"type":"input","text":…}`           | raw bytes via `forward()`                    |
+| success frame | `{"type":"session",…}`                | none                                         |
+| rejection     | `sendError` JSON                      | base64 plaintext, then close                 |
+| resume        | yes                                   | none — close tears the MUD connection down   |
+| IP capacity   | owned by the `Session`                | `legacyCountedIp`, released in `closeSocket` |
 
 `initT` no longer runs its own `validateTarget`. Two implementations of one
 policy is precisely the drift MWP-90 exists to prevent, so callers must
@@ -209,7 +215,7 @@ Rejecting a second connect is checked per stack: `s.ts` for legacy,
 
 Two bugs surfaced only once the legacy path became reachable, both fixed here:
 `closeSocket` called `s.terminate()` — rebound at connection time to close the
-*WebSocket* — so the telnet socket was never destroyed; and `sendClient` reads
+_WebSocket_ — so the telnet socket was never destroyed; and `sendClient` reads
 `s.ttype`, which `initT` has not created when a connect is refused before
 dialling, so rejections write base64 directly instead.
 
@@ -242,7 +248,7 @@ but the legitimate path for player input that happens to be a JSON object. Left
 alone, every such keystroke emits an ERROR.
 
 This change downgrades it to debug. The scope boundary with MWP-94 is
-deliberate: MWP-94 owns log *content* (item 2 — "logs shape, never content", and
+deliberate: MWP-94 owns log _content_ (item 2 — "logs shape, never content", and
 central redaction). It does not address level. The level regression is created
 by this change, so it is fixed here, in one line.
 

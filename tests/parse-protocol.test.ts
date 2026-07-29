@@ -95,7 +95,6 @@ describe('parseNewMessage outcomes', () => {
   });
 });
 
-
 describe('legacy connect recognition', () => {
   let integration: SessionIntegration;
   let socket: SocketExtended;
@@ -171,7 +170,8 @@ describe('authorizeConnect: the one policy path', () => {
   // Both protocols call this exact function, so parity is structural rather
   // than a property two implementations have to be checked against. These
   // cases pin the decisions themselves.
-  const settle = (d: unknown) => (d instanceof Promise ? d : Promise.resolve(d));
+  const settle = (d: unknown) =>
+    d instanceof Promise ? d : Promise.resolve(d);
 
   const build = (mode: 'fixed' | 'allowlist' | 'arbitrary') =>
     new SessionIntegration({
