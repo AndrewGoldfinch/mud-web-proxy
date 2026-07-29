@@ -1047,9 +1047,15 @@ const srv: ServerConfig = {
         );
       }
     } else if (tlsSettings.reason === 'disabled') {
-      // Non-TLS mode for testing
+      // Plaintext listener. Named for the live variable: DISABLE_TLS is
+      // retired and now aborts startup, so citing it here would send an
+      // operator to a setting that refuses to start.
       webserver = http.createServer();
-      srv.logInfo('Running without TLS (DISABLE_TLS=1)', undefined, 'init');
+      srv.logInfo(
+        `Running without TLS (INBOUND_TLS_MODE=off) on ${srv.bind_host}:${srv.ws_port} — this listener serves plaintext and must sit behind a proxy that terminates TLS`,
+        undefined,
+        'init',
+      );
     } else {
       webserver = http.createServer();
       srv.logWarn(

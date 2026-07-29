@@ -18,6 +18,11 @@ const base = {
   TN_HOST: 'mud.example.org',
   TN_PORT: '4000',
   TARGET_MODE: 'fixed',
+  // INBOUND_TLS_MODE defaults to `required`, which now demands a usable
+  // cert/key pair at startup (MWP-81). These cases are about target policy,
+  // so they opt out rather than depend on a cert.pem existing in the working
+  // directory.
+  INBOUND_TLS_MODE: 'off',
 };
 
 const noFiles = () => false;
