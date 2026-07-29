@@ -299,6 +299,12 @@ export interface SocketExtended extends WS {
   password_mode?: boolean;
   sendUTF: (data: string | Buffer) => void;
   terminate: () => void;
+  /**
+   * The native ws terminate, captured before `terminate` is replaced with a
+   * graceful close. Destroys the transport without a close handshake, which is
+   * the only thing that works on a half-open peer.
+   */
+  hardTerminate?: () => void;
   remoteAddress: string;
 }
 
@@ -1708,7 +1714,11 @@ const srv: ServerConfig = {
               dead,
               'ws',
             );
-            dead.terminate();
+            // Hard destroy, not the graceful close `terminate` was replaced
+            // with: a peer that stopped answering pings cannot complete a
+            // close handshake, so a graceful close would leave the socket in
+            // server.sockets until the library's own close timeout.
+            (dead.hardTerminate ?? dead.terminate)();
           }
 
           // Ping after sweeping, so a peer is never judged on a ping sent in
@@ -1946,6 +1956,14 @@ const srv: ServerConfig = {
 
         // Add compatibility methods for the WebSocket
         extendedSocket.sendUTF = extendedSocket.send.bind(extendedSocket);
+
+        // The native terminate is kept before being replaced. `terminate` here
+        // is overridden with a graceful close for the ordinary paths, but a
+        // half-open peer cannot complete a close handshake — the transport has
+        // to be destroyed outright, which is what the heartbeat needs.
+        extendedSocket.hardTerminate = (
+          extendedSocket.terminate as () => void
+        ).bind(extendedSocket);
         extendedSocket.terminate = () => extendedSocket.close();
 
         server.sockets.add(extendedSocket);

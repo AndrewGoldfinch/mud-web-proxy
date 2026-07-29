@@ -30,6 +30,18 @@ export interface SessionManagerConfig {
    * does not impose a surprise ceiling on a working deployment.
    */
   maxGlobal?: number;
+  /**
+   * How long a session with no attached clients keeps its capacity before
+   * being reclaimed, or undefined to keep it until the session timeout.
+   *
+   * Terminating an unresponsive socket does not free its slot — the session is
+   * deliberately kept alive for resume — so without this the connection caps
+   * bound live clients while dead sessions accumulate underneath for up to
+   * timeoutHours. The window exists because a backgrounded mobile client is
+   * indistinguishable from a dead one, and silent push runs every 20 minutes:
+   * reaping sooner would delete the session before the push that would wake it.
+   */
+  resumeGraceMs?: number;
 }
 
 export class SessionManager {
@@ -60,6 +72,8 @@ export class SessionManager {
     this.cleanupInterval = setInterval(
       () => {
         this.cleanupInactiveSessions();
+        // Reclaim capacity from sessions nobody came back to (MWP-92).
+        this.reapClientlessSessions();
       },
       5 * 60 * 1000,
     );
@@ -163,10 +177,10 @@ export class SessionManager {
   /**
    * Detach a WebSocket from its session
    */
-  detachWebSocket(ws: SocketExtended): void {
+  detachWebSocket(ws: SocketExtended, now: number = Date.now()): void {
     const session = this.socketToSession.get(ws);
     if (session) {
-      session.detachClient(ws);
+      session.detachClient(ws, now);
       this.socketToSession.delete(ws);
     }
   }
@@ -299,6 +313,32 @@ export class SessionManager {
     this.pendingDialCounts.set(ip, pending + 1);
     this.globalPendingCount++;
     return { allowed: true };
+  }
+
+  /**
+   * Remove sessions that have had no attached client for longer than the
+   * configured grace window, releasing their per-IP and global capacity.
+   *
+   * Returns the number reclaimed. A session with a client attached is never
+   * touched, and reattaching clears the timestamp, so a client woken by silent
+   * push and resuming is safe.
+   */
+  reapClientlessSessions(now: number = Date.now()): number {
+    const graceMs = this.config.resumeGraceMs;
+    if (graceMs === undefined) return 0;
+
+    const expired: string[] = [];
+    for (const [id, session] of this.sessions) {
+      if (session.hasClients()) continue;
+      const since = session.clientlessSince;
+      if (since === null) continue;
+      // Strictly greater, so a session exactly at the window survives one more
+      // pass rather than being reclaimed on the boundary.
+      if (now - since > graceMs) expired.push(id);
+    }
+
+    for (const id of expired) this.removeSession(id);
+    return expired.length;
   }
 
   /** Pending reservations across every address. Exposed for tests. */

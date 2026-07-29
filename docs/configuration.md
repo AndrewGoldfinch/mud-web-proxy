@@ -112,8 +112,22 @@ address and tripping per-IP limits service-wide — while reading as configured.
 | `MAX_SESSIONS_PER_IP`     | Concurrent sessions per client address.                            | `10`              |
 | `MAX_SESSIONS_GLOBAL`     | Concurrent sessions across the process. Unset means no global cap. | _(unset, no cap)_ |
 
-All four must be positive integers when set. Sessions and resume state are
+| `RESUME_GRACE_MINUTES` | How long a session with no attached client keeps its slot. | `45` |
+
+All must be positive integers when set. Sessions and resume state are
 memory-local and are lost on restart.
+
+`RESUME_GRACE_MINUTES` is what makes the limits above meaningful. Terminating a
+client's socket does not free its session — the session is deliberately kept
+alive so a client can resume — so without a grace window a dead session holds
+its slot until `SESSION_TIMEOUT_HOURS`, and the caps end up bounding live
+clients while dead sessions accumulate underneath.
+
+The default is deliberately longer than the silent-push interval (20 minutes),
+because a backgrounded mobile client is indistinguishable from a dead one. It
+tolerates one lost push before the session is reclaimed. Shortening it below
+the push interval will reclaim sessions before the push that would have woken
+them, breaking resume for backgrounded clients.
 
 ## WebSocket liveness
 

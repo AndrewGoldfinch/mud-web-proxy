@@ -253,6 +253,7 @@ export interface SessionLimitsConfig {
   maxPerIP: number;
   /** Undefined means unbounded; see SessionManagerConfig for the rationale. */
   maxGlobal?: number;
+  resumeGraceMs?: number;
 }
 
 export interface RuntimeConfig {
@@ -793,11 +794,18 @@ export const parseRuntimeConfig = (
     );
   }
 
+  // How long a session with no attached client keeps its capacity. Default 45
+  // minutes: silent push runs every 20 minutes, so this tolerates one lost
+  // push before a backgrounded client's session is reclaimed. Reaping sooner
+  // would delete the session before the push that would have woken it.
+  const resumeGraceMinutes = readPositive('RESUME_GRACE_MINUTES', 45);
+
   const sessions: SessionLimitsConfig = {
     timeoutHours: readPositive('SESSION_TIMEOUT_HOURS', 24),
     maxPerDevice: readPositive('MAX_SESSIONS_PER_DEVICE', 5),
     maxPerIP: readPositive('MAX_SESSIONS_PER_IP', 10),
     maxGlobal: rawMaxGlobal,
+    resumeGraceMs: resumeGraceMinutes * 60 * 1000,
   };
 
   // REQUIRE_APP_AUTH without App Attest configured is not a stricter posture,

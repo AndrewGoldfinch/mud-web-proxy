@@ -163,6 +163,14 @@ export class Session {
   clientBackgrounded = false;
   lastBackgroundedAt = 0;
   lastActivityPushAt = 0;
+
+  /**
+   * When this session last dropped to zero attached clients, or null while a
+   * client is attached. Drives the resume grace window (MWP-92): the slot is
+   * held long enough for a backgrounded client to be woken and resume, then
+   * reclaimed.
+   */
+  clientlessSince: number | null = null;
   notificationTriggers: Trigger[] = [];
 
   windowWidth = 80;
@@ -409,15 +417,21 @@ export class Session {
     this.clients.add(client);
     this.clientConnected = true;
     this.lastClientConnection = Date.now();
+    // No longer a candidate for the clientless reaper.
+    this.clientlessSince = null;
   }
 
   /**
    * Detach a WebSocket client from this session
    * Does NOT close the telnet connection
    */
-  detachClient(client: SocketExtended): void {
+  detachClient(client: SocketExtended, now: number = Date.now()): void {
     this.clients.delete(client);
     this.clientConnected = this.clients.size > 0;
+    // Stamped only on the transition to zero clients, and re-stamped on each
+    // subsequent transition: a client that reattaches and leaves again gets a
+    // fresh window rather than inheriting the remains of the old one.
+    this.clientlessSince = this.clients.size === 0 ? now : null;
   }
 
   /**
