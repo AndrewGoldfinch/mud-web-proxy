@@ -15,6 +15,12 @@ export interface SocketExtended extends WS {
   ts?: TelnetSocket;
   host?: string;
   port?: number;
+  /**
+   * Client address counted against maxPerIP for a legacy connection, which
+   * has no Session to own that capacity. Set when the dial is authorized and
+   * cleared by closeSocket, which is what releases the capacity.
+   */
+  legacyCountedIp?: string;
   ttype: string[];
   name?: string;
   client?: string;

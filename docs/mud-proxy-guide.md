@@ -136,6 +136,46 @@ Use a simple JSON-envelope protocol over WebSocket:
 
 Binary payloads (MUD output) are base64-encoded to survive JSON transport. The overhead is ~33%, which is negligible for text-based games. If you want tighter encoding, you could use WebSocket binary frames with a minimal header instead of JSON, but JSON is easier to debug.
 
+A JSON object the proxy recognizes but cannot accept — an unknown `type`, a missing required field, a value out of range — is answered with an `invalid_request` error and is **never** forwarded to the MUD. Ordinary player input that happens to begin with `{` still reaches the MUD unchanged; only recognized shapes are validated.
+
+```json
+// Proxy → Client: rejected control message
+{ "type": "error", "code": "invalid_request", "field": "height", "message": "height must be an integer between 1 and 65535" }
+```
+
+### Legacy connect protocol
+
+Before the typed session protocol existed, clients opened a connection with a bare object carrying a `connect` field. That form is **still supported, and frozen**: it will not gain new fields or new message types. New clients must use the typed protocol above.
+
+```json
+// Client → Proxy: legacy connect
+{ "connect": 1, "host": "mud.example.com", "port": 4000 }
+
+// Client → Proxy: legacy connect to the configured default target
+{ "connect": 1 }
+```
+
+`host` and `port` are both optional. A bare `{"connect": 1}` means the proxy's configured default target (`TN_HOST` / `TN_PORT`). The default is not privileged — it goes through the same target validation as any other, so under `TARGET_MODE=allowlist` it is refused unless `TN_HOST` is itself listed.
+
+Both protocols share one policy path — `authorizeConnect` — so the legacy form is subject to the identical target validation, connection limits, dial reservation, and DNS-rebinding guard as the typed form. Authentication is enforced at the WebSocket upgrade rather than per message, so it applies to both by construction: under `AUTH_MODE=shared-secret` a legacy client without valid credentials never gets a socket.
+
+**Policy is shared; the data plane deliberately is not.** A legacy connection is a raw telnet bridge, not a session:
+
+|  | typed | legacy |
+| --- | --- | --- |
+| MUD output | `{"type":"data","seq":…,"payload":"<base64>"}` | bare base64, no envelope |
+| Player input | `{"type":"input","text":"…"}` | raw bytes, forwarded as sent |
+| On connect | `{"type":"session","sessionId":…,"token":…}` | no frame; telnet data simply begins flowing |
+| On rejection | `{"type":"error","code":…}` | base64-encoded plaintext line, then close |
+| Buffering / resume | yes, via `sessionId` + `token` | none |
+| Client disconnect | session survives for resume | MUD connection is torn down |
+
+Everything a legacy client receives is base64 — including rejection messages. Routing legacy through the session stack instead would hand it typed JSON envelopes it would print into the player's terminal, and a resumable session it holds no token for; the connection would then be orphaned until the session timeout, since nothing could ever reclaim it.
+
+Because a legacy connection has no session to own its capacity, it is counted against `maxPerIP` for the lifetime of the socket and released when the socket closes.
+
+A second connect on a socket that already has a connection is rejected, on both protocols.
+
 ## Push notifications
 
 The proxy is in the perfect position to trigger push notifications, since it sees all MUD output while the client is disconnected.

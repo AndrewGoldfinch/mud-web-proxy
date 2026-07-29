@@ -22,6 +22,9 @@ export interface ProxyLauncher {
 export interface ProxyConfig {
   TN_HOST?: string;
   TN_PORT?: string;
+  MUD_TLS_MODE?: string;
+  AUTH_MODE?: string;
+  PROXY_SHARED_SECRET?: string;
 }
 
 export async function startTestProxy(
@@ -46,6 +49,10 @@ export async function startTestProxy(
         BIND_HOST: '127.0.0.1',
         MUD_TLS_MODE: extraEnv?.MUD_TLS_MODE || 'plain',
         REQUIRE_APP_AUTH: 'false',
+        AUTH_MODE: extraEnv?.AUTH_MODE || 'none',
+        ...(extraEnv?.PROXY_SHARED_SECRET
+          ? { PROXY_SHARED_SECRET: extraEnv.PROXY_SHARED_SECRET }
+          : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

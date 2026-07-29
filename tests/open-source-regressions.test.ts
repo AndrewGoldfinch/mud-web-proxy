@@ -86,7 +86,9 @@ describe('open-source release regression coverage', () => {
       ),
     );
 
-    expect(handled).toBe(true);
+    // The message is recognized and dispatched; handleConnect then rejects
+    // the target. parseNewMessage returns a ParseOutcome, not a boolean.
+    expect(handled.kind).toBe('handled');
     expect(parseLastMessage(socket)).toMatchObject({
       type: 'error',
       code: 'invalid_request',

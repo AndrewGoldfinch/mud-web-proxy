@@ -19,6 +19,15 @@ import {
 } from './target-policy';
 import type { MudTlsMode } from './runtime-config';
 import { resolveClientAddress } from './wsproxy-utils';
+import {
+  recognize,
+  validateTyped,
+  validateLegacy,
+  KNOWN_TYPES,
+  type ParseOutcome,
+  type KnownType,
+} from './client-protocol';
+
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -29,6 +38,29 @@ import type {
   ClientMessage,
   ProcessedData,
 } from './types';
+
+export interface ConnectCtx {
+  host?: string;
+  port?: number;
+  deviceToken?: string;
+  width?: number;
+  height?: number;
+  debug?: boolean;
+}
+
+/**
+ * Verdict from the shared policy path. On `allowed`, the caller owns the
+ * pending-dial reservation and must release it.
+ */
+export type ConnectDecision =
+  | {
+      allowed: true;
+      host: string;
+      port: number;
+      dialAddress: string;
+      ip: string;
+    }
+  | { allowed: false; code: string; reason: string };
 
 export interface SessionIntegrationConfig {
   sessions: {
@@ -175,114 +207,194 @@ export class SessionIntegration {
   }
 
   /**
-   * Parse new-style client messages (connect, resume, input, naws, disconnect)
-   * Returns true if message was handled, false otherwise
+   * Classify and dispatch one client message.
+   *
+   * Three outcomes, not two. The old boolean conflated "not my message,
+   * forward it to the MUD" with "my message, but I could not handle it",
+   * which is how malformed control messages ended up typed into the game.
    */
-  parseNewMessage(socket: SocketExtended, data: Buffer): boolean {
+  parseNewMessage(socket: SocketExtended, data: Buffer): ParseOutcome {
+    let parsed: unknown;
     try {
-      const msg = data.toString();
-
-      // Check if it's JSON (starts with {)
-      if (msg.trim()[0] !== '{') {
-        return false;
-      }
-
-      const parsed = JSON.parse(msg) as ClientMessage;
-
-      // Only handle messages with type field
-      if (!('type' in parsed)) {
-        return false;
-      }
-
-      const clientMsg = parsed;
-
-      if (socket.debug) {
-        // Redact sensitive fields before logging
-        const sanitized = { ...parsed };
-        if ('token' in sanitized) sanitized.token = '***';
-        if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
-        this.log(
-          `client msg: ${JSON.stringify(sanitized)}`,
-          this.getClientIP(socket),
-        );
-      }
-
-      switch (clientMsg.type) {
-        case 'connect':
-          this.handleConnect(socket, clientMsg);
-          return true;
-        case 'resume':
-          this.handleResume(socket, clientMsg);
-          return true;
-        case 'activityToken':
-          this.handleActivityToken(socket, clientMsg);
-          return true;
-        case 'syncAck':
-          this.handleSyncAck(socket, clientMsg);
-          return true;
-        case 'input':
-          this.handleInput(socket, clientMsg);
-          return true;
-        case 'naws':
-          this.handleNAWS(socket, clientMsg);
-          return true;
-        case 'disconnect':
-          this.handleDisconnect(socket);
-          return true;
-        default:
-          return false;
-      }
+      parsed = JSON.parse(data.toString());
     } catch (_err) {
-      // Not valid JSON or new format
-      return false;
+      // Not JSON: ordinary player input, belongs to the MUD.
+      return { kind: 'not-ours' };
+    }
+
+    const recognition = recognize(parsed);
+    if (recognition.shape === 'unrecognized') {
+      return {
+        kind: 'not-ours',
+        parsedObject:
+          parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+            ? (parsed as Record<string, unknown>)
+            : undefined,
+      };
+    }
+
+    const o = parsed as Record<string, unknown>;
+
+    if (recognition.shape === 'legacy') {
+      const legacy = validateLegacy(o);
+      if (!legacy.ok) {
+        return {
+          kind: 'invalid',
+          code: 'invalid_request',
+          field: legacy.field,
+          reason: legacy.reason,
+          flavor: 'legacy',
+        };
+      }
+      // Dispatched by the caller: the legacy protocol uses the raw telnet
+      // path, whose socket wiring lives in wsproxy.ts. Sharing the session
+      // stack instead would hand a legacy client typed JSON envelopes and a
+      // resumable session it has no token for.
+      return {
+        kind: 'legacy-connect',
+        host: legacy.value.host,
+        port: legacy.value.port,
+      };
+    }
+
+    if (!(KNOWN_TYPES as readonly string[]).includes(recognition.type)) {
+      return {
+        kind: 'invalid',
+        code: 'invalid_request',
+        field: 'type',
+        reason: `Unknown message type: ${recognition.type}`,
+        flavor: 'typed',
+      };
+    }
+
+    const validation = validateTyped(recognition.type, o);
+    if (!validation.ok) {
+      return {
+        kind: 'invalid',
+        code: 'invalid_request',
+        field: validation.field,
+        reason: validation.reason,
+        flavor: 'typed',
+      };
+    }
+
+    const clientMsg = parsed as ClientMessage;
+
+    if (socket.debug) {
+      // Redact sensitive fields before logging
+      const sanitized = { ...o };
+      if ('token' in sanitized) sanitized.token = '***';
+      if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
+      this.log(
+        `client msg: ${JSON.stringify(sanitized)}`,
+        this.getClientIP(socket),
+      );
+    }
+
+    switch (recognition.type as KnownType) {
+      case 'connect':
+        this.handleConnect(socket, clientMsg as ConnectRequest);
+        return { kind: 'handled' };
+      case 'resume':
+        this.handleResume(socket, clientMsg as ResumeRequest);
+        return { kind: 'handled' };
+      case 'activityToken':
+        this.handleActivityToken(socket, clientMsg as ActivityTokenRequest);
+        return { kind: 'handled' };
+      case 'syncAck':
+        this.handleSyncAck(socket, clientMsg as SyncAckRequest);
+        return { kind: 'handled' };
+      case 'input':
+        this.handleInput(socket, clientMsg as InputRequest);
+        return { kind: 'handled' };
+      case 'naws':
+        this.handleNAWS(socket, clientMsg as NAWSRequest);
+        return { kind: 'handled' };
+      case 'disconnect':
+        this.handleDisconnect(socket);
+        return { kind: 'handled' };
+    }
+  }
+
+  /**
+   * Render a protocol-level rejection to a typed client. Legacy clients are
+   * handled separately in openTelnetSession, which writes plaintext into the
+   * telnet stream instead.
+   */
+  sendProtocolError(
+    socket: SocketExtended,
+    outcome: { code: string; field?: string; reason: string },
+  ): void {
+    const response = {
+      type: 'error',
+      code: outcome.code,
+      field: outcome.field,
+      message: outcome.reason,
+    };
+    try {
+      socket.sendUTF(JSON.stringify(response));
+    } catch (_err) {
+      // Socket might be closed
     }
   }
 
   /**
    * Handle connect request - create new session
    */
-  private async handleConnect(
+  private handleConnect(socket: SocketExtended, msg: ConnectRequest): void {
+    this.openTelnetSession(socket, {
+      host: msg.host,
+      port: msg.port,
+      deviceToken: msg.deviceToken,
+      width: msg.width,
+      height: msg.height,
+      debug: msg.debug,
+    });
+  }
+
+  /**
+   * The one policy path, shared by both wire protocols.
+   *
+   * Runs target validation, connection limits, capacity reservation, and the
+   * DNS-rebinding guard, in that order. On success the caller **owns the
+   * pending-dial reservation** and must release it — via releasePendingDial
+   * once the connection is established and counted, or on any failure path.
+   *
+   * Only policy is shared. The two protocols deliberately do not share a data
+   * plane: the typed protocol dials through the session stack (buffering,
+   * sequence numbers, resume), while the legacy protocol dials raw telnet in
+   * wsproxy.ts, because a legacy client renders bytes and can consume neither
+   * JSON envelopes nor a session token.
+   *
+   * Returns synchronously unless the DNS-rebinding guard has to run, which
+   * only happens in arbitrary mode. That is deliberate: validation, limits,
+   * and the reservation resolved synchronously before this was extracted, and
+   * deferring a rejection to a later microtask would change when a caller — or
+   * a test — can observe it. Use `awaitDecision` to consume it.
+   */
+  authorizeConnect(
     socket: SocketExtended,
-    msg: ConnectRequest,
-  ): Promise<void> {
+    ctx: { host?: string; port?: number; deviceToken?: string },
+  ): ConnectDecision | Promise<ConnectDecision> {
     const ip = this.getClientIP(socket);
 
-    this.log(`connect request to ${msg.host}:${msg.port}`, ip);
-
-    // Enable per-client debug logging if requested
-    if (msg.debug) socket.debug = msg.debug;
-
-    const target = validateTarget(msg.host, msg.port, this.config.targets);
+    const target = validateTarget(ctx.host, ctx.port, this.config.targets);
     if (!target.allowed || !target.host || !target.port) {
-      this.log(
-        `connect rejected: ${target.reason || 'Target not allowed'}`,
-        ip,
-      );
-      this.sendError(
-        socket,
-        'invalid_request',
-        target.reason || 'Target not allowed',
-      );
-      return;
+      const reason = target.reason || 'Target not allowed';
+      this.log(`connect rejected: ${reason}`, ip);
+      return { allowed: false, code: 'invalid_request', reason };
     }
 
     // Check connection limits
-    if (msg.deviceToken) {
+    if (ctx.deviceToken) {
       const limits = this.sessionManager.enforceConnectionLimits(
-        msg.deviceToken,
+        ctx.deviceToken,
         ip,
       );
       if (!limits.allowed) {
-        this.log(
-          `connect rejected: ${limits.reason || 'Connection limit exceeded'}`,
-          ip,
-        );
-        this.sendError(
-          socket,
-          'rate_limited',
-          limits.reason || 'Connection limit exceeded',
-        );
-        return;
+        const reason = limits.reason || 'Connection limit exceeded';
+        this.log(`connect rejected: ${reason}`, ip);
+        return { allowed: false, code: 'rate_limited', reason };
       }
     }
 
@@ -296,8 +408,7 @@ export class SessionIntegration {
     if (!reservation.allowed) {
       const reason = reservation.reason || 'Connection limit exceeded';
       this.log(`connect rejected: ${reason}`, ip);
-      this.sendError(socket, 'rate_limited', reason);
-      return;
+      return { allowed: false, code: 'rate_limited', reason };
     }
 
     // In arbitrary mode the hostname is client-supplied, so resolve it and
@@ -309,26 +420,96 @@ export class SessionIntegration {
     // both cheap and must gate the expensive step, so a client cannot drive
     // unbounded DNS lookups without consuming quota (MWP-92). Skipped entirely
     // in fixed and allowlist mode, where the target is operator-configured
-    // rather than client-supplied.
-    let dialAddress = target.host;
+    // rather than client-supplied — which is what keeps those modes
+    // synchronous.
     if (this.config.targets?.targetMode === 'arbitrary') {
       const resolve = this.config.resolveTarget ?? resolveTargetAddress;
-      const resolved = await resolve(target.host);
-      if (!resolved.allowed || !resolved.address) {
-        this.sessionManager.releasePendingDial(ip);
-        const reason = resolved.reason || 'Target address is not permitted';
-        this.log(`connect rejected: ${reason}`, ip);
-        this.sendError(socket, 'invalid_request', reason);
-        return;
-      }
-      dialAddress = resolved.address;
+      const host = target.host;
+      const port = target.port;
+      return resolve(host).then((resolved) => {
+        if (!resolved.allowed || !resolved.address) {
+          this.sessionManager.releasePendingDial(ip);
+          const reason = resolved.reason || 'Target address is not permitted';
+          this.log(`connect rejected: ${reason}`, ip);
+          return { allowed: false, code: 'invalid_request', reason };
+        }
+        return {
+          allowed: true,
+          host,
+          port,
+          dialAddress: resolved.address,
+          ip,
+        };
+      });
     }
+
+    return {
+      allowed: true,
+      host: target.host,
+      port: target.port,
+      dialAddress: target.host,
+      ip,
+    };
+  }
+
+  /**
+   * Open a telnet session for a **typed** client: policy via
+   * authorizeConnect, then the session stack.
+   *
+   * Not `async`. When authorizeConnect resolves synchronously — every mode
+   * except arbitrary — the rejection must reach the socket in the same tick
+   * the message was parsed, which `await` on a plain value would not do.
+   */
+  private openTelnetSession(socket: SocketExtended, ctx: ConnectCtx): void {
+    const ip = this.getClientIP(socket);
+
+    // MWP-90: one connect per socket.
+    if (this.sessionManager.findByWebSocket(socket)) {
+      const reason = 'This connection already has a session';
+      this.log(`connect rejected: ${reason}`, ip);
+      this.sendError(socket, 'invalid_request', reason);
+      return;
+    }
+
+    this.log(`connect request to ${ctx.host}:${ctx.port}`, ip);
+
+    // Enable per-client debug logging if requested.
+    // NOTE: this is a client-reachable verbosity toggle, MWP-94 item 1.
+    if (ctx.debug) socket.debug = ctx.debug;
+
+    const decision = this.authorizeConnect(socket, ctx);
+    if (decision instanceof Promise) {
+      void decision.then((d) => this.dialSession(socket, ctx, d));
+      return;
+    }
+    void this.dialSession(socket, ctx, decision);
+  }
+
+  /**
+   * Create the session and dial, once policy has allowed the target.
+   *
+   * The denial branch runs before any `await`, so a synchronous decision is
+   * still reported synchronously.
+   */
+  private async dialSession(
+    socket: SocketExtended,
+    ctx: ConnectCtx,
+    decision: ConnectDecision,
+  ): Promise<void> {
+    const ip = this.getClientIP(socket);
+
+    if (!decision.allowed) {
+      this.sendError(socket, decision.code, decision.reason);
+      return;
+    }
+    const target = { host: decision.host, port: decision.port };
+    const dialAddress = decision.dialAddress;
 
     // Create new session
     const session = this.sessionManager.create(
       target.host,
       target.port,
-      msg.deviceToken,
+      ctx.deviceToken,
       this.config.buffer.sizeKB * 1024,
       dialAddress,
       this.config.mudTlsMode ?? 'prefer',
@@ -338,11 +519,11 @@ export class SessionIntegration {
     this.sessionManager.releasePendingDial(ip);
 
     // Set device token and window size
-    if (msg.deviceToken) {
-      session.setDeviceToken(msg.deviceToken);
+    if (ctx.deviceToken) {
+      session.setDeviceToken(ctx.deviceToken);
     }
-    if (msg.width && msg.height) {
-      session.updateWindowSize(msg.width, msg.height);
+    if (ctx.width && ctx.height) {
+      session.updateWindowSize(ctx.width, ctx.height);
     }
 
     // Attach WebSocket to session
@@ -350,7 +531,6 @@ export class SessionIntegration {
     session.markClientForegrounded();
     this.backgroundPushScheduler.untrackSession(session.id);
 
-    // Send session response
     const response = {
       type: 'session',
       sessionId: session.id,
@@ -381,7 +561,12 @@ export class SessionIntegration {
 
       // Count this IP only after a successful connection; clientIp on the
       // session is what removeSession uses to decrement on teardown.
-      if (msg.deviceToken && ip !== 'unknown') {
+      //
+      // Deliberately NOT gated on deviceToken. Established capacity has to be
+      // counted for every client, or a tokenless one passes reservePendingDial
+      // forever: the reservation is handed off at session creation, so without
+      // this the established count never rises and maxPerIP means nothing.
+      if (ip !== 'unknown') {
         session.clientIp = ip;
         this.sessionManager.incrementIPCount(ip);
       }
