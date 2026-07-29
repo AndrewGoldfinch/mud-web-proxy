@@ -135,6 +135,36 @@ Use a simple JSON-envelope protocol over WebSocket:
 
 Binary payloads (MUD output) are base64-encoded to survive JSON transport. The overhead is ~33%, which is negligible for text-based games. If you want tighter encoding, you could use WebSocket binary frames with a minimal header instead of JSON, but JSON is easier to debug.
 
+A JSON object the proxy recognizes but cannot accept — an unknown `type`, a missing required field, a value out of range — is answered with an `invalid_request` error and is **never** forwarded to the MUD. Ordinary player input that happens to begin with `{` still reaches the MUD unchanged; only recognized shapes are validated.
+
+```json
+// Proxy → Client: rejected control message
+{ "type": "error", "code": "invalid_request", "field": "height", "message": "height must be an integer between 1 and 65535" }
+```
+
+### Legacy connect protocol
+
+Before the typed session protocol existed, clients opened a connection with a bare object carrying a `connect` field. That form is **still supported, and frozen**: it will not gain new fields or new message types. New clients must use the typed protocol above.
+
+```json
+// Client → Proxy: legacy connect
+{ "connect": 1, "host": "mud.example.com", "port": 4000 }
+
+// Client → Proxy: legacy connect to the configured default target
+{ "connect": 1 }
+```
+
+`host` and `port` are both optional. A bare `{"connect": 1}` means the proxy's configured default target (`TN_HOST` / `TN_PORT`). The default is not privileged — it goes through the same target validation as any other, so under `TARGET_MODE=allowlist` it is refused unless `TN_HOST` is itself listed.
+
+Both protocols share one connection path, so the legacy form is subject to the identical target policy, connection limits, dial reservation, and DNS-rebinding guard as the typed form. Authentication is enforced at the WebSocket upgrade rather than per message, so it applies to both by construction: under `AUTH_MODE=shared-secret` a legacy client without valid credentials never gets a socket.
+
+Only the responses differ, because a legacy client renders whatever bytes arrive and would print a JSON frame straight into the player's terminal:
+
+- **On success**, no frame is sent at all. Telnet data simply begins flowing.
+- **On rejection**, the client receives a plaintext line describing the reason, then the connection closes.
+
+A second connect on a socket that already has a session is rejected, on both protocols.
+
 ## Push notifications
 
 The proxy is in the perfect position to trigger push notifications, since it sees all MUD output while the client is disconnected.
