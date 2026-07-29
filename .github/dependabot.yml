@@ -1,0 +1,43 @@
+version: 2
+
+updates:
+  # Actions are pinned to full commit SHAs, which is what stops a moved tag
+  # executing unreviewed code in a workflow that holds repository secrets.
+  # The cost of pinning is going stale, so Dependabot proposes the bumps —
+  # it understands SHA pins and rewrites both the SHA and the version comment.
+  - package-ecosystem: github-actions
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'ci'
+    labels:
+      - dependencies
+
+  - package-ecosystem: npm
+    directory: '/'
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: 'chore(deps)'
+    labels:
+      - dependencies
+    groups:
+      # The dev toolchain moves together and is not in the shipped artifact;
+      # reviewing eslint and typescript bumps one PR at a time is noise.
+      dev-toolchain:
+        dependency-type: development
+        patterns:
+          - '@typescript-eslint/*'
+          - 'eslint*'
+          - 'prettier*'
+          - 'typescript*'
+    ignore:
+      # Bun is pinned deliberately and upgraded as a decision, not a bump —
+      # see MWP-97. Left to Dependabot it would drift the runtime the whole
+      # project is tested against.
+      - dependency-name: 'bun-types'
