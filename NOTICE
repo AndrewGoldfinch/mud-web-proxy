@@ -32,31 +32,50 @@ Version history recorded in the source:
 
 ## Licensing history
 
-The upstream licensing is mixed, and that mixture originates with the original
-author rather than with any later fork.
+Three distinct licensing statements exist upstream. They are set out
+separately below, because collapsing them into a single narrative is what
+produced the error corrected at the end of this section.
 
-@plamzi's MUDPortal-Web-App repository carries the full text of the GNU
-General Public License, **version 2**, at its root, while the single file this
-project descends from, `proxy/wsproxy.js`, carries a header reading
-`MIT license`. Both statements were present upstream from the start.
+1.  @plamzi's MUDPortal-Web-App repository (created 2013) carries the full
+    text of the GNU General Public License, **version 2**, at its root.
 
-In 2020, @neverbot's `maldorne/mud-web-proxy` added a `LICENSE.md` (commit
-`2b1acf7`, "feat: license and readme files") stating GPL version 3 or later
-and naming both copyright holders.
+2.  Within that repository, the single file this project descends from,
+    `proxy/wsproxy.js`, carries its own header reading `MIT license`. A
+    repository-level license does not displace a file's own designation, so
+    the terms attaching to the code inherited here are MIT. Item 1 is
+    context; it is not a constraint on this file.
 
-An earlier revision of this file said @neverbot had relicensed @plamzi's
-MIT-headered code as GPL. That was wrong, and @neverbot corrected it in review
-of PR #42: the GPL was already present in @plamzi's repository, so the 2020
-`LICENSE.md` restated existing terms rather than imposing new ones. The
-correction is recorded here rather than silently applied, because the original
-claim was published and attributed conduct to a named person that did not
-occur.
+3.  In 2020, @neverbot's `maldorne/mud-web-proxy` added a `LICENSE.md`
+    (commit `2b1acf7`, "feat: license and readme files") stating GNU GPL
+    **version 3 or later** and naming both copyright holders. That file is
+    headed `mud-web-client` — the name of the sibling client project, not
+    the proxy. The mislabeling propagated into this repository and is among
+    the reasons its `LICENSE.md` was replaced.
 
-This project distributes under GPL-3.0-or-later. That rests on the MIT grant
-covering `wsproxy.js`: MIT is permissive and compatible with the GPL in that
-direction, so MIT-covered code may be distributed as part of a GPL work. The
-claim does not depend on the repository-level GPLv2 notice. See LICENSE for
-the full text.
+GPLv2 and GPLv3-or-later are materially different and mutually incompatible
+terms, so item 3 is a **separate licensing act, not a restatement of item 1**.
+It is nonetheless a permitted one, and for the same reason this project's own
+licensing is permitted: MIT allows redistribution under other terms, the GPL
+included, so long as the MIT notice is retained.
+
+This project distributes under GPL-3.0-or-later on that basis — the MIT grant
+covering `wsproxy.js`. It does not rest on inheriting either upstream GPL
+notice. See LICENSE for the full text.
+
+### Correction
+
+An earlier revision of this file stated that @neverbot had relicensed
+@plamzi's MIT-headered code as GPL in 2020, implying the GPL first entered
+this lineage with him. @neverbot corrected that in review of PR #42: a GPL
+notice was already present in @plamzi's repository. The correction is recorded
+here rather than silently applied, because the original claim was published
+and described the conduct of a named person inaccurately.
+
+The first attempt at this correction then overshot, describing item 3 as a
+restatement of item 1. It is not, for the reason given above. Both the
+original error and its overcorrection are left on the record so that anyone
+relying on this file for provenance can see what was claimed and what was
+established.
 
 The MIT license requires its copyright notice and permission notice to be
 retained in copies of the covered portions. That notice is reproduced here so
