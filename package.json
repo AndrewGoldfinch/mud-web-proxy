@@ -43,7 +43,7 @@
   "homepage": "https://github.com/AndrewGoldfinch/mud-web-proxy#readme",
   "devDependencies": {
     "@babel/eslint-parser": "^8.0.1",
-    "@eslint/js": "^9.39.5",
+    "@eslint/js": "^10.0.1",
     "@types/node": "^25.9.5",
     "@types/uglify-js": "^3.17.5",
     "@types/ws": "^8.18.1",
