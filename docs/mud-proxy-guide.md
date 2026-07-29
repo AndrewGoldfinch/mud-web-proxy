@@ -140,7 +140,12 @@ A JSON object the proxy recognizes but cannot accept — an unknown `type`, a mi
 
 ```json
 // Proxy → Client: rejected control message
-{ "type": "error", "code": "invalid_request", "field": "height", "message": "height must be an integer between 1 and 65535" }
+{
+  "type": "error",
+  "code": "invalid_request",
+  "field": "height",
+  "message": "height must be an integer between 1 and 65535"
+}
 ```
 
 ### Legacy connect protocol
@@ -161,14 +166,14 @@ Both protocols share one policy path — `authorizeConnect` — so the legacy fo
 
 **Policy is shared; the data plane deliberately is not.** A legacy connection is a raw telnet bridge, not a session:
 
-|  | typed | legacy |
-| --- | --- | --- |
-| MUD output | `{"type":"data","seq":…,"payload":"<base64>"}` | bare base64, no envelope |
-| Player input | `{"type":"input","text":"…"}` | raw bytes, forwarded as sent |
-| On connect | `{"type":"session","sessionId":…,"token":…}` | no frame; telnet data simply begins flowing |
-| On rejection | `{"type":"error","code":…}` | base64-encoded plaintext line, then close |
-| Buffering / resume | yes, via `sessionId` + `token` | none |
-| Client disconnect | session survives for resume | MUD connection is torn down |
+|                    | typed                                          | legacy                                      |
+| ------------------ | ---------------------------------------------- | ------------------------------------------- |
+| MUD output         | `{"type":"data","seq":…,"payload":"<base64>"}` | bare base64, no envelope                    |
+| Player input       | `{"type":"input","text":"…"}`                  | raw bytes, forwarded as sent                |
+| On connect         | `{"type":"session","sessionId":…,"token":…}`   | no frame; telnet data simply begins flowing |
+| On rejection       | `{"type":"error","code":…}`                    | base64-encoded plaintext line, then close   |
+| Buffering / resume | yes, via `sessionId` + `token`                 | none                                        |
+| Client disconnect  | session survives for resume                    | MUD connection is torn down                 |
 
 Everything a legacy client receives is base64 — including rejection messages. Routing legacy through the session stack instead would hand it typed JSON envelopes it would print into the player's terminal, and a resumable session it holds no token for; the connection would then be orphaned until the session timeout, since nothing could ever reclaim it.
 

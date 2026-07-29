@@ -27,25 +27,27 @@
 
 ## File Structure
 
-| File | Responsibility |
-| --- | --- |
-| `src/client-protocol.ts` (create) | Pure shape recognition + field validation. No socket, no I/O. |
-| `tests/client-protocol.test.ts` (create) | Unit tests for the above. |
-| `src/session-integration.ts` (modify) | `parseNewMessage` returns `ParseOutcome`; `openTelnetSession` extracted from `handleConnect`; legacy flavor. |
-| `wsproxy.ts` (modify) | `parse()` three-way switch; log-level downgrade. |
-| `tests/parse-protocol.test.ts` (create) | Parse-level behaviour + parity table. |
-| `tests/e2e/legacy-protocol.test.ts` (create) | Process-level tests against a live server. |
-| `docs/mud-proxy-guide.md` (modify) | Legacy protocol documented as supported but frozen. |
+| File                                         | Responsibility                                                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `src/client-protocol.ts` (create)            | Pure shape recognition + field validation. No socket, no I/O.                                                |
+| `tests/client-protocol.test.ts` (create)     | Unit tests for the above.                                                                                    |
+| `src/session-integration.ts` (modify)        | `parseNewMessage` returns `ParseOutcome`; `openTelnetSession` extracted from `handleConnect`; legacy flavor. |
+| `wsproxy.ts` (modify)                        | `parse()` three-way switch; log-level downgrade.                                                             |
+| `tests/parse-protocol.test.ts` (create)      | Parse-level behaviour + parity table.                                                                        |
+| `tests/e2e/legacy-protocol.test.ts` (create) | Process-level tests against a live server.                                                                   |
+| `docs/mud-proxy-guide.md` (modify)           | Legacy protocol documented as supported but frozen.                                                          |
 
 ---
 
 ### Task 1: Pure recognition and validation module
 
 **Files:**
+
 - Create: `src/client-protocol.ts`
 - Test: `tests/client-protocol.test.ts`
 
 **Interfaces:**
+
 - Consumes: `ClientMessage` and the request interfaces in `src/types/index.ts:104-149`.
 - Produces:
   - `type ParseOutcome = { kind: 'handled' } | { kind: 'not-ours'; parsedObject?: Record<string, unknown> } | { kind: 'invalid'; code: string; field?: string; reason: string }`
@@ -119,7 +121,11 @@ describe('KNOWN_TYPES', () => {
 describe('validateTyped: connect', () => {
   test('accepts a well-formed connect', () => {
     expect(
-      validateTyped('connect', { type: 'connect', host: 'a.example', port: 23 }),
+      validateTyped('connect', {
+        type: 'connect',
+        host: 'a.example',
+        port: 23,
+      }),
     ).toEqual({ ok: true });
   });
 
@@ -346,8 +352,7 @@ export type Recognition =
   | { shape: 'unrecognized' };
 
 export type FieldValidation =
-  | { ok: true }
-  | { ok: false; field: string; reason: string };
+  { ok: true } | { ok: false; field: string; reason: string };
 
 export type LegacyConnect = { host?: string; port?: number };
 
@@ -567,11 +572,13 @@ the rules are unit testable directly. Not yet wired into parse()."
 ### Task 2: Wire the tri-state outcome through parse() — completes MWP-91
 
 **Files:**
+
 - Modify: `src/session-integration.ts:181-233` (`parseNewMessage`), and add `sendProtocolError`
 - Modify: `wsproxy.ts:1902-1923` (`parse`)
 - Test: `tests/parse-protocol.test.ts` (create)
 
 **Interfaces:**
+
 - Consumes: everything Task 1 produced.
 - Produces:
   - `SessionIntegration.parseNewMessage(socket, data): ParseOutcome` — signature changed from `boolean`.
@@ -650,7 +657,12 @@ describe('parseNewMessage outcomes', () => {
   test('the error names the type and field but not the body', () => {
     const outcome = integration.parseNewMessage(
       socket,
-      buf({ type: 'resume', sessionId: 'SECRET_ID', token: 'SECRET', lastSeq: -5 }),
+      buf({
+        type: 'resume',
+        sessionId: 'SECRET_ID',
+        token: 'SECRET',
+        lastSeq: -5,
+      }),
     );
     expect(outcome.kind).toBe('invalid');
     if (outcome.kind === 'invalid') {
@@ -884,9 +896,11 @@ Closes MWP-91."
 ### Task 3: Extract openTelnetSession — pure refactor, no behaviour change
 
 **Files:**
+
 - Modify: `src/session-integration.ts:244-402` (`handleConnect`)
 
 **Interfaces:**
+
 - Produces:
   - `type ConnectFlavor = 'typed' | 'legacy'`
   - `type ConnectCtx = { flavor: ConnectFlavor; host?: string; port?: number; deviceToken?: string; width?: number; height?: number; debug?: boolean }`
@@ -1134,10 +1148,12 @@ Carries the client-reachable debug toggle across verbatim; MWP-94 removes it."
 ### Task 4: Legacy connect flavor and second-connect rejection — completes MWP-90
 
 **Files:**
+
 - Modify: `src/session-integration.ts` — `rejectConnect`, `openTelnetSession`, `parseNewMessage`
 - Test: `tests/parse-protocol.test.ts` (extend)
 
 **Interfaces:**
+
 - Consumes: `validateLegacy` from Task 1, `openTelnetSession` / `ConnectCtx` / `rejectConnect` from Task 3.
 - Produces: legacy dispatch inside `parseNewMessage`; `SessionIntegration.setLegacyDefaults(host: string, port: number): void` so `wsproxy.ts` can supply `srv.tn_host` / `srv.tn_port` for the bare-connect case.
 
@@ -1248,8 +1264,12 @@ describe('parity between protocols', () => {
 
         await new Promise((r) => setTimeout(r, 50));
 
-        const typedDenied = typedSent.some((f) => f.includes('"type":"error"'));
-        const legacyDenied = legacySent.some((f) => f.includes('denied') || f.includes('not allow'));
+        const typedDenied = typedSent.some((f) =>
+          f.includes('"type":"error"'),
+        );
+        const legacyDenied = legacySent.some(
+          (f) => f.includes('denied') || f.includes('not allow'),
+        );
 
         // The rendering differs; the decision must not.
         expect(typedDenied).toBe(legacyDenied);
@@ -1290,23 +1310,23 @@ Add the field and setter to the class:
 Replace the legacy placeholder in `parseNewMessage` (added in Task 2) with:
 
 ```typescript
-    if (recognition.shape === 'legacy') {
-      const legacy = validateLegacy(o);
-      if (!legacy.ok) {
-        return {
-          kind: 'invalid',
-          code: 'invalid_request',
-          field: legacy.field,
-          reason: legacy.reason,
-        };
-      }
-      void this.openTelnetSession(socket, {
-        flavor: 'legacy',
-        host: legacy.value.host ?? this.legacyDefaultHost,
-        port: legacy.value.port ?? this.legacyDefaultPort,
-      });
-      return { kind: 'handled' };
-    }
+if (recognition.shape === 'legacy') {
+  const legacy = validateLegacy(o);
+  if (!legacy.ok) {
+    return {
+      kind: 'invalid',
+      code: 'invalid_request',
+      field: legacy.field,
+      reason: legacy.reason,
+    };
+  }
+  void this.openTelnetSession(socket, {
+    flavor: 'legacy',
+    host: legacy.value.host ?? this.legacyDefaultHost,
+    port: legacy.value.port ?? this.legacyDefaultPort,
+  });
+  return { kind: 'handled' };
+}
 ```
 
 Complete `rejectConnect` so the legacy branch renders plaintext:
@@ -1350,13 +1370,13 @@ const LEGACY_REJECT_CLOSE_DELAY_MS = 1000;
 Add the second-connect guard at the very top of `openTelnetSession`, immediately after `const ip = this.getClientIP(socket);`:
 
 ```typescript
-    // MWP-90: one connect per socket, on both protocols.
-    if (this.sessionManager.findByWebSocket(socket)) {
-      const reason = 'This connection already has a session';
-      this.log(`connect rejected: ${reason}`, ip);
-      this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
-      return;
-    }
+// MWP-90: one connect per socket, on both protocols.
+if (this.sessionManager.findByWebSocket(socket)) {
+  const reason = 'This connection already has a session';
+  this.log(`connect rejected: ${reason}`, ip);
+  this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
+  return;
+}
 ```
 
 - [ ] **Step 4: Wire the defaults from wsproxy.ts**
@@ -1364,7 +1384,7 @@ Add the second-connect guard at the very top of `openTelnetSession`, immediately
 In `wsproxy.ts`, where `sessionIntegration` is configured during `init()`, add:
 
 ```typescript
-    sessionIntegration.setLegacyDefaults(srv.tn_host, srv.tn_port);
+sessionIntegration.setLegacyDefaults(srv.tn_host, srv.tn_port);
 ```
 
 Locate the existing `sessionIntegration` configuration call with:
@@ -1415,9 +1435,11 @@ Closes MWP-90."
 ### Task 5: Process-level tests against a live server
 
 **Files:**
+
 - Create: `tests/e2e/legacy-protocol.test.ts`
 
 **Interfaces:**
+
 - Consumes: the e2e helpers `tests/e2e/proxy-launcher.ts`, `tests/e2e/mock-mud-helper.ts`, `tests/e2e/connection-helper.ts`.
 
 MWP-90 requires process-level coverage: unit tests over `parse()` cannot catch a divergence in limit reservation or auth ordering, which is the failure mode that matters.
@@ -1532,7 +1554,7 @@ describe('legacy connect protocol, process-level', () => {
     ws.close();
   });
 
-  test('3. a typo\'d control message never reaches the MUD', async () => {
+  test("3. a typo'd control message never reaches the MUD", async () => {
     const ws = await openRaw(setup.url);
     const frames = collect(ws);
 
@@ -1672,6 +1694,7 @@ because the legacy path did not exist."
 ### Task 6: Document the legacy protocol as supported but frozen
 
 **Files:**
+
 - Modify: `docs/mud-proxy-guide.md`
 
 MWP-90 item 6 requires the legacy protocol to be documented. Phase 3 owns the full protocol reference; this task adds the section it will absorb.
