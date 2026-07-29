@@ -1,0 +1,78 @@
+# NOTICE
+
+mud-web-proxy
+
+This product includes work by earlier authors. The attributions below are
+required to be retained; see LICENSE for the terms the combined work is
+distributed under.
+
+## Lineage
+
+This project descends from a WebSocket-to-Telnet proxy originally written by
+Plamen Arnaudov (@plamzi) in 2014, distributed as part of MUDPortal-Web-App.
+It was forked and continued by Ivan Alonso (@neverbot) in 2020 as
+`maldorne/mud-web-proxy`, and is continued here by Andrew Goldfinch.
+
+Version history recorded in the source:
+
+    v1.3  2014-02-27  @plamzi
+    v2.0              @neverbot
+    v3.0  2025-03     @neverbot
+
+## Copyright
+
+    Copyright (C) 2014, 2015  Plamen Arnaudov <plamzi@gmail.com>
+    Copyright (C) 2020        Ivan Alonso <ivan@neverbot.com>
+    Copyright (C) 2026        Andrew Goldfinch
+
+## Licensing history
+
+The original 2014 code by @plamzi carried an MIT license header.
+
+In 2020, @neverbot added a GNU General Public License notice covering the
+work (commit `2b1acf7`, "feat: license and readme files"), naming both
+copyright holders. MIT is compatible with the GPL in that direction, so the
+combined work is distributed under the GPL — see LICENSE for the full text.
+
+The MIT license requires its copyright notice and permission notice to be
+retained in copies of the covered portions. That notice is reproduced here so
+that the requirement continues to be met after the MIT header was removed from
+`wsproxy.ts` in favour of a GPL notice:
+
+    The MIT License (MIT)
+
+    Copyright (c) 2014 Plamen Arnaudov
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in
+    all copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+
+Note: the MIT text above is the standard form. The original header recorded
+only `License: MIT` without reproducing the terms, so the exact wording used
+by the original author has not been preserved anywhere in this repository's
+history. If @plamzi's original distribution carried a differing notice, that
+version should replace this one.
+
+## Upstream
+
+    https://github.com/maldorne/mud-web-proxy
+
+## Third-party dependencies
+
+Runtime dependencies are listed in `package.json` and retain their own
+licenses. This notice covers the lineage of this project's own source, not
+those packages.
