@@ -66,3 +66,13 @@ updates:
       # see MWP-97. Left to Dependabot it would drift the runtime the whole
       # project is tested against.
       - dependency-name: 'bun-types'
+
+      # TypeScript 7 (the native compiler) type-checks this project cleanly and
+      # is far faster, but typescript-eslint throws on any TS >= 7 — it is a
+      # hard version guard, not a warning — so the lint gate cannot run at all.
+      # Support is tracked at typescript-eslint#10940 and targets TS >= 7.1.
+      # Ignoring the major stops an unmergeable PR being reopened every week;
+      # remove this entry once typescript-eslint supports 7.x.
+      - dependency-name: 'typescript'
+        update-types:
+          - version-update:semver-major
