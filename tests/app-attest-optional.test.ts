@@ -12,7 +12,10 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { getRuntimeConfig, parseRuntimeConfig } from '../src/runtime-config.js';
+import {
+  getRuntimeConfig,
+  parseRuntimeConfig,
+} from '../src/runtime-config.js';
 
 const base = {
   TN_HOST: 'mud.example.org',

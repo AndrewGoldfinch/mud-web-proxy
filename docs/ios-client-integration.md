@@ -309,17 +309,17 @@ struct MudApp: App {
 
 ## Part 5: Error Handling Reference
 
-| Scenario                                                     | Cause                                                          | Fix                                                         |
-| ------------------------------------------------------------ | -------------------------------------------------------------- | ----------------------------------------------------------- |
-| `registrationFailed("Invalid or expired nonce")`             | Nonce expired (60s TTL) before `POST /attest/register` arrived | Reduce latency; retry with a fresh challenge                |
-| HTTP 404 from `/attest/challenge` or `/attest/register`      | App Attest is not configured, so the routes are not registered | Set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`      |
-| HTTP 429 from `/attest/challenge`                            | More than 30 challenges/minute from one source address         | Request one nonce per connection, not per retry             |
-| HTTP 429 from `/attest/register`                             | More than 5 registrations/minute from one source address       | Register once per install; cache the `keyId` in the Keychain |
-| `registrationFailed("rpIdHash does not match bundleId")`     | `APPATTEST_BUNDLE_ID` doesn't match app's actual bundle ID     | Verify env var matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode |
-| `DCError.invalidInput` from Apple                            | Device not eligible (too old, or running iOS < 14)             | Check `DCAppAttestService.shared.isSupported`               |
-| WebSocket connection rejected (no 101)                       | Assertion headers missing or assertion failed                  | Re-register if keyId lost; check nonce freshness            |
-| Previously-working device rejected after a long gap          | Its key passed the 90-day inactivity TTL and was reclaimed     | Re-register; this is expected, not a fault                  |
-| Server aborts at startup naming `ALLOW_MTLS_FALLBACK`        | Retired variable still present in the environment              | Remove it; see [Part 2](#part-2-simulator-and-debug-builds) |
+| Scenario                                                 | Cause                                                          | Fix                                                          |
+| -------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
+| `registrationFailed("Invalid or expired nonce")`         | Nonce expired (60s TTL) before `POST /attest/register` arrived | Reduce latency; retry with a fresh challenge                 |
+| HTTP 404 from `/attest/challenge` or `/attest/register`  | App Attest is not configured, so the routes are not registered | Set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`       |
+| HTTP 429 from `/attest/challenge`                        | More than 30 challenges/minute from one source address         | Request one nonce per connection, not per retry              |
+| HTTP 429 from `/attest/register`                         | More than 5 registrations/minute from one source address       | Register once per install; cache the `keyId` in the Keychain |
+| `registrationFailed("rpIdHash does not match bundleId")` | `APPATTEST_BUNDLE_ID` doesn't match app's actual bundle ID     | Verify env var matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode  |
+| `DCError.invalidInput` from Apple                        | Device not eligible (too old, or running iOS < 14)             | Check `DCAppAttestService.shared.isSupported`                |
+| WebSocket connection rejected (no 101)                   | Assertion headers missing or assertion failed                  | Re-register if keyId lost; check nonce freshness             |
+| Previously-working device rejected after a long gap      | Its key passed the 90-day inactivity TTL and was reclaimed     | Re-register; this is expected, not a fault                   |
+| Server aborts at startup naming `ALLOW_MTLS_FALLBACK`    | Retired variable still present in the environment              | Remove it; see [Part 2](#part-2-simulator-and-debug-builds)  |
 
 ---
 
@@ -348,8 +348,8 @@ PROXY_SHARED_SECRET=<at least 32 bytes>
 
 The proxy serves both HTTP endpoints on the same port as WebSockets (default `6200`), **and only when App Attest is configured** — otherwise they 404 like any unknown path:
 
-| Endpoint            | Method | Used by iOS                    | Rate limit | Description                                         |
-| ------------------- | ------ | ------------------------------ | ---------- | --------------------------------------------------- |
+| Endpoint            | Method | Used by iOS                    | Rate limit        | Description                                         |
+| ------------------- | ------ | ------------------------------ | ----------------- | --------------------------------------------------- |
 | `/attest/challenge` | GET    | Registration + each connection | 30/min per source | Returns `{nonce: "hex64chars", expires: timestamp}` |
 | `/attest/register`  | POST   | Registration only              | 5/min per source  | Body: `{keyId, attestation: base64, nonce: hex}`    |
 

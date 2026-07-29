@@ -85,16 +85,16 @@ The `srv` object in `wsproxy.ts` is populated from that parsed config, so editin
 
 Everything else is set through the environment:
 
-| Variable                        | Description                                                                            | Default                |
-| ------------------------------- | -------------------------------------------------------------------------------------- | ---------------------- |
-| `WS_PORT`                       | WebSocket proxy port                                                                     | `6200`                 |
-| `BIND_HOST`                     | Address to listen on                                                                     | `127.0.0.1`            |
-| `TN_HOST`                       | Default telnet host                                                                      | `muds.maldorne.org`    |
-| `TN_PORT`                       | Default telnet port                                                                      | `5010`                 |
-| `INBOUND_TLS_MODE`              | `required` or `off`. `required` refuses to start without a usable cert/key pair          | `required`             |
-| `TLS_CERT_PATH`                 | Certificate path                                                                         | `./cert.pem`           |
-| `TLS_KEY_PATH`                  | Private key path                                                                         | `./privkey.pem`        |
-| `ALLOW_INSECURE_INBOUND_NO_TLS` | Acknowledge a plaintext listener. Required for `INBOUND_TLS_MODE=off` off loopback       | `false`                |
+| Variable                        | Description                                                                        | Default             |
+| ------------------------------- | ---------------------------------------------------------------------------------- | ------------------- |
+| `WS_PORT`                       | WebSocket proxy port                                                               | `6200`              |
+| `BIND_HOST`                     | Address to listen on                                                               | `127.0.0.1`         |
+| `TN_HOST`                       | Default telnet host                                                                | `muds.maldorne.org` |
+| `TN_PORT`                       | Default telnet port                                                                | `5010`              |
+| `INBOUND_TLS_MODE`              | `required` or `off`. `required` refuses to start without a usable cert/key pair    | `required`          |
+| `TLS_CERT_PATH`                 | Certificate path                                                                   | `./cert.pem`        |
+| `TLS_KEY_PATH`                  | Private key path                                                                   | `./privkey.pem`     |
+| `ALLOW_INSECURE_INBOUND_NO_TLS` | Acknowledge a plaintext listener. Required for `INBOUND_TLS_MODE=off` off loopback | `false`             |
 
 `DISABLE_TLS` and `ALLOW_INSECURE_PRODUCTION_NO_TLS` were removed. Startup aborts if either is still set, naming the replacement — they are listed here only so an upgrade from an older version fails loudly instead of silently serving plaintext.
 

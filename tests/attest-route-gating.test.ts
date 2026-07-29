@@ -167,44 +167,36 @@ describe('App Attest disabled', () => {
 });
 
 describe('App Attest enabled', () => {
-  test(
-    'the challenge route issues a nonce',
-    { timeout: 20_000 },
-    async () => {
-      const proxy = await startProxy(6234, configured);
+  test('the challenge route issues a nonce', { timeout: 20_000 }, async () => {
+    const proxy = await startProxy(6234, configured);
 
-      const response = await fetch(
-        `http://127.0.0.1:${proxy.port}/attest/challenge`,
-      );
-      expect(response.status).toBe(200);
+    const response = await fetch(
+      `http://127.0.0.1:${proxy.port}/attest/challenge`,
+    );
+    expect(response.status).toBe(200);
 
-      const body = (await response.json()) as {
-        nonce: string;
-        expires: number;
-      };
-      expect(typeof body.nonce).toBe('string');
-      expect(body.nonce).toMatch(/^[0-9a-f]{64}$/);
-      expect(body.expires).toBeGreaterThan(Date.now());
+    const body = (await response.json()) as {
+      nonce: string;
+      expires: number;
+    };
+    expect(typeof body.nonce).toBe('string');
+    expect(body.nonce).toMatch(/^[0-9a-f]{64}$/);
+    expect(body.expires).toBeGreaterThan(Date.now());
 
-      proxy.stop();
-    },
-  );
+    proxy.stop();
+  });
 
-  test(
-    'successive challenges are distinct',
-    { timeout: 20_000 },
-    async () => {
-      const proxy = await startProxy(6235, configured);
-      const base = `http://127.0.0.1:${proxy.port}/attest/challenge`;
+  test('successive challenges are distinct', { timeout: 20_000 }, async () => {
+    const proxy = await startProxy(6235, configured);
+    const base = `http://127.0.0.1:${proxy.port}/attest/challenge`;
 
-      const first = (await (await fetch(base)).json()) as { nonce: string };
-      const second = (await (await fetch(base)).json()) as { nonce: string };
+    const first = (await (await fetch(base)).json()) as { nonce: string };
+    const second = (await (await fetch(base)).json()) as { nonce: string };
 
-      expect(first.nonce).not.toBe(second.nonce);
+    expect(first.nonce).not.toBe(second.nonce);
 
-      proxy.stop();
-    },
-  );
+    proxy.stop();
+  });
 
   test(
     'the register route exists and validates its input',
@@ -345,14 +337,10 @@ describe('startup refuses incoherent App Attest configuration', () => {
     },
   );
 
-  test(
-    'the retired mTLS fallback aborts',
-    { timeout: 20_000 },
-    async () => {
-      const output = await failsToStart(6242, { ALLOW_MTLS_FALLBACK: 'true' });
-      expect(output).toMatch(/ALLOW_MTLS_FALLBACK has been removed/);
-    },
-  );
+  test('the retired mTLS fallback aborts', { timeout: 20_000 }, async () => {
+    const output = await failsToStart(6242, { ALLOW_MTLS_FALLBACK: 'true' });
+    expect(output).toMatch(/ALLOW_MTLS_FALLBACK has been removed/);
+  });
 });
 
 describe('the removed bypass variables reach nothing at runtime', () => {
