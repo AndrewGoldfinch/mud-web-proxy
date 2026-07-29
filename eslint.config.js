@@ -68,6 +68,15 @@ export default [
     },
   },
   {
+    // CI scripts are command-line tools: their console output is the
+    // interface, not a leftover debug statement. srv.log() is a server
+    // concern and is not reachable from here.
+    files: ['scripts/**/*.ts'],
+    rules: {
+      'no-console': 'off',
+    },
+  },
+  {
     files: ['**/*.json'],
     ignores: ['**/package.json', '**/package-lock.json'],
     plugins: {

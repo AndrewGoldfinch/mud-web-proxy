@@ -98,7 +98,7 @@ Everything else is set through the environment:
 
 `DISABLE_TLS` and `ALLOW_INSECURE_PRODUCTION_NO_TLS` were removed. Startup aborts if either is still set, naming the replacement — they are listed here only so an upgrade from an older version fails loudly instead of silently serving plaintext.
 
-This table is not exhaustive. The full set — target policy, authentication, origin checks, trusted proxies, diagnostics, and the optional Apple features — is documented with commentary in [`.env.example`](.env.example).
+This table is not exhaustive. Every variable — target policy, authentication, origin checks, trusted proxies, session limits, diagnostics, and the optional Apple features — is documented in the [configuration reference](docs/configuration.md), which CI keeps in step with `src/runtime-config.ts`. [`.env.example`](.env.example) carries the same settings as commented, copyable defaults.
 
 Probably you will only have to set:
 
