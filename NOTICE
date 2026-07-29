@@ -9,9 +9,14 @@ distributed under.
 ## Lineage
 
 This project descends from a WebSocket-to-Telnet proxy originally written by
-Plamen Arnaudov (@plamzi) in 2014, distributed as part of MUDPortal-Web-App.
-It was forked and continued by Ivan Alonso (@neverbot) in 2020 as
-`maldorne/mud-web-proxy`, and is continued here by Andrew Goldfinch.
+Plamen Arnaudov (@plamzi) in 2014, distributed as `proxy/wsproxy.js` within
+MUDPortal-Web-App. It was forked and continued by Ivan Alonso (@neverbot) in
+2020 as `maldorne/mud-web-proxy`, and is continued here by Andrew Goldfinch.
+
+This fork was taken from `maldorne/mud-web-proxy` at its `v3.0.0` tag. That
+upstream has since released its own `v4.0.0`, which @neverbot describes as a
+full rewrite; it shares no code with this project, and the two `v4` lines are
+unrelated despite the coinciding version number.
 
 Version history recorded in the source:
 
@@ -27,12 +32,31 @@ Version history recorded in the source:
 
 ## Licensing history
 
-The original 2014 code by @plamzi carried an MIT license header.
+The upstream licensing is mixed, and that mixture originates with the original
+author rather than with any later fork.
 
-In 2020, @neverbot added a GNU General Public License notice covering the
-work (commit `2b1acf7`, "feat: license and readme files"), naming both
-copyright holders. MIT is compatible with the GPL in that direction, so the
-combined work is distributed under the GPL — see LICENSE for the full text.
+@plamzi's MUDPortal-Web-App repository carries the full text of the GNU
+General Public License, **version 2**, at its root, while the single file this
+project descends from, `proxy/wsproxy.js`, carries a header reading
+`MIT license`. Both statements were present upstream from the start.
+
+In 2020, @neverbot's `maldorne/mud-web-proxy` added a `LICENSE.md` (commit
+`2b1acf7`, "feat: license and readme files") stating GPL version 3 or later
+and naming both copyright holders.
+
+An earlier revision of this file said @neverbot had relicensed @plamzi's
+MIT-headered code as GPL. That was wrong, and @neverbot corrected it in review
+of PR #42: the GPL was already present in @plamzi's repository, so the 2020
+`LICENSE.md` restated existing terms rather than imposing new ones. The
+correction is recorded here rather than silently applied, because the original
+claim was published and attributed conduct to a named person that did not
+occur.
+
+This project distributes under GPL-3.0-or-later. That rests on the MIT grant
+covering `wsproxy.js`: MIT is permissive and compatible with the GPL in that
+direction, so MIT-covered code may be distributed as part of a GPL work. The
+claim does not depend on the repository-level GPLv2 notice. See LICENSE for
+the full text.
 
 The MIT license requires its copyright notice and permission notice to be
 retained in copies of the covered portions. That notice is reproduced here so
@@ -61,11 +85,11 @@ that the requirement continues to be met after the MIT header was removed from
     FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
     DEALINGS IN THE SOFTWARE.
 
-Note: the MIT text above is the standard form. The original header recorded
-only `License: MIT` without reproducing the terms, so the exact wording used
-by the original author has not been preserved anywhere in this repository's
-history. If @plamzi's original distribution carried a differing notice, that
-version should replace this one.
+Note: the MIT text above is the standard form. @plamzi's `proxy/wsproxy.js`
+records only the bare line `MIT license` in its header comment and does not
+reproduce the terms, so no verbatim MIT notice by the original author exists
+upstream to copy. If @plamzi's distribution carried a differing notice
+elsewhere, that version should replace this one.
 
 ## Upstream
 
