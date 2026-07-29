@@ -49,10 +49,13 @@ describe('attested keys store', () => {
   });
 
   test('saveAttestedKeys writes JSON file and loadAttestedKeys reads it back', () => {
+    // A current timestamp, not a fixed date: loadAttestedKeys applies the
+    // 90-day TTL (MWP-95), so a hardcoded date makes this test start failing
+    // once it drifts past the window.
     setAttestedKey('key3', {
       publicKey: '---PEM---',
       signCount: 3,
-      registeredAt: '2026-01-01T00:00:00.000Z',
+      registeredAt: new Date().toISOString(),
     });
     saveAttestedKeys(tmpFile);
     _resetKeysForTesting();

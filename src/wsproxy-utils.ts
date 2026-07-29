@@ -456,6 +456,71 @@ export class FailedAuthLimiter {
   }
 }
 
+export interface SlidingWindowLimiterOptions {
+  /** Requests permitted per source within `windowMs`. */
+  maxRequests: number;
+  windowMs: number;
+  /** Bounds the store, which is addressable by an attacker. */
+  maxTrackedSources?: number;
+  now?: () => number;
+}
+
+/**
+ * Per-source sliding-window rate limit on successful requests.
+ *
+ * FailedAuthLimiter counts only failures, which is right for guessing a
+ * secret but wrong for endpoints where every *successful* call costs
+ * something — App Attest challenge issuance stores a nonce per request, so a
+ * client that never fails is exactly the one to bound.
+ *
+ * The tracking store is itself capped, so rotating source addresses cannot
+ * turn the limiter into the memory-growth vector it exists to prevent.
+ */
+export class SlidingWindowLimiter {
+  private readonly hits = new Map<string, number[]>();
+  private readonly maxRequests: number;
+  private readonly windowMs: number;
+  private readonly maxTrackedSources: number;
+  private readonly now: () => number;
+
+  constructor(options: SlidingWindowLimiterOptions) {
+    this.maxRequests = options.maxRequests;
+    this.windowMs = options.windowMs;
+    this.maxTrackedSources = options.maxTrackedSources ?? 10_000;
+    this.now = options.now ?? Date.now;
+  }
+
+  /**
+   * Record a request and report whether it is allowed. Returns false when the
+   * source has already used its allowance for the current window.
+   */
+  tryConsume(source: string): boolean {
+    const cutoff = this.now() - this.windowMs;
+    const kept = (this.hits.get(source) ?? []).filter((t) => t > cutoff);
+
+    if (kept.length >= this.maxRequests) {
+      // Keep the trimmed list so the window still slides while blocked, but
+      // do not record this attempt — otherwise a client hammering the
+      // endpoint would extend its own block indefinitely.
+      this.hits.set(source, kept);
+      return false;
+    }
+
+    if (!this.hits.has(source) && this.hits.size >= this.maxTrackedSources) {
+      const oldest = this.hits.keys().next();
+      if (!oldest.done) this.hits.delete(oldest.value);
+    }
+
+    kept.push(this.now());
+    this.hits.set(source, kept);
+    return true;
+  }
+
+  size(): number {
+    return this.hits.size;
+  }
+}
+
 /** Expand an IPv6 literal into eight 16-bit groups, or null if malformed. */
 export const parseIPv6Groups = (value: string): number[] | null => {
   let text = value.trim().toLowerCase().split('%')[0];

@@ -51,8 +51,12 @@ Example (client-side JS):
 When ONLY_ALLOW_DEFAULT_SERVER is true (default), `host`/`port` from the
 client must match srv.tn_host / srv.tn_port or the connection is refused.
 
-HTTP endpoints exposed alongside the WS upgrade: /health, /diagnostic,
-/diagnostic/api, /attest/challenge, /attest/register, /debug/apns/test.
+HTTP endpoints exposed alongside the WS upgrade: /health always;
+/diagnostic and /diagnostic/api when ENABLE_DIAGNOSTICS and ADMIN_TOKEN are
+set; /attest/challenge and /attest/register only when App Attest is
+configured; /debug/apns/* only when APNS is configured. Endpoints belonging
+to a disabled feature are not registered and 404 like any unknown path,
+rather than 403 — a 403 would confirm the feature exists.
 
 Configuration is environment-driven: WS_PORT, TN_HOST, TN_PORT,
 LOG_LEVEL, ALLOWED_ORIGINS, APNS_*, APPATTEST_*.
@@ -72,7 +76,6 @@ import type { WebSocket as WS, WebSocketServer } from 'ws';
 import type { Socket } from 'net';
 import type { Server as HttpServer } from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
-import type { TLSSocket } from 'tls';
 
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
@@ -91,6 +94,7 @@ import {
   authorizeApnsDebugRequest,
   encodeTelnetOutbound,
   FailedAuthLimiter,
+  SlidingWindowLimiter,
   authorizeSharedSecret,
   formatMissingTypeLogMessage,
   isOriginAllowed,
@@ -109,7 +113,6 @@ import {
   setAttestedKey,
   verifyAssertion,
   getAttestedKey,
-  getAllAttestedKeys,
   updateSignCount,
 } from './src/app-attest';
 
@@ -202,6 +205,24 @@ const getClientIP = (req: IncomingMessage): string =>
  */
 const failedAuthLimiter = new FailedAuthLimiter({
   maxFailures: 10,
+  windowMs: 60_000,
+});
+
+/**
+ * Rate limits on the unauthenticated App Attest endpoints (MWP-95).
+ *
+ * Both are counted per resolved client address. Challenge issuance is the
+ * looser of the two because a genuine client asks for a fresh nonce on every
+ * connect and reconnect; registration happens once per device key, so a
+ * source making more than a handful an hour is not a fleet of new phones.
+ */
+const attestChallengeLimiter = new SlidingWindowLimiter({
+  maxRequests: 30,
+  windowMs: 60_000,
+});
+
+const attestRegisterLimiter = new SlidingWindowLimiter({
+  maxRequests: 5,
   windowMs: 60_000,
 });
 
@@ -975,31 +996,9 @@ const srv: ServerConfig = {
     if (tlsSettings.useTls) {
       const cert = fs.readFileSync(tlsSettings.certPath);
       const key = fs.readFileSync(tlsSettings.keyPath);
+      // No requestCert: the proxy does not ask for client certificates. The
+      // mTLS fallback that needed them was removed in MWP-95.
       const tlsOptions: https.ServerOptions = { cert, key };
-      const clientCaPath = runtimeConfig.mtlsClientCaPath;
-      const allowMtlsFallback = runtimeConfig.allowMtlsFallback;
-      if (clientCaPath && allowMtlsFallback) {
-        try {
-          const clientCa = fs.readFileSync(path.resolve(clientCaPath));
-          tlsOptions.requestCert = true;
-          tlsOptions.rejectUnauthorized = false; // checked manually in connection handler
-          tlsOptions.ca = clientCa;
-          srv.logInfo(
-            'mTLS fallback enabled for non-production',
-            undefined,
-            'init',
-          );
-        } catch (err) {
-          srv.logWarn(
-            'Could not load client CA from ' +
-              clientCaPath +
-              ': ' +
-              (err as Error).message,
-            undefined,
-            'init',
-          );
-        }
-      }
       webserver = https.createServer(tlsOptions);
 
       // Parse and log certificate info
@@ -1065,43 +1064,61 @@ const srv: ServerConfig = {
       );
     }
 
-    const attestedKeysPath =
-      runtimeConfig.appAttest.attestedKeysPath ||
-      path.resolve(__dirname, 'config/attested-keys.json');
-    loadAttestedKeys(attestedKeysPath);
-    srv.logInfo(
-      'Loaded attested keys from ' + attestedKeysPath,
-      undefined,
-      'init',
-    );
-
+    const appAttestEnabled = runtimeConfig.appAttest.enabled;
+    const attestedKeysPath = runtimeConfig.appAttest.attestedKeysPath;
     const requireAppAuth = runtimeConfig.requireAppAuth;
     const appAttestBundleId = runtimeConfig.appAttest.bundleId;
     const appAttestTeamId = runtimeConfig.appAttest.teamId;
-    const mtlsFallbackEnabled = runtimeConfig.allowMtlsFallback;
-    const allowAssertionBypass = runtimeConfig.appAttest.allowAssertionBypass;
+    const apnsEnabled = Boolean(runtimeConfig.apns);
     const apnsTestSecret = runtimeConfig.apnsTestSecret;
 
-    srv.logInfo(
-      `App auth startup: requireAppAuth=${requireAppAuth} mtlsFallback=${mtlsFallbackEnabled} nodeEnv=${runtimeConfig.nodeEnv || 'unset'}`,
-      undefined,
-      'auth',
-    );
-    srv.logInfo(
-      `App Attest assertion bypass enabled=${allowAssertionBypass}`,
-      undefined,
-      'auth',
-    );
-    srv.logInfo(
-      `App Attest config: bundleId=${appAttestBundleId || '<missing>'} teamId=${appAttestTeamId || '<missing>'} keysPath=${attestedKeysPath}`,
-      undefined,
-      'auth',
-    );
-    srv.logInfo(
-      `APNS test endpoint enabled=${Boolean(apnsTestSecret)}`,
-      undefined,
-      'init',
-    );
+    // Both features are off unless configured, and both say so out loud. An
+    // operator who set the variables in the wrong file learns it here rather
+    // than from a client that cannot authenticate.
+    if (appAttestEnabled) {
+      loadAttestedKeys(attestedKeysPath);
+      srv.logInfo(
+        `App Attest ENABLED (EXPERIMENTAL): bundleId=${appAttestBundleId} ` +
+          `teamId=${appAttestTeamId} keysPath=${attestedKeysPath} ` +
+          `requireAppAuth=${requireAppAuth}`,
+        undefined,
+        'auth',
+      );
+      srv.logWarn(
+        'App Attest is experimental: its Apple attestation/assertion ' +
+          'verification has not had an independent cryptographic review. Do ' +
+          'not rely on it as your only access control — pair it with ' +
+          'AUTH_MODE=shared-secret.',
+        undefined,
+        'auth',
+      );
+    } else {
+      srv.logInfo(
+        'App Attest DISABLED (APPATTEST_BUNDLE_ID/APPATTEST_TEAM_ID not ' +
+          'set): /attest/* routes are not registered and no attested keys ' +
+          'are loaded.',
+        undefined,
+        'auth',
+      );
+    }
+
+    if (apnsEnabled) {
+      srv.logInfo(
+        `APNS ENABLED: topic=${runtimeConfig.apns!.topic} ` +
+          `environment=${runtimeConfig.apns!.environment} ` +
+          `testEndpoint=${Boolean(apnsTestSecret)}`,
+        undefined,
+        'init',
+      );
+    } else {
+      srv.logInfo(
+        'APNS DISABLED (APNS_KEY_PATH/APNS_KEY_ID/APNS_TEAM_ID/APNS_TOPIC ' +
+          'not set): no push notifications are sent and no device tokens ' +
+          'leave this process.',
+        undefined,
+        'init',
+      );
+    }
 
     const requestPeer = (req: IncomingMessage): string => {
       const trusted = isTrustedPeer(
@@ -1217,7 +1234,29 @@ const srv: ServerConfig = {
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(getDiagnosticData()));
-      } else if (req.method === 'GET' && pathOnly === '/attest/challenge') {
+      } else if (
+        appAttestEnabled &&
+        req.method === 'GET' &&
+        pathOnly === '/attest/challenge'
+      ) {
+        // Rate-limited per source: issuing a challenge is unauthenticated and
+        // costs a stored nonce, so it is the cheapest way to grow server
+        // state from off-box.
+        const challengePeer = getClientIP(req);
+        if (!attestChallengeLimiter.tryConsume(challengePeer)) {
+          srv.logWarn(
+            `App Attest challenge rate-limited peer=${requestPeer(req)}`,
+            undefined,
+            'auth',
+          );
+          res.writeHead(429, {
+            'Content-Type': 'application/json',
+            'Retry-After': '60',
+          });
+          res.end(JSON.stringify({ error: 'Too many requests' }));
+          return;
+        }
+
         const nonce = generateChallenge();
         srv.logInfo(
           `Issued App Attest challenge peer=${requestPeer(req)} ua=${String(req.headers['user-agent'] || 'unknown').slice(0, 120)}`,
@@ -1227,6 +1266,7 @@ const srv: ServerConfig = {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ nonce, expires: Date.now() + 60_000 }));
       } else if (
+        apnsEnabled &&
         req.method === 'POST' &&
         (pathOnly === '/debug/apns/test' || pathOnly === '/debug/apns/test/')
       ) {
@@ -1361,6 +1401,7 @@ const srv: ServerConfig = {
           }
         })();
       } else if (
+        apnsEnabled &&
         req.method === 'POST' &&
         (pathOnly === '/debug/apns/alert-test' ||
           pathOnly === '/debug/apns/alert-test/')
@@ -1508,6 +1549,7 @@ const srv: ServerConfig = {
           }
         })();
       } else if (
+        appAttestEnabled &&
         req.method === 'POST' &&
         (pathOnly === '/attest/register' || pathOnly === '/attest/register/')
       ) {
@@ -1516,6 +1558,20 @@ const srv: ServerConfig = {
           undefined,
           'auth',
         );
+        const registerPeer = getClientIP(req);
+        if (!attestRegisterLimiter.tryConsume(registerPeer)) {
+          srv.logWarn(
+            `App Attest register rate-limited peer=${requestPeer(req)}`,
+            undefined,
+            'auth',
+          );
+          res.writeHead(429, {
+            'Content-Type': 'application/json',
+            'Retry-After': '60',
+          });
+          res.end(JSON.stringify({ error: 'Too many requests' }));
+          return;
+        }
         const MAX_BODY_SIZE = 65_536; // 64 KB — Apple attestation objects are a few KB
         void (async () => {
           try {
@@ -1562,22 +1618,10 @@ const srv: ServerConfig = {
               res.end(JSON.stringify({ error: 'Invalid or expired nonce' }));
               return;
             }
+            // Both identifiers are guaranteed non-empty: this route is only
+            // registered when appAttest.enabled, which requires them.
             const bundleId = runtimeConfig.appAttest.bundleId;
             const teamId = runtimeConfig.appAttest.teamId;
-            if (!bundleId || !teamId) {
-              srv.logError(
-                `App Attest register failed: server misconfigured bundleIdPresent=${Boolean(bundleId)} teamIdPresent=${Boolean(teamId)}`,
-                undefined,
-                'auth',
-              );
-              res.writeHead(500, { 'Content-Type': 'application/json' });
-              res.end(
-                JSON.stringify({
-                  error: 'Server not configured for App Attest',
-                }),
-              );
-              return;
-            }
             const attestationBuffer = Buffer.from(body.attestation, 'base64');
             const result = await verifyAttestation({
               keyId: body.keyId,
@@ -1733,17 +1777,10 @@ const srv: ServerConfig = {
               return;
             }
 
+            // Non-empty by construction: requireAppAuth cannot be set without
+            // App Attest being configured, which startup enforces.
             const bundleId = runtimeConfig.appAttest.bundleId;
             const teamId = runtimeConfig.appAttest.teamId;
-            if (!bundleId) {
-              srv.logWarn(
-                'Rejected upgrade: APPATTEST_BUNDLE_ID is not configured',
-                undefined,
-                'auth',
-              );
-              rejectUpgrade(socket, 500, 'Server misconfigured');
-              return;
-            }
 
             try {
               const assertionBuffer = decodeHeaderBase64(assertionB64);
@@ -1761,7 +1798,6 @@ const srv: ServerConfig = {
                 storedPublicKey: storedKey.publicKey,
                 alternatePublicKey: storedKey.alternatePublicKey,
                 storedSignCount: storedKey.signCount,
-                allowInsecureBypass: allowAssertionBypass,
               });
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);
@@ -1771,38 +1807,12 @@ const srv: ServerConfig = {
                 'auth',
               );
             } catch (err) {
-              const diagnosticCrossKey = runtimeConfig.appAttest.diagCrosskey;
-              if (diagnosticCrossKey && keyId && assertionB64 && nonce) {
-                const bundleId = runtimeConfig.appAttest.bundleId;
-                const teamId = runtimeConfig.appAttest.teamId;
-                const allKeys = getAllAttestedKeys();
-                const assertionBuffer = Buffer.from(assertionB64, 'base64');
-                for (const candidate of allKeys) {
-                  if (candidate.keyId === keyId) {
-                    continue;
-                  }
-                  try {
-                    await verifyAssertion({
-                      assertionBuffer,
-                      keyId: candidate.keyId,
-                      nonce,
-                      bundleId,
-                      teamId: teamId || undefined,
-                      storedPublicKey: candidate.entry.publicKey,
-                      alternatePublicKey: candidate.entry.alternatePublicKey,
-                      storedSignCount: candidate.entry.signCount,
-                    });
-                    srv.logWarn(
-                      `Assertion diagnostic: signature validated with different keyId=${candidate.keyId.slice(0, 8)}... (header keyId=${keyId.slice(0, 8)}...)`,
-                      undefined,
-                      'auth',
-                    );
-                    break;
-                  } catch {
-                    // Continue scanning candidates for diagnostics only.
-                  }
-                }
-              }
+              // MWP-95 removed an opt-in cross-key diagnostic that stood here
+              // and re-verified the failed assertion against every other
+              // registered key. One rejected request cost a signature
+              // verification per stored key, on an unauthenticated path — an
+              // amplifier, for a diagnostic whose only output was a log line.
+              // Do not reintroduce it, under any environment variable.
               srv.logWarn(
                 'App Attest assertion failed: ' + (err as Error).message,
                 undefined,
@@ -1812,32 +1822,17 @@ const srv: ServerConfig = {
               return;
             }
           } else {
-            const mtlsAllowed = runtimeConfig.allowMtlsFallback;
-            if (!mtlsAllowed) {
-              srv.logWarn(
-                'Rejected upgrade: App Attest headers missing and mTLS fallback disabled',
-                undefined,
-                'auth',
-              );
-              rejectUpgrade(socket, 401, 'App authentication required');
-              return;
-            }
-
-            const tlsSocket = req.socket as TLSSocket;
-            if (!tlsSocket.authorized) {
-              srv.logWarn(
-                'Rejected upgrade: invalid mTLS client certificate',
-                undefined,
-                'auth',
-              );
-              rejectUpgrade(socket, 401, 'Invalid client certificate');
-              return;
-            }
-            srv.logInfo(
-              'mTLS fallback accepted (non-production)',
+            // No second route in. The mTLS client-certificate fallback that
+            // used to accept the connection here was removed in MWP-95: it
+            // was enabled whenever NODE_ENV was anything other than
+            // 'production', which includes unset.
+            srv.logWarn(
+              'Rejected upgrade: App Attest headers missing',
               undefined,
               'auth',
             );
+            rejectUpgrade(socket, 401, 'App authentication required');
+            return;
           }
         }
 
