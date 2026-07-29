@@ -6,9 +6,9 @@ name: CodeQL
 
 on:
   pull_request:
-    branches: [main, develop]
+    branches: [main]
   push:
-    branches: [main, develop]
+    branches: [main]
   schedule:
     # Weekly, so newly published queries reach existing code rather than only
     # code that happens to change.
