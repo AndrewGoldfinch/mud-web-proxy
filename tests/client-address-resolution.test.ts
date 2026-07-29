@@ -29,7 +29,11 @@ describe('untrusted peers are never believed', () => {
 
   test('ignores them when the trust list is empty, the default', () => {
     expect(
-      resolveClientAddress('127.0.0.1', { 'x-forwarded-for': '1.2.3.4' }, false),
+      resolveClientAddress(
+        '127.0.0.1',
+        { 'x-forwarded-for': '1.2.3.4' },
+        false,
+      ),
     ).toBe('127.0.0.1');
   });
 });
@@ -37,7 +41,11 @@ describe('untrusted peers are never believed', () => {
 describe('trusted peers: walking the chain right to left', () => {
   test('returns the sole forwarded address', () => {
     expect(
-      resolveClientAddress('127.0.0.1', { 'x-forwarded-for': '1.2.3.4' }, LOCAL),
+      resolveClientAddress(
+        '127.0.0.1',
+        { 'x-forwarded-for': '1.2.3.4' },
+        LOCAL,
+      ),
     ).toBe('1.2.3.4');
   });
 
@@ -75,8 +83,9 @@ describe('trusted peers: walking the chain right to left', () => {
   });
 
   test('falls back to the peer on an empty or unparseable header', () => {
-    expect(resolveClientAddress('127.0.0.1', { 'x-forwarded-for': '' }, LOCAL))
-      .toBe('127.0.0.1');
+    expect(
+      resolveClientAddress('127.0.0.1', { 'x-forwarded-for': '' }, LOCAL),
+    ).toBe('127.0.0.1');
     expect(
       resolveClientAddress('127.0.0.1', { 'x-forwarded-for': ' , , ' }, LOCAL),
     ).toBe('127.0.0.1');
@@ -131,7 +140,9 @@ describe('IPv6 CIDR ranges are supported', () => {
 
   test('matches an expanded form against a range', () => {
     expect(
-      isTrustedPeer('2001:0db8:0000:0000:0000:0000:0000:0005', ['2001:db8::/32']),
+      isTrustedPeer('2001:0db8:0000:0000:0000:0000:0000:0005', [
+        '2001:db8::/32',
+      ]),
     ).toBe(true);
   });
 

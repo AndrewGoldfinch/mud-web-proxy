@@ -62,9 +62,9 @@ export interface MockMUDConfig {
   };
   continuousOutput?: {
     enabled: boolean;
-    intervalMs: number;     // e.g. 500ms
-    messages: string[];     // cycle through these
-    count?: number;         // stop after N (undefined = infinite)
+    intervalMs: number; // e.g. 500ms
+    messages: string[]; // cycle through these
+    count?: number; // stop after N (undefined = infinite)
   };
   responses: {
     loginPrompt: string;
@@ -99,7 +99,8 @@ export class MockMUDServer extends EventEmitter {
   private clients: Map<string, MockClient> = new Map();
   private config: MockMUDConfig;
   private running = false;
-  private continuousTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  private continuousTimers: Map<string, ReturnType<typeof setInterval>> =
+    new Map();
   private continuousCounts: Map<string, number> = new Map();
   private receivedCommands: string[] = [];
 
@@ -175,7 +176,9 @@ export class MockMUDServer extends EventEmitter {
 
       this.server.listen(this.config.port, () => {
         this.running = true;
-        console.log(`[MockMUD] Server "${this.config.name}" listening on port ${this.config.port}`);
+        console.log(
+          `[MockMUD] Server "${this.config.name}" listening on port ${this.config.port}`,
+        );
         resolve();
       });
     });
@@ -256,8 +259,9 @@ export class MockMUDServer extends EventEmitter {
     // Chaos mode: Simulate delay
     if (this.config.chaos?.enabled && this.config.chaos.delay.max > 0) {
       const delay = Math.floor(
-        Math.random() * (this.config.chaos.delay.max - this.config.chaos.delay.min) +
-        this.config.chaos.delay.min
+        Math.random() *
+          (this.config.chaos.delay.max - this.config.chaos.delay.min) +
+          this.config.chaos.delay.min,
       );
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -322,7 +326,11 @@ export class MockMUDServer extends EventEmitter {
             client: 'MockMUD',
           });
           // Send char vitals
-          await this.sendGMCP(client, 'Char.Vitals', this.config.gmcp?.charVitals);
+          await this.sendGMCP(
+            client,
+            'Char.Vitals',
+            this.config.gmcp?.charVitals,
+          );
         } else if (opt === OPT_MXP && this.config.supports.mxp) {
           await this.sendMXP(client);
         }
@@ -361,7 +369,9 @@ export class MockMUDServer extends EventEmitter {
       // Window size
       client.windowWidth = (subData[0] << 8) | subData[1];
       client.windowHeight = (subData[2] << 8) | subData[3];
-      console.log(`[MockMUD] Window size: ${client.windowWidth}x${client.windowHeight}`);
+      console.log(
+        `[MockMUD] Window size: ${client.windowWidth}x${client.windowHeight}`,
+      );
     } else if (opt === OPT_GMCP && this.config.supports.gmcp) {
       // GMCP data from client
       const gmcpData = subData.toString('utf8');
@@ -381,7 +391,11 @@ export class MockMUDServer extends EventEmitter {
 
       if (pkg === 'Core.Supports.Set') {
         // Client sent supported packages
-        await this.sendGMCP(client, 'Char.Vitals', this.config.gmcp?.charVitals);
+        await this.sendGMCP(
+          client,
+          'Char.Vitals',
+          this.config.gmcp?.charVitals,
+        );
       } else if (pkg === 'Char.Login') {
         // Login attempt
         if (parsed.name && parsed.password) {

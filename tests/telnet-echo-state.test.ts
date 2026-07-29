@@ -99,7 +99,12 @@ describe('TelnetParser — echo-state segment ordering', () => {
     const parser = new TelnetParser(makeFakeSession());
 
     const first = parser.process(
-      Buffer.concat([Buffer.from('Password: '), willEcho(), wontEcho(), Buffer.from('Welcome!\n')]),
+      Buffer.concat([
+        Buffer.from('Password: '),
+        willEcho(),
+        wontEcho(),
+        Buffer.from('Welcome!\n'),
+      ]),
     );
     expect(first.segments.filter((s) => s.kind === 'echo')).toEqual([
       { kind: 'echo', suppressed: true },
@@ -107,7 +112,12 @@ describe('TelnetParser — echo-state segment ordering', () => {
     ]);
 
     const second = parser.process(
-      Buffer.concat([Buffer.from('New password: '), willEcho(), wontEcho(), Buffer.from('Changed.\n')]),
+      Buffer.concat([
+        Buffer.from('New password: '),
+        willEcho(),
+        wontEcho(),
+        Buffer.from('Changed.\n'),
+      ]),
     );
     expect(second.segments.filter((s) => s.kind === 'echo')).toEqual([
       { kind: 'echo', suppressed: true },
@@ -119,7 +129,9 @@ describe('TelnetParser — echo-state segment ordering', () => {
     const parser = new TelnetParser(makeFakeSession());
 
     const r1 = parser.process(Buffer.from('Password: '));
-    expect(r1.segments).toEqual([{ kind: 'text', data: Buffer.from('Password: ') }]);
+    expect(r1.segments).toEqual([
+      { kind: 'text', data: Buffer.from('Password: ') },
+    ]);
 
     // IAC WILL ECHO arrives split across two reads: IAC WILL, then ECHO.
     const r2 = parser.process(Buffer.from([IAC, WILL]));
@@ -131,7 +143,10 @@ describe('TelnetParser — echo-state segment ordering', () => {
 
   test('escaped IAC (0xFF 0xFF) inside a suppressed segment is preserved as literal 0xFF', () => {
     const parser = new TelnetParser(makeFakeSession());
-    const chunk = Buffer.concat([willEcho(), Buffer.from([0x41, IAC, IAC, 0x42])]);
+    const chunk = Buffer.concat([
+      willEcho(),
+      Buffer.from([0x41, IAC, IAC, 0x42]),
+    ]);
 
     const result = parser.process(chunk);
 
@@ -224,7 +239,10 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
     });
   }
 
@@ -243,7 +261,9 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
       const socket = makeClientSocket();
       si.parseNewMessage(
         socket,
-        Buffer.from(JSON.stringify({ type: 'connect', host: 'mud.test', port: 4000 })),
+        Buffer.from(
+          JSON.stringify({ type: 'connect', host: 'mud.test', port: 4000 }),
+        ),
       );
 
       // handleConnect now awaits DNS resolution in arbitrary mode before it

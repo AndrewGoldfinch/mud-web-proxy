@@ -46,7 +46,7 @@ This is the core of what makes a proxy different from a simple WebSocket-to-teln
    - outputBuffer: circular buffer (configurable, e.g. 50KB)
    - lastClientSequence: 0
    - clientConnected: true
-   
+
 3. Proxy connects to MUD server via telnet
 4. Data flows bidirectionally: WS ↔ Session ↔ Telnet
 
@@ -90,6 +90,7 @@ This is where most MUD proxy projects get complicated. The proxy sits between th
 ### What the proxy must handle itself
 
 **Telnet option negotiation (IAC sequences)** between the proxy and the MUD server. The proxy acts as a telnet client. It should negotiate:
+
 - NAWS (window size) — send a reasonable default like 80x24, or let the iOS client specify dimensions
 - TTYPE (terminal type) — send "MUDBasher" or "xterm-256color"
 - Charset negotiation — request UTF-8
@@ -156,6 +157,7 @@ Store the user's APNS device token in the session. When a trigger fires and `cli
 Use token-based authentication (`.p8` key file). This is Apple's recommended approach and doesn't require per-device certificates.
 
 **With Vapor:**
+
 ```swift
 // In configure.swift
 import VaporAPNS
@@ -187,14 +189,15 @@ app.apns.configuration = try .init(
 
 A $5-6/month VPS handles this easily. The proxy is lightweight — each session is one TCP socket, one WebSocket, and a 50KB buffer.
 
-| Provider | Cheapest tier | Notes |
-|---|---|---|
-| DigitalOcean | $4/mo (512MB) | Simple, good docs |
-| Hetzner | €3.79/mo (2GB) | Best value, EU or US-East |
-| Vultr | $5/mo (1GB) | Many regions |
-| Linode | $5/mo (1GB) | Owned by Akamai |
+| Provider     | Cheapest tier  | Notes                     |
+| ------------ | -------------- | ------------------------- |
+| DigitalOcean | $4/mo (512MB)  | Simple, good docs         |
+| Hetzner      | €3.79/mo (2GB) | Best value, EU or US-East |
+| Vultr        | $5/mo (1GB)    | Many regions              |
+| Linode       | $5/mo (1GB)    | Owned by Akamai           |
 
 **Setup with Bun on Ubuntu:**
+
 ```bash
 # On your VPS
 sudo apt update && sudo apt install -y certbot unzip
@@ -257,14 +260,14 @@ class ProxyConnection {
     private var lastSequence: Int = 0
     private var sessionId: String?
     private var sessionToken: String?
-    
+
     func connect(to url: URL) {
         let session = URLSession(configuration: .default)
         webSocketTask = session.webSocketTask(with: url)
         webSocketTask?.resume()
         listen()
     }
-    
+
     func resume() {
         guard let sid = sessionId, let token = sessionToken else { return }
         let msg = """
@@ -274,7 +277,7 @@ class ProxyConnection {
             if let error { print("Resume failed: \(error)") }
         }
     }
-    
+
     private func listen() {
         webSocketTask?.receive { [weak self] result in
             switch result {
@@ -286,7 +289,7 @@ class ProxyConnection {
             }
         }
     }
-    
+
     private func handleMessage(_ message: URLSessionWebSocketTask.Message) {
         // Parse JSON envelope, update lastSequence, dispatch to UI
     }
@@ -303,14 +306,14 @@ func sceneDidEnterBackground(_ scene: UIScene) {
         // Expiration handler — save state
         self.saveScrollbackLocally()
     }
-    
+
     // Save current sequence number to UserDefaults
     UserDefaults.standard.set(proxyConnection.lastSequence, forKey: "lastSequence")
     UserDefaults.standard.set(proxyConnection.sessionId, forKey: "sessionId")
-    
+
     // The WebSocket will die when iOS suspends us. That's fine.
     // The proxy keeps our MUD connection alive.
-    
+
     UIApplication.shared.endBackgroundTask(taskId)
 }
 
@@ -341,6 +344,7 @@ func application(_ app: UIApplication, didRegisterForRemoteNotificationsWithDevi
 ## Security considerations
 
 **Authentication between app and proxy.** Don't let arbitrary clients connect to your proxy and use it as an open telnet relay. Options:
+
 - API key baked into the app (simplest, fine for a personal server)
 - Sign in with Apple → JWT token → proxy validates
 - Per-session tokens generated at connection time

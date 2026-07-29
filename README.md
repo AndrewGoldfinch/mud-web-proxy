@@ -82,12 +82,12 @@ In `wsproxy.ts` you can change the following options:
 
 These settings can also be overridden via environment variables:
 
-| Variable      | Description                          | Default              |
-| ------------- | ------------------------------------ | -------------------- |
-| `WS_PORT`     | WebSocket proxy port                 | `6200`               |
-| `TN_HOST`     | Default telnet host                  | `muds.maldorne.org`  |
-| `TN_PORT`     | Default telnet port                  | `5010`               |
-| `DISABLE_TLS` | Set to `1` to disable TLS (dev mode) | _(TLS enabled)_      |
+| Variable      | Description                          | Default             |
+| ------------- | ------------------------------------ | ------------------- |
+| `WS_PORT`     | WebSocket proxy port                 | `6200`              |
+| `TN_HOST`     | Default telnet host                  | `muds.maldorne.org` |
+| `TN_PORT`     | Default telnet port                  | `5010`              |
+| `DISABLE_TLS` | Set to `1` to disable TLS (dev mode) | _(TLS enabled)_     |
 
 Probably you will only have to change:
 

@@ -1,0 +1,42 @@
+name: CodeQL
+
+# Static analysis for a network-facing proxy on a public repository — the
+# cheapest control available, and the one most likely to catch a class of
+# defect that review misses.
+
+on:
+  pull_request:
+    branches: [main, develop]
+  push:
+    branches: [main, develop]
+  schedule:
+    # Weekly, so newly published queries reach existing code rather than only
+    # code that happens to change.
+    - cron: '17 4 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze
+    runs-on: ubuntu-latest
+    permissions:
+      # Scoped to this job rather than the workflow: the repository default is
+      # read-only, and only this step needs to publish results.
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: javascript-typescript
+          queries: security-and-quality
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: '/language:javascript-typescript'

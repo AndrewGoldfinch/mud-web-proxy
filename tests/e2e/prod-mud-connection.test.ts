@@ -119,9 +119,9 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
     // Wait for more data after sending username (password prompt or
     // ECHO negotiation). The proxy may suppress "Password:" text due
     // to ECHO negotiation, so just wait for any new data.
-    const msgCountBeforeLogin = connection!.getMessages().filter(
-      (m) => m.type === 'data',
-    ).length;
+    const msgCountBeforeLogin = connection!
+      .getMessages()
+      .filter((m) => m.type === 'data').length;
     await connection!.waitForMessageCount(
       'data',
       msgCountBeforeLogin + 1,
@@ -150,9 +150,9 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
   it('should execute in-game command after login', async () => {
     expect(connection).not.toBeNull();
 
-    const msgCountBefore = connection!.getMessages().filter(
-      (m) => m.type === 'data',
-    ).length;
+    const msgCountBefore = connection!
+      .getMessages()
+      .filter((m) => m.type === 'data').length;
 
     // Send 'score' — shows character stats
     connection!.sendCommand('score');
@@ -160,9 +160,9 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
     // Wait for new data messages in response
     await connection!.waitForMessageCount('data', msgCountBefore + 1, 10000);
 
-    const msgCountAfter = connection!.getMessages().filter(
-      (m) => m.type === 'data',
-    ).length;
+    const msgCountAfter = connection!
+      .getMessages()
+      .filter((m) => m.type === 'data').length;
     expect(msgCountAfter).toBeGreaterThan(msgCountBefore);
   }, 15000);
 
@@ -176,9 +176,7 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
     await new Promise((resolve) => setTimeout(resolve, 1000));
 
     // Verify no error messages were received
-    const errors = connection!.getMessages().filter(
-      (m) => m.type === 'error',
-    );
+    const errors = connection!.getMessages().filter((m) => m.type === 'error');
     expect(errors.length).toBe(0);
 
     // Connection should still work — send another command
@@ -221,8 +219,7 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
     // (not a connection/timeout error)
     const isResumeSupported = result.success;
     const isCleanRejection =
-      !result.success &&
-      result.error === 'Session not found or token invalid';
+      !result.success && result.error === 'Session not found or token invalid';
 
     expect(isResumeSupported || isCleanRejection).toBe(true);
 
@@ -242,9 +239,7 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
     }
 
     // Should have no errors from the current connection
-    const errors = connection.getMessages().filter(
-      (m) => m.type === 'error',
-    );
+    const errors = connection.getMessages().filter((m) => m.type === 'error');
     expect(errors.length).toBe(0);
 
     // Send disconnect and wait for ack
@@ -252,11 +247,13 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
     expect(disconnected).toBe(true);
 
     // Verify we received the disconnected response
-    const disconnectMsg = connection.getMessages().find(
-      (m) => m.type === 'disconnected',
-    );
+    const disconnectMsg = connection
+      .getMessages()
+      .find((m) => m.type === 'disconnected');
     expect(disconnectMsg).toBeDefined();
-    expect((disconnectMsg!.data as { sessionId: string }).sessionId).toBeDefined();
+    expect(
+      (disconnectMsg!.data as { sessionId: string }).sessionId,
+    ).toBeDefined();
 
     // Close the WebSocket
     connection.close();

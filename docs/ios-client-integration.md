@@ -192,6 +192,7 @@ func openWebSocket(
 ```
 
 **URLs:**
+
 - `proxyBaseURL` — the HTTPS base URL, e.g. `https://your-proxy.example.com:6200`
 - `proxyURL` — the WebSocket URL, e.g. `wss://your-proxy.example.com:6200`
 
@@ -235,6 +236,7 @@ openssl pkcs12 -export -passout pass: \
 ```
 
 Set on the server:
+
 ```
 MTLS_CLIENT_CA_PATH=./config/client-ca/ca.pem
 ```
@@ -390,14 +392,14 @@ struct MudApp: App {
 
 ## Part 5: Error Handling Reference
 
-| Scenario | Cause | Fix |
-|---|---|---|
-| `registrationFailed("Invalid or expired nonce")` | Nonce expired (60s TTL) before `POST /attest/register` arrived | Reduce latency; retry with a fresh challenge |
-| `registrationFailed("Server not configured for App Attest")` | `APPATTEST_BUNDLE_ID` or `APPATTEST_TEAM_ID` not set on server | Set env vars on server |
-| `registrationFailed("rpIdHash does not match bundleId")` | `APPATTEST_BUNDLE_ID` doesn't match app's actual bundle ID | Verify env var matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode |
-| `DCError.invalidInput` from Apple | Device not eligible (too old, or running iOS < 14) | Check `DCAppAttestService.shared.isSupported` |
-| WebSocket connection rejected (no 101) | Assertion headers missing or assertion failed | Re-register if keyId lost; check nonce freshness |
-| mTLS: server rejects cert | Wrong CA on server, or cert bundled in wrong target | Verify `MTLS_CLIENT_CA_PATH` points to the correct `ca.pem` |
+| Scenario                                                     | Cause                                                          | Fix                                                         |
+| ------------------------------------------------------------ | -------------------------------------------------------------- | ----------------------------------------------------------- |
+| `registrationFailed("Invalid or expired nonce")`             | Nonce expired (60s TTL) before `POST /attest/register` arrived | Reduce latency; retry with a fresh challenge                |
+| `registrationFailed("Server not configured for App Attest")` | `APPATTEST_BUNDLE_ID` or `APPATTEST_TEAM_ID` not set on server | Set env vars on server                                      |
+| `registrationFailed("rpIdHash does not match bundleId")`     | `APPATTEST_BUNDLE_ID` doesn't match app's actual bundle ID     | Verify env var matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode |
+| `DCError.invalidInput` from Apple                            | Device not eligible (too old, or running iOS < 14)             | Check `DCAppAttestService.shared.isSupported`               |
+| WebSocket connection rejected (no 101)                       | Assertion headers missing or assertion failed                  | Re-register if keyId lost; check nonce freshness            |
+| mTLS: server rejects cert                                    | Wrong CA on server, or cert bundled in wrong target            | Verify `MTLS_CLIENT_CA_PATH` points to the correct `ca.pem` |
 
 ---
 
@@ -414,15 +416,15 @@ MTLS_CLIENT_CA_PATH=./config/client-ca/ca.pem  # for simulator fallback
 
 The proxy serves both HTTP endpoints on the same port as WebSockets (default `6200`):
 
-| Endpoint | Method | Used by iOS | Description |
-|---|---|---|---|
-| `/attest/challenge` | GET | Registration + each connection | Returns `{nonce: "hex64chars", expires: timestamp}` |
-| `/attest/register` | POST | Registration only | Body: `{keyId, attestation: base64, nonce: hex}` |
+| Endpoint            | Method | Used by iOS                    | Description                                         |
+| ------------------- | ------ | ------------------------------ | --------------------------------------------------- |
+| `/attest/challenge` | GET    | Registration + each connection | Returns `{nonce: "hex64chars", expires: timestamp}` |
+| `/attest/register`  | POST   | Registration only              | Body: `{keyId, attestation: base64, nonce: hex}`    |
 
 The WebSocket upgrade must include headers:
 
-| Header | Value |
-|---|---|
-| `X-App-Assert-KeyId` | The `keyId` string from `generateKey()` |
-| `X-App-Assert-Data` | Base64-encoded assertion from `generateAssertion()` |
-| `X-App-Assert-Nonce` | Hex nonce string from `/attest/challenge` |
+| Header               | Value                                               |
+| -------------------- | --------------------------------------------------- |
+| `X-App-Assert-KeyId` | The `keyId` string from `generateKey()`             |
+| `X-App-Assert-Data`  | Base64-encoded assertion from `generateAssertion()` |
+| `X-App-Assert-Nonce` | Hex nonce string from `/attest/challenge`           |

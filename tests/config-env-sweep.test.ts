@@ -63,10 +63,12 @@ describe('allowMtlsFallback keeps its production guard', () => {
 
 describe('log settings are parsed once', () => {
   test('LOG_LEVEL is accepted in either case', () => {
-    expect(() => getRuntimeConfig({ ...base, LOG_LEVEL: 'DEBUG' })).not
-      .toThrow();
-    expect(() => getRuntimeConfig({ ...base, LOG_LEVEL: 'debug' })).not
-      .toThrow();
+    expect(() =>
+      getRuntimeConfig({ ...base, LOG_LEVEL: 'DEBUG' }),
+    ).not.toThrow();
+    expect(() =>
+      getRuntimeConfig({ ...base, LOG_LEVEL: 'debug' }),
+    ).not.toThrow();
   });
 
   test('an unrecognized LOG_LEVEL aborts rather than silently defaulting', () => {
@@ -76,7 +78,9 @@ describe('log settings are parsed once', () => {
   });
 
   test('NO_COLOR is exposed on the config', () => {
-    expect(getRuntimeConfig({ ...base, NO_COLOR: '1' }).log.noColor).toBe(true);
+    expect(getRuntimeConfig({ ...base, NO_COLOR: '1' }).log.noColor).toBe(
+      true,
+    );
     expect(getRuntimeConfig(base).log.noColor).toBe(false);
   });
 });

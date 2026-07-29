@@ -8,13 +8,7 @@
  *   6. MUD termination decrements IP count via removeSession
  */
 
-import {
-  describe,
-  test,
-  expect,
-  beforeEach,
-  afterEach,
-} from 'bun:test';
+import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { EventEmitter } from 'events';
 import net from 'net';
 import { SessionManager } from '../src/session-manager.js';
@@ -29,7 +23,9 @@ interface MockSocket extends SocketExtended {
   messages: string[];
 }
 
-function makeSocket(opts: { remoteAddress?: string; xff?: string } = {}): MockSocket {
+function makeSocket(
+  opts: { remoteAddress?: string; xff?: string } = {},
+): MockSocket {
   const messages: string[] = [];
   const s = new EventEmitter() as MockSocket;
   s.readyState = 1; // WebSocket.OPEN
@@ -67,7 +63,10 @@ function isBlocked(mgr: SessionManager, ip: string): boolean {
  * an unstubbed connection can fail and append `connection_failed` before the
  * assertion runs, which is what made these tests flaky in CI but not locally.
  */
-function findMsg(socket: MockSocket, type: string): Record<string, unknown> | undefined {
+function findMsg(
+  socket: MockSocket,
+  type: string,
+): Record<string, unknown> | undefined {
   return socket.messages
     .map((m) => JSON.parse(m) as Record<string, unknown>)
     .find((m) => m.type === type);
@@ -130,7 +129,10 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: true,
     });
@@ -148,12 +150,20 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
     // With trustedProxyCidrs=true: 1.2.3.4 checked via XFF → at limit → rate_limited.
-    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+    expect(lastMsg(socket)).toMatchObject({
+      type: 'error',
+      code: 'rate_limited',
+    });
   });
 
   test('allows connection when XFF IP is not at limit even if remoteAddress is', async () => {
@@ -164,7 +174,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
@@ -184,11 +199,19 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
-    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+    expect(lastMsg(socket)).toMatchObject({
+      type: 'error',
+      code: 'rate_limited',
+    });
   });
 
   test('falls back to remoteAddress when XFF header is absent', () => {
@@ -198,11 +221,19 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
-    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+    expect(lastMsg(socket)).toMatchObject({
+      type: 'error',
+      code: 'rate_limited',
+    });
   });
 
   test('ignores XFF headers when trustedProxyCidrs is false (default)', async () => {
@@ -216,7 +247,10 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: false,
     });
@@ -228,7 +262,12 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
@@ -249,7 +288,10 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['10.0.0.0/8'],
     });
@@ -260,13 +302,21 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
     // The proxy at 10.1.2.3 is inside 10.0.0.0/8, so XFF is honoured and the
     // real client 1.2.3.4 is already at its limit.
-    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+    expect(lastMsg(socket)).toMatchObject({
+      type: 'error',
+      code: 'rate_limited',
+    });
   });
 
   test('honours XFF from an IPv4-mapped IPv6 peer matching a trusted entry', () => {
@@ -280,22 +330,36 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['127.0.0.1'],
     });
 
     si.sessionManager.incrementIPCount('1.2.3.4');
 
-    const socket = makeSocket({ remoteAddress: '::ffff:127.0.0.1', xff: '1.2.3.4' });
+    const socket = makeSocket({
+      remoteAddress: '::ffff:127.0.0.1',
+      xff: '1.2.3.4',
+    });
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
-    expect(lastMsg(socket)).toMatchObject({ type: 'error', code: 'rate_limited' });
+    expect(lastMsg(socket)).toMatchObject({
+      type: 'error',
+      code: 'rate_limited',
+    });
   });
 
   test('ignores XFF from a peer outside the trusted CIDR range', async () => {
@@ -309,18 +373,29 @@ describe('X-Forwarded-For: real client IP used for rate limiting', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
       trustedProxyCidrs: ['10.0.0.0/8'],
     });
 
     si.sessionManager.incrementIPCount('1.2.3.4');
 
-    const socket = makeSocket({ remoteAddress: '203.0.113.9', xff: '1.2.3.4' });
+    const socket = makeSocket({
+      remoteAddress: '203.0.113.9',
+      xff: '1.2.3.4',
+    });
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: 'mud.test', port: 23, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: 'mud.test',
+          port: 23,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
@@ -418,7 +493,10 @@ describe('handleSocketClose: backgrounding a socket does not decrement IP count'
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
@@ -459,7 +537,10 @@ describe('Failed MUD connect: IP count not incremented', () => {
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       sessions: { maxPerIP: 1, maxPerDevice: 5, timeoutHours: 24 },
     });
 
@@ -501,7 +582,9 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
   test('count returns to 0 after MUD drops the connection', async () => {
     // Spin up a TCP server that accepts then immediately destroys the socket.
     const server = net.createServer((sock) => sock.destroy());
-    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    await new Promise<void>((resolve) =>
+      server.listen(0, '127.0.0.1', resolve),
+    );
     const { port } = server.address() as net.AddressInfo;
 
     const si = new SessionIntegration({
@@ -513,7 +596,10 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
       },
       // These fixtures exercise session accounting, not DNS. Stub resolution
       // so arbitrary mode does not perform real lookups for test hostnames.
-      resolveTarget: async (host: string) => ({ allowed: true, address: host }),
+      resolveTarget: async (host: string) => ({
+        allowed: true,
+        address: host,
+      }),
       // Dial plaintext directly. This server accepts and immediately destroys,
       // which surfaces as a reset — and a reset is no longer treated as
       // evidence the peer wants cleartext (MWP-89), so under `prefer` the
@@ -528,18 +614,19 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
     si.parseNewMessage(
       socket,
       Buffer.from(
-        JSON.stringify({ type: 'connect', host: '127.0.0.1', port, deviceToken: 'dev' }),
+        JSON.stringify({
+          type: 'connect',
+          host: '127.0.0.1',
+          port,
+          deviceToken: 'dev',
+        }),
       ),
     );
 
     // Wait for the MUD to drop the connection and the cleanup to propagate.
     // handleMudTermination broadcasts 'disconnected' then schedules removeSession
     // after a 150 ms flush window — wait for the message, then the timer.
-    await waitForMsg(
-      socket,
-      (m) => m.type === 'disconnected',
-      'disconnected',
-    );
+    await waitForMsg(socket, (m) => m.type === 'disconnected', 'disconnected');
     await new Promise<void>((resolve) => setTimeout(resolve, 250));
 
     // BEFORE fix: handleMudTermination → removeSessionAndCleanup did not decrement

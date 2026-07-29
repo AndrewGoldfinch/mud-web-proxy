@@ -1,8 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import {
-  extractNonceFromCert,
-  buildAppleNonceDer,
-} from '../src/app-attest';
+import { extractNonceFromCert, buildAppleNonceDer } from '../src/app-attest';
 
 describe('extractNonceFromCert', () => {
   test('extracts 32-byte nonce from DER cert extension', () => {

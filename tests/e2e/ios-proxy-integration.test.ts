@@ -4,7 +4,15 @@
  * Covers: fresh connection, session resume, buffering, protocol, error handling, login flow.
  */
 
-import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
+import {
+  describe,
+  it,
+  expect,
+  beforeAll,
+  afterAll,
+  beforeEach,
+  afterEach,
+} from 'bun:test';
 import { E2EConnection } from './connection-helper';
 import {
   MockMUDServer,
@@ -27,7 +35,14 @@ function makeConfig(port: number) {
     host: 'localhost',
     port,
     testTimeoutMs: 10000,
-    expectations: { gmcp: true, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+    expectations: {
+      gmcp: true,
+      mccp: false,
+      mxp: false,
+      msdp: false,
+      ansi: true,
+      utf8: true,
+    },
   };
 }
 
@@ -45,7 +60,14 @@ describe('Fresh Connection', () => {
       port: MOCK_MUD_PORT,
       name: 'Integration MUD',
       type: 'ire',
-      supports: { gmcp: true, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: true,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',
@@ -200,7 +222,14 @@ describe('Session Resume', () => {
       port: MOCK_MUD_PORT + 10,
       name: 'Resume MUD',
       type: 'generic',
-      supports: { gmcp: true, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: true,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',
@@ -270,7 +299,12 @@ describe('Session Resume', () => {
 
     // Resume with old lastSeq
     const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result2 = await conn2.resume(proxy.url, result1.sessionId!, result1.token!, seqBefore);
+    const result2 = await conn2.resume(
+      proxy.url,
+      result1.sessionId!,
+      result1.token!,
+      seqBefore,
+    );
     expect(result2.success).toBe(true);
 
     // Wait for buffered replay
@@ -300,7 +334,12 @@ describe('Session Resume', () => {
 
     // Resume with a high lastSeq — should get no replayed data
     const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result2 = await conn2.resume(proxy.url, result1.sessionId!, result1.token!, 999999);
+    const result2 = await conn2.resume(
+      proxy.url,
+      result1.sessionId!,
+      result1.token!,
+      999999,
+    );
 
     if (result2.success) {
       // Wait briefly
@@ -308,14 +347,21 @@ describe('Session Resume', () => {
       const afterHigh = conn2.getMessagesAfterSeq(999999);
       // No messages should be replayed before seq 999999
       // New messages may arrive from the MUD, but none with seq <= 999999
-      expect(afterHigh.every((m) => ((m.data as any)?.seq ?? 0) > 999999 || true)).toBe(true);
+      expect(
+        afterHigh.every((m) => ((m.data as any)?.seq ?? 0) > 999999 || true),
+      ).toBe(true);
     }
     conn2.close();
   });
 
   it('should reject invalid sessionId', async () => {
     const conn = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result = await conn.resume(proxy.url, 'nonexistent-session-id', 'bad-token', 0);
+    const result = await conn.resume(
+      proxy.url,
+      'nonexistent-session-id',
+      'bad-token',
+      0,
+    );
     expect(result.success).toBe(false);
     expect(result.error).toBeDefined();
     conn.close();
@@ -331,7 +377,12 @@ describe('Session Resume', () => {
 
     // Try to resume with wrong token
     const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result2 = await conn2.resume(proxy.url, result1.sessionId!, 'wrong-token-value', 0);
+    const result2 = await conn2.resume(
+      proxy.url,
+      result1.sessionId!,
+      'wrong-token-value',
+      0,
+    );
     expect(result2.success).toBe(false);
     conn2.close();
   });
@@ -359,7 +410,12 @@ describe('Session Resume', () => {
 
     // Can still resume
     const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result2 = await conn2.resume(proxy.url, result1.sessionId!, result1.token!, 0);
+    const result2 = await conn2.resume(
+      proxy.url,
+      result1.sessionId!,
+      result1.token!,
+      0,
+    );
     expect(result2.success).toBe(true);
     conn2.close();
   });
@@ -397,7 +453,14 @@ describe('Buffering', () => {
       port: MOCK_MUD_PORT + 20,
       name: 'Buffer MUD',
       type: 'generic',
-      supports: { gmcp: true, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: true,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',
@@ -429,11 +492,15 @@ describe('Buffering', () => {
     conn.sendCommand('pass');
     await new Promise((r) => setTimeout(r, 1500));
 
-    const dataMessages = conn.getMessages().filter((m) => m.type === 'data' || m.type === 'gmcp');
+    const dataMessages = conn
+      .getMessages()
+      .filter((m) => m.type === 'data' || m.type === 'gmcp');
     expect(dataMessages.length).toBeGreaterThan(1);
 
     // Check sequence numbers are monotonically increasing
-    const seqs = dataMessages.map((m) => (m.data as any).seq).filter((s) => typeof s === 'number');
+    const seqs = dataMessages
+      .map((m) => (m.data as any).seq)
+      .filter((s) => typeof s === 'number');
     for (let i = 1; i < seqs.length; i++) {
       expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
     }
@@ -470,9 +537,13 @@ describe('Buffering', () => {
     conn.sendCommand('pass');
     await new Promise((r) => setTimeout(r, 2000));
 
-    const seqMessages = conn.getMessages().filter(
-      (m) => (m.type === 'data' || m.type === 'gmcp') && typeof (m.data as any).seq === 'number',
-    );
+    const seqMessages = conn
+      .getMessages()
+      .filter(
+        (m) =>
+          (m.type === 'data' || m.type === 'gmcp') &&
+          typeof (m.data as any).seq === 'number',
+      );
 
     // Should have both types
     const types = new Set(seqMessages.map((m) => m.type));
@@ -564,7 +635,14 @@ describe('Protocol', () => {
       port: MOCK_MUD_PORT + 31,
       name: 'ANSI MUD',
       type: 'generic',
-      supports: { gmcp: false, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: false,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: '\x1b[1;32mLogin:\x1b[0m ',
         passwordPrompt: 'Password: ',
@@ -606,7 +684,14 @@ describe('Protocol', () => {
 
     const conn = new E2EConnection({
       ...makeConfig(MOCK_MUD_PORT + 32),
-      expectations: { gmcp: false, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      expectations: {
+        gmcp: false,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
     });
     const result = await conn.connect(proxy.url);
     expect(result.success).toBe(true);
@@ -658,7 +743,14 @@ describe('Error Handling', () => {
       port: MOCK_MUD_PORT + 40,
       name: 'Error MUD',
       type: 'generic',
-      supports: { gmcp: false, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: false,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',
@@ -819,7 +911,14 @@ describe('Login Flow', () => {
       port: MOCK_MUD_PORT + 50,
       name: 'Login MUD',
       type: 'generic',
-      supports: { gmcp: true, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: true,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',

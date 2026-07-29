@@ -21,7 +21,14 @@ function makeConfig(port: number, timeoutMs = 20000) {
     host: 'localhost',
     port,
     testTimeoutMs: timeoutMs,
-    expectations: { gmcp: true, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+    expectations: {
+      gmcp: true,
+      mccp: false,
+      mxp: false,
+      msdp: false,
+      ansi: true,
+      utf8: true,
+    },
   };
 }
 
@@ -66,7 +73,14 @@ describe('Stress Tests', () => {
       port: STRESS_MUD_PORT + 1,
       name: 'Rapid MUD',
       type: 'generic',
-      supports: { gmcp: false, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: false,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',
@@ -123,7 +137,14 @@ describe('Stress Tests', () => {
       port: STRESS_MUD_PORT + 2,
       name: 'Burst MUD',
       type: 'generic',
-      supports: { gmcp: false, mccp: false, mxp: false, msdp: false, ansi: true, utf8: true },
+      supports: {
+        gmcp: false,
+        mccp: false,
+        mxp: false,
+        msdp: false,
+        ansi: true,
+        utf8: true,
+      },
       responses: {
         loginPrompt: 'Login: ',
         passwordPrompt: 'Password: ',
@@ -204,7 +225,12 @@ describe('Stress Tests', () => {
 
       // Resume
       const conn2 = new E2EConnection(makeConfig(STRESS_MUD_PORT + 3, 30000));
-      const result2 = await conn2.resume(proxy.url, sessionId!, token!, seqBefore);
+      const result2 = await conn2.resume(
+        proxy.url,
+        sessionId!,
+        token!,
+        seqBefore,
+      );
       expect(result2.success).toBe(true);
 
       // Wait for replayed + new data

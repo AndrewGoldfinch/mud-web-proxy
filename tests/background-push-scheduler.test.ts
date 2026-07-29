@@ -10,7 +10,10 @@ class MockPushNotifier {
     contentState: ActivityContentState;
   }> = [];
 
-  async sendSilentPush(deviceToken: string, sessionId: string): Promise<boolean> {
+  async sendSilentPush(
+    deviceToken: string,
+    sessionId: string,
+  ): Promise<boolean> {
     this.silentCalls.push({ deviceToken, sessionId });
     return true;
   }
@@ -100,7 +103,11 @@ describe('BackgroundPushScheduler', () => {
     session.markClientBackgrounded();
     scheduler.trackSession(session);
 
-    await scheduler.onBufferedOutput(session, 1, '  one   two   three   four  ');
+    await scheduler.onBufferedOutput(
+      session,
+      1,
+      '  one   two   three   four  ',
+    );
 
     expect(notifier.activityCalls.length).toBe(1);
     expect(notifier.activityCalls[0]?.contentState.lastOutputSnippet).toBe(

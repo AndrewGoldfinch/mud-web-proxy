@@ -63,7 +63,11 @@ describe('required never downgrades', () => {
 
   test('does not fall back on a connection reset', () => {
     expect(
-      shouldFallBackToPlain('required', 'error', err('read ECONNRESET', 'ECONNRESET')),
+      shouldFallBackToPlain(
+        'required',
+        'error',
+        err('read ECONNRESET', 'ECONNRESET'),
+      ),
     ).toBe(false);
   });
 });
@@ -105,16 +109,17 @@ describe('prefer falls back only on genuine TLS failure', () => {
 
   test('does NOT fall back on an unrecognized error', () => {
     // Fail closed: an error we cannot classify is not evidence of plaintext.
-    expect(shouldFallBackToPlain('prefer', 'error', err('something odd'))).toBe(
-      false,
-    );
+    expect(
+      shouldFallBackToPlain('prefer', 'error', err('something odd')),
+    ).toBe(false);
   });
 });
 
 describe('plain never reaches the fallback decision', () => {
   test('reports no fallback, because TLS was never attempted', () => {
-    expect(shouldFallBackToPlain('plain', 'error', err('wrong version number')))
-      .toBe(false);
+    expect(
+      shouldFallBackToPlain('plain', 'error', err('wrong version number')),
+    ).toBe(false);
     expect(shouldFallBackToPlain('plain', 'close')).toBe(false);
   });
 });
@@ -171,7 +176,9 @@ describe("Node's real mid-handshake close message", () => {
   test('required still refuses it — this is the attacker lever', () => {
     // A plaintext MUD closing and an attacker closing are indistinguishable.
     // `prefer` accepts that ambiguity; `required` must not.
-    expect(shouldFallBackToPlain('required', 'error', nodeClose())).toBe(false);
+    expect(shouldFallBackToPlain('required', 'error', nodeClose())).toBe(
+      false,
+    );
   });
 
   test('a bare reset with no TLS wording is still transport, not TLS', () => {
@@ -197,7 +204,9 @@ describe('a hostname containing "tls" or "ssl" is not a TLS diagnostic', () => {
   for (const [m, code] of dnsFailures) {
     test(`treats "${m}" as transport`, () => {
       expect(isTlsNegotiationError(err(m, code))).toBe(false);
-      expect(shouldFallBackToPlain('prefer', 'error', err(m, code))).toBe(false);
+      expect(shouldFallBackToPlain('prefer', 'error', err(m, code))).toBe(
+        false,
+      );
     });
   }
 

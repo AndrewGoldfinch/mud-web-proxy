@@ -9,7 +9,10 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { getRuntimeConfig, parseRuntimeConfig } from '../src/runtime-config.js';
+import {
+  getRuntimeConfig,
+  parseRuntimeConfig,
+} from '../src/runtime-config.js';
 
 const base = {
   TN_HOST: 'mud.example.org',
@@ -110,8 +113,9 @@ describe('allowlist validation uses the same parser as enforcement', () => {
   });
 
   test('accepts a genuinely valid entry', () => {
-    expect(() => getRuntimeConfig(allowlist('mud.example.org:4000'))).not
-      .toThrow();
+    expect(() =>
+      getRuntimeConfig(allowlist('mud.example.org:4000')),
+    ).not.toThrow();
   });
 
   test('rejects an entry whose host is blank', () => {
