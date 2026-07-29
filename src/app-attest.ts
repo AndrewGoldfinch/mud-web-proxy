@@ -1079,7 +1079,29 @@ export function loadAttestedKeys(filePath: string): void {
     const raw = fs.readFileSync(filePath, 'utf-8');
     const obj = JSON.parse(raw) as Record<string, AttestedKeyEntry>;
     const now = Date.now();
-    const entries = Object.entries(obj)
+    const nowStamp = new Date(now).toISOString();
+
+    const migrated = Object.entries(obj).map(
+      ([keyId, entry]): [string, AttestedKeyEntry] => {
+        if (entry.lastUsedAt) return [keyId, entry];
+        // Grandfather entries written before the TTL existed.
+        //
+        // Every key in a file from an earlier version lacks `lastUsedAt`, and
+        // inferring inactivity from `registeredAt` would evict a device that
+        // registered four months ago and connected this morning — the whole
+        // established fleet, on the first restart after upgrade. Those clients
+        // cache their keyId in the Keychain and skip registration, so they do
+        // not re-register on their own; they just start failing with
+        // "Unknown key".
+        //
+        // Starting their clock at load instead grants a genuinely abandoned
+        // key one extra TTL window. That is a bounded, one-time cost, and the
+        // wrong direction to err in is the other one.
+        return [keyId, { ...entry, lastUsedAt: nowStamp }];
+      },
+    );
+
+    const entries = migrated
       // Apply the TTL at load too. A file written before a long outage would
       // otherwise reintroduce keys the running process would have reclaimed,
       // and restore the store above its ceiling.
@@ -1116,13 +1138,22 @@ export function saveAttestedKeys(filePath: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  // Random suffix, not pid + timestamp. Both of those are guessable, and a
+  // predictable path is what makes the symlink race below worth attempting.
+  const tempPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
+
+  // 'wx' is O_CREAT|O_EXCL: it fails outright if anything already exists at
+  // the path, rather than following a symlink planted there and truncating
+  // whatever it points at. Opened before the try/catch so that a failure
+  // here — meaning we created nothing — cannot reach the cleanup below and
+  // unlink a file this process does not own.
+  const handle = fs.openSync(tempPath, 'wx');
+
   try {
     // fsync before rename: rename is atomic with respect to the directory
     // entry, but without the flush the new file's contents may still be in
     // page cache when the machine loses power, leaving an intact name over
     // empty data.
-    const handle = fs.openSync(tempPath, 'w');
     try {
       fs.writeFileSync(handle, JSON.stringify(obj, null, 2), 'utf-8');
       fs.fsyncSync(handle);

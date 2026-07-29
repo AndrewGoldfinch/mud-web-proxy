@@ -243,6 +243,83 @@ describe('the key store survives an interrupted write', () => {
     fs.rmSync(readOnlyDir, { recursive: true, force: true });
   });
 
+  test('temp file names are unpredictable', () => {
+    // A name derived from pid + wall clock is guessable, which is what makes
+    // planting a symlink at that path worth attempting.
+    setAttestedKey('key1', {
+      publicKey: '---PEM---',
+      signCount: 1,
+      registeredAt: new Date().toISOString(),
+    });
+
+    const seen = new Set<string>();
+    const realRename = fs.renameSync;
+    try {
+      // Capture the temp path each save chooses, without letting the rename
+      // complete, so several names can be compared.
+      (fs as { renameSync: unknown }).renameSync = (from: string) => {
+        seen.add(from);
+        fs.unlinkSync(from);
+        throw new Error('stop before rename');
+      };
+      for (let i = 0; i < 5; i++) {
+        try {
+          saveAttestedKeys(keysFile);
+        } catch {
+          // expected
+        }
+      }
+    } finally {
+      (fs as { renameSync: unknown }).renameSync = realRename;
+    }
+
+    expect(seen.size).toBe(5);
+    for (const name of seen) {
+      expect(name).not.toContain(String(process.pid));
+    }
+  });
+
+  test('a pre-existing path at the temp name is not followed', () => {
+    // O_EXCL: if anything already occupies the temp path, the save must fail
+    // rather than write through a symlink an attacker planted there.
+    setAttestedKey('key1', {
+      publicKey: '---PEM---',
+      signCount: 1,
+      registeredAt: new Date().toISOString(),
+    });
+
+    const victim = path.join(tmpDir, 'victim.txt');
+    fs.writeFileSync(victim, 'do not clobber me', 'utf-8');
+
+    let plantedPath = '';
+    const realOpen = fs.openSync;
+    try {
+      // Plant a symlink at whatever temp path this save picks, then let the
+      // real open run against it.
+      (fs as { openSync: unknown }).openSync = (
+        target: string,
+        flags: string,
+      ) => {
+        if (typeof target === 'string' && target.endsWith('.tmp')) {
+          plantedPath = target;
+          fs.symlinkSync(victim, target);
+        }
+        return (realOpen as typeof fs.openSync)(
+          target as string,
+          flags as string,
+        );
+      };
+
+      expect(() => saveAttestedKeys(keysFile)).toThrow();
+    } finally {
+      (fs as { openSync: unknown }).openSync = realOpen;
+      if (plantedPath && fs.existsSync(plantedPath))
+        fs.unlinkSync(plantedPath);
+    }
+
+    expect(fs.readFileSync(victim, 'utf-8')).toBe('do not clobber me');
+  });
+
   test('a save leaves no temp files behind', () => {
     setAttestedKey('key1', {
       publicKey: '---PEM---',
@@ -278,18 +355,26 @@ describe('loading applies the same bounds as writing', () => {
   test('stale entries in the file are not resurrected', () => {
     // A file written before a long outage would otherwise reintroduce keys a
     // running process would have reclaimed.
+    //
+    // Both entries carry `lastUsedAt`, i.e. they were written by a version
+    // that tracks activity. Entries *without* it are a different case — they
+    // predate the TTL and are grandfathered rather than aged out, because
+    // their registration date says nothing about whether the device is still
+    // in use. That is covered above.
     fs.writeFileSync(
       keysFile,
       JSON.stringify({
         stale: {
           publicKey: '---PEM---',
           signCount: 0,
-          registeredAt: daysAgo(200),
+          registeredAt: daysAgo(300),
+          lastUsedAt: daysAgo(200),
         },
         fresh: {
           publicKey: '---PEM---',
           signCount: 0,
-          registeredAt: daysAgo(2),
+          registeredAt: daysAgo(300),
+          lastUsedAt: daysAgo(2),
         },
       }),
       'utf-8',
@@ -315,6 +400,99 @@ describe('loading applies the same bounds as writing', () => {
     loadAttestedKeys(keysFile);
 
     expect(attestedKeyCount()).toBeLessThanOrEqual(MAX_ATTESTED_KEYS);
+  });
+
+  test('an upgrade does not deregister an established fleet', () => {
+    // Regression: files written before the TTL existed have no `lastUsedAt`,
+    // and inferring inactivity from `registeredAt` evicted every device that
+    // registered more than 90 days ago — however recently it had connected.
+    // Clients cache their keyId in the Keychain and skip registration, so
+    // they do not recover on their own; they just start failing.
+    fs.writeFileSync(
+      keysFile,
+      JSON.stringify({
+        legacyActive: {
+          publicKey: '---PEM---',
+          signCount: 900,
+          registeredAt: daysAgo(200),
+        },
+      }),
+      'utf-8',
+    );
+
+    loadAttestedKeys(keysFile);
+
+    expect(getAttestedKey('legacyActive')).toBeDefined();
+    expect(getAttestedKey('legacyActive')?.signCount).toBe(900);
+  });
+
+  test('grandfathered entries start their TTL clock at load', () => {
+    const originalRegisteredAt = daysAgo(400);
+    fs.writeFileSync(
+      keysFile,
+      JSON.stringify({
+        legacy: {
+          publicKey: '---PEM---',
+          signCount: 1,
+          registeredAt: originalRegisteredAt,
+        },
+      }),
+      'utf-8',
+    );
+
+    loadAttestedKeys(keysFile);
+
+    const stamped = getAttestedKey('legacy');
+    expect(stamped?.lastUsedAt).toBeDefined();
+    expect(Date.now() - Date.parse(stamped!.lastUsedAt!)).toBeLessThan(5_000);
+    // registeredAt is history and must not be rewritten.
+    expect(stamped?.registeredAt).toBe(originalRegisteredAt);
+  });
+
+  test('the grandfathered stamp survives a save/load round trip', () => {
+    // After one cycle every entry carries lastUsedAt, so the migration is
+    // self-healing and does not re-run on every restart.
+    fs.writeFileSync(
+      keysFile,
+      JSON.stringify({
+        legacy: {
+          publicKey: '---PEM---',
+          signCount: 1,
+          registeredAt: daysAgo(200),
+        },
+      }),
+      'utf-8',
+    );
+
+    loadAttestedKeys(keysFile);
+    saveAttestedKeys(keysFile);
+
+    const onDisk = JSON.parse(fs.readFileSync(keysFile, 'utf-8')) as Record<
+      string,
+      { lastUsedAt?: string }
+    >;
+    expect(onDisk.legacy.lastUsedAt).toBeDefined();
+  });
+
+  test('an entry already carrying lastUsedAt is still aged out', () => {
+    // Grandfathering must not become a blanket amnesty: once a key has a real
+    // activity stamp, the TTL applies to it normally.
+    fs.writeFileSync(
+      keysFile,
+      JSON.stringify({
+        genuinelyStale: {
+          publicKey: '---PEM---',
+          signCount: 1,
+          registeredAt: daysAgo(300),
+          lastUsedAt: daysAgo(200),
+        },
+      }),
+      'utf-8',
+    );
+
+    loadAttestedKeys(keysFile);
+
+    expect(getAttestedKey('genuinelyStale')).toBeUndefined();
   });
 
   test('the most recently active entries are the ones kept', () => {
