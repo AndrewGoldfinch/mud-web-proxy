@@ -79,6 +79,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
+import { HeartbeatMonitor } from './src/heartbeat';
 import {
   escapeDiagnosticHtml,
   getRuntimeConfig,
@@ -306,6 +307,11 @@ export interface TelnetSocket extends Socket {
 }
 
 let server: ServerState = { sockets: new Set() };
+
+// WebSocket liveness (MWP-92). Null when the heartbeat is disabled, which is
+// why every call site uses `?.` rather than assuming a monitor exists.
+let heartbeatMonitor: HeartbeatMonitor<SocketExtended> | null = null;
+let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let nextSocketId = 1;
 
 const getHeaderValue = (
@@ -1681,6 +1687,55 @@ const srv: ServerConfig = {
         undefined,
         'init',
       );
+
+      // Liveness sweep (MWP-92). Terminating is what actually reclaims the
+      // session slot: `terminate` fires 'close', which runs closeSocket and
+      // releases the capacity the connection caps account for.
+      const hb = runtimeConfig.heartbeat;
+      if (hb.enabled) {
+        heartbeatMonitor = new HeartbeatMonitor<SocketExtended>({
+          intervalMs: hb.intervalMs,
+          timeoutMs: hb.timeoutMs,
+        });
+
+        heartbeatTimer = setInterval(() => {
+          const monitor = heartbeatMonitor;
+          if (!monitor) return;
+
+          for (const dead of monitor.sweep()) {
+            srv.logWarn(
+              `terminating unresponsive peer after ${hb.timeoutMs}ms without a pong ${formatWsSocketContext(dead)}`,
+              dead,
+              'ws',
+            );
+            dead.terminate();
+          }
+
+          // Ping after sweeping, so a peer is never judged on a ping sent in
+          // the same tick it is measured against.
+          for (const s of server.sockets) {
+            try {
+              s.ping?.();
+            } catch {
+              // A socket that cannot be pinged is already going away; the next
+              // sweep collects it.
+            }
+          }
+        }, hb.intervalMs);
+        heartbeatTimer.unref?.();
+
+        srv.logInfo(
+          `WebSocket heartbeat every ${hb.intervalMs}ms, reclaiming peers silent for ${hb.timeoutMs}ms`,
+          undefined,
+          'init',
+        );
+      } else {
+        srv.logWarn(
+          'WebSocket heartbeat disabled: half-open connections will hold their session slot until the session timeout',
+          undefined,
+          'init',
+        );
+      }
     } catch (err) {
       srv.logError(
         'Error creating WebSocket server: ' + err,
@@ -1900,13 +1955,25 @@ const srv: ServerConfig = {
           'ws',
         );
 
+        // Liveness (MWP-92). A half-open peer otherwise holds its session slot
+        // until the 24-hour session timeout, so the connection caps bound live
+        // clients while dead ones accumulate underneath.
+        heartbeatMonitor?.track(extendedSocket);
+        socket.on('pong', () => {
+          heartbeatMonitor?.markAlive(extendedSocket);
+        });
+
         socket.on('message', function message(msg: Buffer) {
+          // Inbound traffic is evidence of life too, so an active client is
+          // never reclaimed for having missed a ping.
+          heartbeatMonitor?.markAlive(extendedSocket);
           if (!srv.parse(extendedSocket, msg)) {
             srv.forward(extendedSocket, msg);
           }
         });
 
         socket.on('close', (code: number, reason: Buffer) => {
+          heartbeatMonitor?.untrack(extendedSocket);
           const closeReason = reason.length ? reason.toString('utf8') : 'none';
           srv.logInfo(
             'peer disconnected: code=' +
@@ -1922,6 +1989,7 @@ const srv: ServerConfig = {
         });
 
         socket.on('error', (error: Error) => {
+          heartbeatMonitor?.untrack(extendedSocket);
           srv.logError('peer error: ' + error, extendedSocket, 'ws');
           srv.closeSocket(extendedSocket);
         });
@@ -2668,6 +2736,14 @@ const srv: ServerConfig = {
   die: function (core?: boolean): void {
     srv.logWarn('Dying gracefully in 3 sec.', undefined, 'init');
     srv.open = false;
+
+    // Stop the liveness sweep before closing sockets, or it races the shutdown
+    // and terminates peers the drain is already notifying.
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = null;
+    }
+    heartbeatMonitor = null;
 
     // Shut down session integration (clears intervals, sessions)
     sessionIntegration.shutdown();

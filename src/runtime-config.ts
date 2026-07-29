@@ -241,6 +241,12 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface HeartbeatConfig {
+  enabled: boolean;
+  intervalMs: number;
+  timeoutMs: number;
+}
+
 export interface SessionLimitsConfig {
   timeoutHours: number;
   maxPerDevice: number;
@@ -292,6 +298,9 @@ export interface RuntimeConfig {
 
   // Session limits (sibling MWP-92)
   sessions: SessionLimitsConfig;
+
+  // WebSocket liveness (sibling MWP-92)
+  heartbeat: HeartbeatConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -725,6 +734,44 @@ export const parseRuntimeConfig = (
   // TARGET_MODE=arbitrary with AUTH_MODE=none is already covered above
   // ALLOWED_ORIGINS requires allowlist to be set (unset = no restriction)
 
+  // ---- WebSocket liveness (MWP-92) ----
+  // On by default: without pings a half-open connection holds its session slot
+  // until the 24-hour session timeout, so the connection caps bound live
+  // clients while dead ones accumulate underneath.
+  const heartbeatEnabled = readBooleanEnv(env, 'WS_HEARTBEAT_ENABLED', true);
+  const heartbeatIntervalMs = readIntegerEnv(
+    env,
+    'WS_HEARTBEAT_INTERVAL_MS',
+    30_000,
+  );
+  const heartbeatTimeoutMs = readIntegerEnv(
+    env,
+    'WS_HEARTBEAT_TIMEOUT_MS',
+    90_000,
+  );
+
+  if (heartbeatIntervalMs <= 0) {
+    errors.push(
+      `WS_HEARTBEAT_INTERVAL_MS must be a positive integer (got ${heartbeatIntervalMs}).`,
+    );
+  }
+  // At or below the interval, the first sweep reclaims every peer before a
+  // ping could be answered. A configuration that disconnects all clients
+  // should fail to start rather than start and misbehave.
+  if (heartbeatTimeoutMs <= heartbeatIntervalMs) {
+    errors.push(
+      `WS_HEARTBEAT_TIMEOUT_MS (${heartbeatTimeoutMs}) must be greater than ` +
+        `WS_HEARTBEAT_INTERVAL_MS (${heartbeatIntervalMs}), or every peer is ` +
+        'reclaimed before it can answer a ping.',
+    );
+  }
+
+  const heartbeat: HeartbeatConfig = {
+    enabled: heartbeatEnabled,
+    intervalMs: heartbeatIntervalMs,
+    timeoutMs: heartbeatTimeoutMs,
+  };
+
   // ---- Session limits (MWP-92) ----
   // Previously hardcoded at wsproxy.ts:147-151, so an operator could neither
   // change them nor see them reported. A limit nobody can configure is a
@@ -786,6 +833,7 @@ export const parseRuntimeConfig = (
     proxySharedSecret,
     trustedProxyCidrs,
     sessions,
+    heartbeat,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,
