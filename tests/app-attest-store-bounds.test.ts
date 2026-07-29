@@ -189,8 +189,8 @@ describe('the key store survives an interrupted write', () => {
   });
 
   test('the live file is never left truncated mid-write', () => {
-    // The write goes to a sibling temp file and is renamed into place, so at
-    // no point does the destination contain a partial document.
+    // The write is staged in a private directory and renamed into place, so
+    // at no point does the destination contain a partial document.
     setAttestedKey('key1', {
       publicKey: '---PEM---',
       signCount: 1,
@@ -199,14 +199,18 @@ describe('the key store survives an interrupted write', () => {
     saveAttestedKeys(keysFile);
     const original = fs.readFileSync(keysFile, 'utf-8');
 
-    // Simulate the crash: a temp file exists with partial contents, but the
-    // rename never happened.
-    fs.writeFileSync(`${keysFile}.9999.1.tmp`, '{"key2": {"publi', 'utf-8');
+    // Simulate the crash: a staging directory holds a partial document, but
+    // the rename never happened.
+    const orphan = path.join(tmpDir, '.attested-keys-abc123');
+    fs.mkdirSync(orphan, { mode: 0o700 });
+    fs.writeFileSync(path.join(orphan, 'keys.json'), '{"key2": {"publi');
 
     expect(fs.readFileSync(keysFile, 'utf-8')).toBe(original);
     _resetKeysForTesting();
     loadAttestedKeys(keysFile);
     expect(getAttestedKey('key1')?.signCount).toBe(1);
+
+    fs.rmSync(orphan, { recursive: true, force: true });
   });
 
   // Permission bits do not restrain root, so this one asserts nothing when
@@ -243,9 +247,12 @@ describe('the key store survives an interrupted write', () => {
     fs.rmSync(readOnlyDir, { recursive: true, force: true });
   });
 
-  test('temp file names are unpredictable', () => {
-    // A name derived from pid + wall clock is guessable, which is what makes
-    // planting a symlink at that path worth attempting.
+  test('staging happens in a private directory, not a guessable path', () => {
+    // The write is staged inside a mkdtemp directory (mode 0700, random
+    // name), so the symlink race this used to defend against with O_EXCL
+    // alone is structurally unreachable: nothing else can pre-create or even
+    // list the file before the rename. Asserted on the directory rather than
+    // by patching fs, so the test observes behaviour instead of internals.
     setAttestedKey('key1', {
       publicKey: '---PEM---',
       signCount: 1,
@@ -255,11 +262,12 @@ describe('the key store survives an interrupted write', () => {
     const seen = new Set<string>();
     const realRename = fs.renameSync;
     try {
-      // Capture the temp path each save chooses, without letting the rename
-      // complete, so several names can be compared.
+      // Stop each save just before the rename so the staging directory can be
+      // inspected while it still exists.
       (fs as { renameSync: unknown }).renameSync = (from: string) => {
         seen.add(from);
-        fs.unlinkSync(from);
+        const mode = fs.statSync(path.dirname(from)).mode & 0o777;
+        expect(mode).toBe(0o700);
         throw new Error('stop before rename');
       };
       for (let i = 0; i < 5; i++) {
@@ -273,51 +281,33 @@ describe('the key store survives an interrupted write', () => {
       (fs as { renameSync: unknown }).renameSync = realRename;
     }
 
+    // A fresh staging directory per save, and none named from the pid.
     expect(seen.size).toBe(5);
     for (const name of seen) {
       expect(name).not.toContain(String(process.pid));
     }
   });
 
-  test('a pre-existing path at the temp name is not followed', () => {
-    // O_EXCL: if anything already occupies the temp path, the save must fail
-    // rather than write through a symlink an attacker planted there.
+  test('an interrupted save leaves no staging directory behind', () => {
     setAttestedKey('key1', {
       publicKey: '---PEM---',
       signCount: 1,
       registeredAt: new Date().toISOString(),
     });
 
-    const victim = path.join(tmpDir, 'victim.txt');
-    fs.writeFileSync(victim, 'do not clobber me', 'utf-8');
-
-    let plantedPath = '';
-    const realOpen = fs.openSync;
+    const realRename = fs.renameSync;
     try {
-      // Plant a symlink at whatever temp path this save picks, then let the
-      // real open run against it.
-      (fs as { openSync: unknown }).openSync = (
-        target: string,
-        flags: string,
-      ) => {
-        if (typeof target === 'string' && target.endsWith('.tmp')) {
-          plantedPath = target;
-          fs.symlinkSync(victim, target);
-        }
-        return (realOpen as typeof fs.openSync)(
-          target as string,
-          flags as string,
-        );
+      (fs as { renameSync: unknown }).renameSync = () => {
+        throw new Error('simulated crash before rename');
       };
-
       expect(() => saveAttestedKeys(keysFile)).toThrow();
     } finally {
-      (fs as { openSync: unknown }).openSync = realOpen;
-      if (plantedPath && fs.existsSync(plantedPath))
-        fs.unlinkSync(plantedPath);
+      (fs as { renameSync: unknown }).renameSync = realRename;
     }
 
-    expect(fs.readFileSync(victim, 'utf-8')).toBe('do not clobber me');
+    // Cleanup runs in a finally, so a failed save is not a slow leak of
+    // staging directories on every debounced write.
+    expect(fs.readdirSync(tmpDir)).toHaveLength(0);
   });
 
   test('a save leaves no temp files behind', () => {

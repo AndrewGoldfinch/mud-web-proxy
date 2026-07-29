@@ -1127,8 +1127,8 @@ export function loadAttestedKeys(filePath: string): void {
  * deregistering every device. Writing a sibling temp file and renaming makes
  * the swap atomic on POSIX: readers see either the old file or the new one.
  *
- * The temp file is a sibling rather than in /tmp because rename(2) is only
- * atomic within a filesystem.
+ * Staging happens in a private sibling directory rather than in /tmp, because
+ * rename(2) is only atomic within a filesystem.
  */
 export function saveAttestedKeys(filePath: string): void {
   const obj: Record<string, AttestedKeyEntry> = {};
@@ -1138,37 +1138,40 @@ export function saveAttestedKeys(filePath: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 
-  // Random suffix, not pid + timestamp. Both of those are guessable, and a
-  // predictable path is what makes the symlink race below worth attempting.
-  const tempPath = `${filePath}.${randomBytes(8).toString('hex')}.tmp`;
-
-  // 'wx' is O_CREAT|O_EXCL: it fails outright if anything already exists at
-  // the path, rather than following a symlink planted there and truncating
-  // whatever it points at. Opened before the try/catch so that a failure
-  // here — meaning we created nothing — cannot reach the cleanup below and
-  // unlink a file this process does not own.
-  const handle = fs.openSync(tempPath, 'wx');
+  // Stage inside a directory from mkdtemp rather than at a sibling path of
+  // our own naming. mkdtemp creates the directory atomically, with a random
+  // name and mode 0700, which removes the race rather than narrowing it:
+  // nothing else can pre-create, symlink, or even list the file we are about
+  // to write. A self-named temp path — however random — is still a path an
+  // attacker may reach first if the containing directory is writable, and
+  // ATTESTED_KEYS_PATH is operator-supplied, so that directory is not always
+  // one we control.
+  const stagingDir = fs.mkdtempSync(path.join(dir, '.attested-keys-'));
+  const tempPath = path.join(stagingDir, 'keys.json');
 
   try {
-    // fsync before rename: rename is atomic with respect to the directory
-    // entry, but without the flush the new file's contents may still be in
-    // page cache when the machine loses power, leaving an intact name over
-    // empty data.
+    // 'wx' is O_CREAT|O_EXCL — redundant inside a private directory, kept so
+    // the guarantee does not depend solely on mkdtemp's mode.
+    const handle = fs.openSync(tempPath, 'wx');
     try {
+      // fsync before rename: rename is atomic with respect to the directory
+      // entry, but without the flush the new file's contents may still be in
+      // page cache when the machine loses power, leaving an intact name over
+      // empty data.
       fs.writeFileSync(handle, JSON.stringify(obj, null, 2), 'utf-8');
       fs.fsyncSync(handle);
     } finally {
       fs.closeSync(handle);
     }
     fs.renameSync(tempPath, filePath);
-  } catch (err) {
-    // Leave the previous file in place and do not leak the partial temp.
+  } finally {
+    // Runs whether or not the rename happened, so a failed save leaves the
+    // previous file in place and no staging residue. The error propagates.
     try {
-      fs.unlinkSync(tempPath);
+      fs.rmSync(stagingDir, { recursive: true, force: true });
     } catch {
       // Nothing to clean up.
     }
-    throw err;
   }
 }
 
