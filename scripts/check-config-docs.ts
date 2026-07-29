@@ -32,13 +32,31 @@ const DOCS = path.join(repoRoot, 'docs', 'configuration.md');
  */
 const NOT_ENV_VARS = new Set<string>([]);
 
-/** Every variable the runtime reads, however it reads it. */
-const varsInSource = (source: string): Set<string> => {
+/**
+ * Every variable the runtime reads, however it reads it.
+ *
+ * This is textual, not a parse, so it recognises access forms rather than
+ * understanding them. The forms below are the ones the code actually uses,
+ * plus the two that review flagged as silently missed. A form nobody has
+ * written yet — rebinding `env` to another name and reading through that —
+ * would still escape, and would do so quietly, which is this check's one
+ * genuine weakness. Adding such a read means teaching this function about it.
+ */
+export const varsInSource = (source: string): Set<string> => {
   const names = new Set<string>();
 
-  // Direct property access: env.WS_PORT
-  for (const [, name] of source.matchAll(/env\.([A-Z][A-Z0-9_]{2,})\b/g)) {
+  // Direct property access, optional chaining included: env.WS_PORT, env?.WS_PORT
+  for (const [, name] of source.matchAll(/env\??\.([A-Z][A-Z0-9_]{2,})\b/g)) {
     names.add(name);
+  }
+
+  // Destructuring: const { WS_PORT, TN_HOST: host } = env. Neither the
+  // property-access nor the string-literal pattern sees these, so without
+  // this the check would report success while the variable went undocumented.
+  for (const [, group] of source.matchAll(/\{([^{}]*)\}\s*=\s*env\b/g)) {
+    for (const [, name] of group.matchAll(/\b([A-Z][A-Z0-9_]{2,})\b/g)) {
+      names.add(name);
+    }
   }
 
   // Every other read routes the name through a string literal, whether as
@@ -73,30 +91,34 @@ const read = (file: string): string => {
   }
 };
 
-const source = varsInSource(read(SOURCE));
-const documented = varsInDocs(read(DOCS));
+// Guarded so the extraction above can be imported and tested without running
+// the check or calling process.exit.
+if (import.meta.main) {
+  const source = varsInSource(read(SOURCE));
+  const documented = varsInDocs(read(DOCS));
 
-const undocumented = [...source].filter((n) => !documented.has(n)).sort();
-const stale = [...documented].filter((n) => !source.has(n)).sort();
+  const undocumented = [...source].filter((n) => !documented.has(n)).sort();
+  const stale = [...documented].filter((n) => !source.has(n)).sort();
 
-if (stale.length > 0) {
-  console.warn(
-    `check-config-docs: documented but not read by src/runtime-config.ts (stale, not fatal):\n` +
-      stale.map((n) => `  ${n}`).join('\n'),
+  if (stale.length > 0) {
+    console.warn(
+      `check-config-docs: documented but not read by src/runtime-config.ts (stale, not fatal):\n` +
+        stale.map((n) => `  ${n}`).join('\n'),
+    );
+  }
+
+  if (undocumented.length > 0) {
+    console.error(
+      `check-config-docs: ${undocumented.length} variable(s) read by src/runtime-config.ts ` +
+        `but missing from docs/configuration.md:\n` +
+        undocumented.map((n) => `  ${n}`).join('\n') +
+        `\n\nDocument each in docs/configuration.md, or add it to NOT_ENV_VARS in ` +
+        `scripts/check-config-docs.ts if it is not a configuration variable.`,
+    );
+    process.exit(1);
+  }
+
+  console.log(
+    `check-config-docs: ${source.size} configuration variables, all documented.`,
   );
 }
-
-if (undocumented.length > 0) {
-  console.error(
-    `check-config-docs: ${undocumented.length} variable(s) read by src/runtime-config.ts ` +
-      `but missing from docs/configuration.md:\n` +
-      undocumented.map((n) => `  ${n}`).join('\n') +
-      `\n\nDocument each in docs/configuration.md, or add it to NOT_ENV_VARS in ` +
-      `scripts/check-config-docs.ts if it is not a configuration variable.`,
-  );
-  process.exit(1);
-}
-
-console.log(
-  `check-config-docs: ${source.size} configuration variables, all documented.`,
-);
