@@ -12,7 +12,7 @@ describe('CircularBuffer', () => {
     it('should append data and increment sequence', () => {
       const buffer = new CircularBuffer(1024);
       const chunk = buffer.append(Buffer.from('test'), 'data');
-      
+
       expect(chunk.sequence).toBe(1);
       expect(chunk.type).toBe('data');
       expect(buffer.getCurrentSequence()).toBe(1);
@@ -21,11 +21,11 @@ describe('CircularBuffer', () => {
 
     it('should handle multiple appends', () => {
       const buffer = new CircularBuffer(10240); // Larger buffer
-      
+
       for (let i = 0; i < 5; i++) {
         buffer.append(Buffer.from('t' + i), 'data');
       }
-      
+
       expect(buffer.getCurrentSequence()).toBe(5);
       expect(buffer.getChunkCount()).toBe(5);
     });
@@ -35,12 +35,12 @@ describe('CircularBuffer', () => {
     it('should generate monotonically increasing sequences', () => {
       const buffer = new CircularBuffer(1024);
       const sequences: number[] = [];
-      
+
       for (let i = 0; i < 10; i++) {
         const chunk = buffer.append(Buffer.from('t'), 'data');
         sequences.push(chunk.sequence);
       }
-      
+
       for (let i = 1; i < sequences.length; i++) {
         expect(sequences[i]).toBeGreaterThan(sequences[i - 1]);
       }
@@ -51,7 +51,7 @@ describe('CircularBuffer', () => {
       buffer.append(Buffer.from('test1'), 'data');
       buffer.append(Buffer.from('test2'), 'data');
       buffer.append(Buffer.from('test3'), 'data');
-      
+
       expect(buffer.getLastSequence()).toBe(3);
     });
 
@@ -64,11 +64,11 @@ describe('CircularBuffer', () => {
   describe('replay functionality', () => {
     it('should replay from specific sequence', () => {
       const buffer = new CircularBuffer(1024);
-      
+
       buffer.append(Buffer.from('chunk1'), 'data');
       buffer.append(Buffer.from('chunk2'), 'data');
       buffer.append(Buffer.from('chunk3'), 'data');
-      
+
       const replay = buffer.replayFrom(2);
       expect(replay.length).toBe(2);
       expect(replay[0].sequence).toBe(2);
@@ -78,7 +78,7 @@ describe('CircularBuffer', () => {
     it('should return empty array for sequence not in buffer', () => {
       const buffer = new CircularBuffer(1024);
       buffer.append(Buffer.from('test'), 'data');
-      
+
       const replay = buffer.replayFrom(100);
       expect(replay.length).toBe(0);
     });
@@ -89,9 +89,9 @@ describe('CircularBuffer', () => {
       const buffer = new CircularBuffer(1024);
       buffer.append(Buffer.from('test1'), 'data');
       buffer.append(Buffer.from('test2'), 'data');
-      
+
       buffer.clear();
-      
+
       expect(buffer.getSize()).toBe(0);
       expect(buffer.getChunkCount()).toBe(0);
       expect(buffer.getCurrentSequence()).toBe(2);

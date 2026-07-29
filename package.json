@@ -27,6 +27,8 @@
     "test:mock": "USE_MOCK_MUD=1 bun tests/e2e/run-mock-tests.ts",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
+    "format": "prettier --check .",
+    "format:fix": "prettier --write .",
     "typecheck": "tsc --noEmit",
     "audit": "bun audit --audit-level=moderate --ignore=GHSA-f886-m6hf-6m8v --ignore=GHSA-25h7-pfq9-p65f --ignore=GHSA-rf6f-7fwh-wjgh --ignore=GHSA-3v7f-55p6-f55p --ignore=GHSA-c2c7-rcm5-vvqj --ignore=GHSA-3jxr-9vmj-r5cp --ignore=GHSA-mh99-v99m-4gvg"
   },

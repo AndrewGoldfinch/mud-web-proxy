@@ -1,0 +1,12 @@
+# Build output and dependencies
+dist/
+node_modules/
+coverage/
+
+# Lockfiles are tool-owned
+bun.lock
+
+# Agent worktrees live under .claude/ and are separate checkouts. Formatting
+# there reaches into another working tree — prettier does not read
+# .git/info/exclude, so it must be told separately.
+.claude/

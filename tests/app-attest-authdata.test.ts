@@ -1,5 +1,8 @@
 import { describe, test, expect } from 'bun:test';
-import { parseAttestationAuthData, parseAssertionAuthData } from '../src/app-attest';
+import {
+  parseAttestationAuthData,
+  parseAssertionAuthData,
+} from '../src/app-attest';
 
 function makeAttestationAuthData(opts: {
   rpIdHash?: Buffer;

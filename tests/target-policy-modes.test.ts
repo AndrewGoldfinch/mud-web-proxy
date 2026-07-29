@@ -45,15 +45,21 @@ describe('default deny', () => {
   });
 
   test('denies an unrecognized mode rather than falling through', () => {
-    const bogus = { ...fixed, targetMode: 'wide-open' } as unknown as
-      TargetPolicyConfig;
-    expect(validateTarget('anywhere.example', 4000, bogus).allowed).toBe(false);
+    const bogus = {
+      ...fixed,
+      targetMode: 'wide-open',
+    } as unknown as TargetPolicyConfig;
+    expect(validateTarget('anywhere.example', 4000, bogus).allowed).toBe(
+      false,
+    );
   });
 
   test('rejects a malformed host or port before any mode logic', () => {
     expect(validateTarget('', 4000, fixed).allowed).toBe(false);
     expect(validateTarget('mud.example.org', 0, fixed).allowed).toBe(false);
-    expect(validateTarget('mud.example.org', 70000, fixed).allowed).toBe(false);
+    expect(validateTarget('mud.example.org', 70000, fixed).allowed).toBe(
+      false,
+    );
     expect(validateTarget(null, null, fixed).allowed).toBe(false);
   });
 });
@@ -77,7 +83,9 @@ describe('fixed mode', () => {
 
   test('denies when the configured target is itself invalid', () => {
     const broken = { ...fixed, defaultHost: '' };
-    expect(validateTarget('mud.example.org', 4000, broken).allowed).toBe(false);
+    expect(validateTarget('mud.example.org', 4000, broken).allowed).toBe(
+      false,
+    );
   });
 });
 
@@ -104,7 +112,9 @@ describe('allowlist mode', () => {
     // The old guard was `allowedTargets.size > 0 && ...`, so an empty or
     // mistyped list allowed every target.
     const empty = { ...allowlist, allowedTargets: [] };
-    expect(validateTarget('anywhere.example', 4000, empty).allowed).toBe(false);
+    expect(validateTarget('anywhere.example', 4000, empty).allowed).toBe(
+      false,
+    );
     expect(validateTarget('mud.example.org', 4000, empty).allowed).toBe(false);
   });
 

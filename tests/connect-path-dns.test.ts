@@ -45,7 +45,10 @@ function makeSocket(): MockSocket {
  * an unstubbed connection can fail and append `connection_failed` before the
  * assertion runs, which is what made these tests flaky in CI but not locally.
  */
-function findMsg(s: MockSocket, type: string): Record<string, unknown> | undefined {
+function findMsg(
+  s: MockSocket,
+  type: string,
+): Record<string, unknown> | undefined {
   return s.messages
     .map((m) => JSON.parse(m) as Record<string, unknown>)
     .find((m) => m.type === type);
@@ -75,7 +78,12 @@ function build(
   return si;
 }
 
-const connect = (si: SessionIntegration, s: MockSocket, host: string, port: number) =>
+const connect = (
+  si: SessionIntegration,
+  s: MockSocket,
+  host: string,
+  port: number,
+) =>
   si.parseNewMessage(
     s,
     Buffer.from(JSON.stringify({ type: 'connect', host, port })),
@@ -126,7 +134,9 @@ describe('arbitrary mode resolves before dialling', () => {
     // Capture what the session was told to dial.
     const originalCreate = si.sessionManager.create.bind(si.sessionManager);
     si.sessionManager.create = ((...args: unknown[]) => {
-      const session = originalCreate(...(args as Parameters<typeof originalCreate>));
+      const session = originalCreate(
+        ...(args as Parameters<typeof originalCreate>),
+      );
       dialled = session.dialAddress;
       return session;
     }) as typeof si.sessionManager.create;
@@ -159,7 +169,11 @@ describe('other modes do not resolve', () => {
   test('fixed mode never calls the resolver', async () => {
     let called = false;
     const si = build(
-      { targetMode: 'fixed', defaultHost: 'mud.example.org', defaultPort: 4000 },
+      {
+        targetMode: 'fixed',
+        defaultHost: 'mud.example.org',
+        defaultPort: 4000,
+      },
       async () => {
         called = true;
         return { allowed: true, address: '203.0.113.10' };

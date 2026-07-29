@@ -146,9 +146,9 @@ describe('query parameter fallback', () => {
   });
 
   test('handles a url with no query string', () => {
-    expect(
-      authorizeSharedSecret({}, '/', enabledWithQuery).authorized,
-    ).toBe(false);
+    expect(authorizeSharedSecret({}, '/', enabledWithQuery).authorized).toBe(
+      false,
+    );
   });
 
   test('handles a malformed url without throwing', () => {
@@ -254,7 +254,10 @@ describe('a blocked source must not lock out valid credentials', () => {
   // right ones. Verify first; apply the block only to failures.
 
   test('a correct secret is accepted even while the source is blocked', () => {
-    const limiter = new FailedAuthLimiter({ maxFailures: 3, windowMs: 60_000 });
+    const limiter = new FailedAuthLimiter({
+      maxFailures: 3,
+      windowMs: 60_000,
+    });
     for (let i = 0; i < 5; i++) limiter.recordFailure('203.0.113.7');
     expect(limiter.isBlocked('203.0.113.7')).toBe(true);
 
@@ -272,7 +275,10 @@ describe('a blocked source must not lock out valid credentials', () => {
   });
 
   test('a wrong secret from a blocked source stays blocked', () => {
-    const limiter = new FailedAuthLimiter({ maxFailures: 3, windowMs: 60_000 });
+    const limiter = new FailedAuthLimiter({
+      maxFailures: 3,
+      windowMs: 60_000,
+    });
     for (let i = 0; i < 3; i++) limiter.recordFailure('203.0.113.7');
 
     const result = authorizeSharedSecret(

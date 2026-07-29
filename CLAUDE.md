@@ -25,6 +25,7 @@ bun run typecheck    # Type-check without emitting
 **Data flow**: WebSocket Client → `parse()` (JSON commands) → `initT()` (telnet connection) → MUD Server → `sendClient()` (protocol negotiation + data transform) → WebSocket Client
 
 **Key methods on `srv`**:
+
 - `init()` — Creates HTTPS + WebSocketServer, loads chat log, sets up file watcher
 - `parse()` — Parses JSON `ClientRequest` messages from WebSocket clients
 - `initT()` — Opens telnet socket to target MUD server

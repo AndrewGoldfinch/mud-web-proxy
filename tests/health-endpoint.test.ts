@@ -46,7 +46,10 @@ describe('/health endpoint', () => {
         );
         proxyProcess!.stdout?.on('data', (data: Buffer) => {
           const text = data.toString();
-          if (text.includes('server listening') || text.includes('port 6217')) {
+          if (
+            text.includes('server listening') ||
+            text.includes('port 6217')
+          ) {
             clearTimeout(timeout);
             resolve();
           }
@@ -101,7 +104,10 @@ describe('/health endpoint', () => {
         );
         proxyProcess!.stdout?.on('data', (data: Buffer) => {
           const text = data.toString();
-          if (text.includes('server listening') || text.includes('port 6218')) {
+          if (
+            text.includes('server listening') ||
+            text.includes('port 6218')
+          ) {
             clearTimeout(timeout);
             resolve();
           }

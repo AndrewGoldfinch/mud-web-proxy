@@ -41,7 +41,9 @@ describe('with an allowlist', () => {
   });
 
   test('ignores a trailing slash, which some clients append', () => {
-    expect(isOriginAllowed('https://app.example.com/', list, false)).toBe(true);
+    expect(isOriginAllowed('https://app.example.com/', list, false)).toBe(
+      true,
+    );
   });
 
   test('rejects a same-prefix impostor', () => {

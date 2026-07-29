@@ -372,7 +372,10 @@ export class E2EConnection {
   getLastSequence(): number {
     let lastSeq = 0;
     for (const msg of this.messages) {
-      if ((msg.type === 'data' || msg.type === 'gmcp') && typeof (msg.data as any)?.seq === 'number') {
+      if (
+        (msg.type === 'data' || msg.type === 'gmcp') &&
+        typeof (msg.data as any)?.seq === 'number'
+      ) {
         lastSeq = Math.max(lastSeq, (msg.data as any).seq);
       }
     }
@@ -384,7 +387,10 @@ export class E2EConnection {
    */
   getMessagesAfterSeq(seq: number): E2EMessage[] {
     return this.messages.filter(
-      (m) => (m.type === 'data' || m.type === 'gmcp') && typeof (m.data as any)?.seq === 'number' && (m.data as any).seq > seq,
+      (m) =>
+        (m.type === 'data' || m.type === 'gmcp') &&
+        typeof (m.data as any)?.seq === 'number' &&
+        (m.data as any).seq > seq,
     );
   }
 
