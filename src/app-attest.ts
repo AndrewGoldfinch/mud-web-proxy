@@ -82,8 +82,8 @@ export function parseAttestationAuthData(
     try {
       credentialPublicKey = decode(attestedDataTail);
     } catch {
-      // Keep null and let verifier continue with cert key path.
-      credentialPublicKey = null;
+      // Both decoders failed, so it stays at its initial null and the
+      // verifier continues with the cert key path.
     }
   }
   return { rpIdHash, flags, signCount, aaguid, credId, credentialPublicKey };
@@ -509,12 +509,15 @@ export async function verifyAttestation(
       ? certs[1].publicKey.export({ type: 'spki', format: 'pem' }).toString()
       : null;
 
-  let cosePublicKeyPem: string | null = null;
-  let cosePublicKeyDer: Buffer | null = null;
-  let coseCredId: Buffer | null = null;
+  // Both are assigned on every path: the try completes, or the catch resets
+  // them. The reset is not redundant — the try can throw after the PEM is
+  // set but before the digest exists, and callers must never see a
+  // half-derived COSE key.
+  let cosePublicKeyPem: string | null;
+  let coseCredId: Buffer | null;
   try {
     cosePublicKeyPem = coseEcP256ToPem(parsed.credentialPublicKey);
-    cosePublicKeyDer = Buffer.from(
+    const cosePublicKeyDer = Buffer.from(
       createPublicKey(cosePublicKeyPem).export({
         type: 'spki',
         format: 'der',
@@ -523,7 +526,6 @@ export async function verifyAttestation(
     coseCredId = createHash('sha256').update(cosePublicKeyDer).digest();
   } catch {
     cosePublicKeyPem = null;
-    cosePublicKeyDer = null;
     coseCredId = null;
   }
 
@@ -560,15 +562,10 @@ export async function verifyAttestation(
 
   // Prefer the credential public key carried in authData (COSE key).
   // Assertion signatures are produced by that credential key.
-  let publicKeyPem = certPublicKeyPem;
-  let alternatePublicKey: string | undefined;
-  if (cosePublicKeyPem) {
-    publicKeyPem = cosePublicKeyPem;
-    alternatePublicKey = certPublicKeyPem;
-  } else {
-    publicKeyPem = certPublicKeyPem;
-    alternatePublicKey = undefined;
-  }
+  const publicKeyPem = cosePublicKeyPem ? cosePublicKeyPem : certPublicKeyPem;
+  let alternatePublicKey: string | undefined = cosePublicKeyPem
+    ? certPublicKeyPem
+    : undefined;
 
   if (!keyIdMatchesCoseHash && !keyIdMatchesCertHash) {
     // eslint-disable-next-line no-console
