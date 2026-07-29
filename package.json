@@ -44,7 +44,7 @@
   "devDependencies": {
     "@babel/eslint-parser": "^8.0.1",
     "@eslint/js": "^10.0.1",
-    "@types/node": "^25.9.5",
+    "@types/node": "^26.1.2",
     "@types/uglify-js": "^3.17.5",
     "@types/ws": "^8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.65.0",
@@ -54,16 +54,16 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-jsonc": "^2.21.1",
     "eslint-plugin-prettier": "^5.5.6",
-    "globals": "^16.5.0",
-    "jsonc-eslint-parser": "^2.4.2",
+    "globals": "^17.8.0",
+    "jsonc-eslint-parser": "^3.1.0",
     "prettier": "^3.9.6",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.65.0",
     "uglify-js": "^3.19.3"
   },
   "dependencies": {
-    "cbor-x": "^1.6.4",
-    "iconv-lite": "^0.6.3",
+    "cbor-x": "^1.6.5",
+    "iconv-lite": "^0.7.3",
     "ws": "^8.21.1"
   },
   "overrides": {
