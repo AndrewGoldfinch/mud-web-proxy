@@ -156,14 +156,24 @@ Before the typed session protocol existed, clients opened a connection with a ba
 
 `host` and `port` are both optional. A bare `{"connect": 1}` means the proxy's configured default target (`TN_HOST` / `TN_PORT`). The default is not privileged — it goes through the same target validation as any other, so under `TARGET_MODE=allowlist` it is refused unless `TN_HOST` is itself listed.
 
-Both protocols share one connection path, so the legacy form is subject to the identical target policy, connection limits, dial reservation, and DNS-rebinding guard as the typed form. Authentication is enforced at the WebSocket upgrade rather than per message, so it applies to both by construction: under `AUTH_MODE=shared-secret` a legacy client without valid credentials never gets a socket.
+Both protocols share one policy path — `authorizeConnect` — so the legacy form is subject to the identical target validation, connection limits, dial reservation, and DNS-rebinding guard as the typed form. Authentication is enforced at the WebSocket upgrade rather than per message, so it applies to both by construction: under `AUTH_MODE=shared-secret` a legacy client without valid credentials never gets a socket.
 
-Only the responses differ, because a legacy client renders whatever bytes arrive and would print a JSON frame straight into the player's terminal:
+**Policy is shared; the data plane deliberately is not.** A legacy connection is a raw telnet bridge, not a session:
 
-- **On success**, no frame is sent at all. Telnet data simply begins flowing.
-- **On rejection**, the client receives a plaintext line describing the reason, then the connection closes.
+|  | typed | legacy |
+| --- | --- | --- |
+| MUD output | `{"type":"data","seq":…,"payload":"<base64>"}` | bare base64, no envelope |
+| Player input | `{"type":"input","text":"…"}` | raw bytes, forwarded as sent |
+| On connect | `{"type":"session","sessionId":…,"token":…}` | no frame; telnet data simply begins flowing |
+| On rejection | `{"type":"error","code":…}` | base64-encoded plaintext line, then close |
+| Buffering / resume | yes, via `sessionId` + `token` | none |
+| Client disconnect | session survives for resume | MUD connection is torn down |
 
-A second connect on a socket that already has a session is rejected, on both protocols.
+Everything a legacy client receives is base64 — including rejection messages. Routing legacy through the session stack instead would hand it typed JSON envelopes it would print into the player's terminal, and a resumable session it holds no token for; the connection would then be orphaned until the session timeout, since nothing could ever reclaim it.
+
+Because a legacy connection has no session to own its capacity, it is counted against `maxPerIP` for the lifetime of the socket and released when the socket closes.
+
+A second connect on a socket that already has a connection is rejected, on both protocols.
 
 ## Push notifications
 

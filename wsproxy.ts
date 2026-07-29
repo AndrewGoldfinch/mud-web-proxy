@@ -80,7 +80,6 @@ import {
   resolveBackgroundPushEnvConfig,
   sendBase64IfOpen,
 } from './src/wsproxy-utils';
-import { validateTarget } from './src/target-policy';
 import {
   generateChallenge,
   validateAndConsumeNonce,
@@ -155,17 +154,9 @@ const sessionIntegration = new SessionIntegration({
   apns: runtimeConfig.apns,
 });
 
-// A legacy client may send a bare {connect: 1} with no host or port, meaning
-// the configured default target. Matches initT's historical fallback.
-sessionIntegration.setLegacyDefaults(
-  runtimeConfig.tnHost,
-  runtimeConfig.tnPort,
-);
-
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = runtimeConfig.onlyAllowDefaultServer;
-const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
 const PACKAGE_VERSION = '3.1.0';
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
@@ -241,6 +232,12 @@ export interface SocketExtended extends WS {
   ts?: TelnetSocket;
   host?: string;
   port?: number;
+  /**
+   * Client address counted against maxPerIP for a legacy connection, which
+   * has no Session to own that capacity. Set when the dial is authorized and
+   * cleared by closeSocket, which is what releases the capacity.
+   */
+  legacyCountedIp?: string;
   ttype: string[];
   name?: string;
   client?: string;
@@ -875,7 +872,13 @@ interface ServerConfig {
   sendMXP: (s: SocketExtended, msg: string) => void;
   sendMSDP: (s: SocketExtended, msdp: MSDPRequest) => void;
   sendMSDPPair: (s: SocketExtended, key: string, val: string) => void;
-  initT: (so: SocketExtended) => void;
+  initT: (so: SocketExtended, dialAddress?: string) => void;
+  rejectLegacy: (s: SocketExtended, reason: string) => void;
+  openLegacyConnection: (
+    s: SocketExtended,
+    host?: string,
+    port?: number,
+  ) => Promise<void>;
   closeSocket: (s: SocketExtended) => void;
   sendClient: (s: SocketExtended, data: Buffer) => void;
   originAllowed: (req?: IncomingMessage) => number;
@@ -1913,13 +1916,24 @@ const srv: ServerConfig = {
 
     if (outcome.kind === 'handled') return 1;
 
+    if (outcome.kind === 'legacy-connect') {
+      void srv.openLegacyConnection(s, outcome.host, outcome.port);
+      return 1;
+    }
+
     if (outcome.kind === 'invalid') {
-      sessionIntegration.sendProtocolError(s, outcome);
       srv.logWarn(
         `rejected client message: field=${outcome.field ?? '-'} ${outcome.reason}`,
         s,
         'parse',
       );
+      if (outcome.flavor === 'legacy') {
+        // A legacy client renders bytes, so a JSON frame would print into
+        // the player's terminal — exactly what this change exists to stop.
+        srv.rejectLegacy(s, outcome.reason);
+      } else {
+        sessionIntegration.sendProtocolError(s, outcome);
+      }
       // Returning 1 is what stops the caller forwarding this to the MUD.
       return 1;
     }
@@ -1991,7 +2005,85 @@ const srv: ServerConfig = {
     writeTelnet(s, Buffer.from([p.IAC, p.SE]));
   },
 
-  initT: function (so: SocketExtended): void {
+  /**
+   * Reject a legacy client in the only framing it understands: bytes.
+   *
+   * A legacy client renders whatever arrives, so a JSON error frame would be
+   * printed straight into the player's terminal.
+   */
+  rejectLegacy: function (s: SocketExtended, reason: string): void {
+    // Deliberately not sendClient: that path drives telnet negotiation and
+    // reads s.ttype, which initT has not created yet when a connect is
+    // refused before dialling. Base64 is the framing legacy clients decode,
+    // so write it straight to the socket.
+    sendBase64IfOpen(s, Buffer.from('\r\n' + reason + '\r\n'));
+    setTimeout(function () {
+      srv.closeSocket(s);
+    }, SOCKET_CLOSE_DELAY_MS);
+  },
+
+  /**
+   * Open a legacy `{host, port, connect}` connection.
+   *
+   * Policy comes from the same `authorizeConnect` the typed protocol uses —
+   * target validation, connection limits, capacity reservation, and the DNS
+   * rebinding guard — so neither protocol can drift from the other.
+   *
+   * The data plane deliberately does NOT come from the session stack. A
+   * legacy client cannot consume typed JSON envelopes or hold a session
+   * token to resume with, so it dials raw telnet: `initT` sets `s.ts`, which
+   * is what makes `forward()` deliver player input and `sendClient()` deliver
+   * MUD output as the base64 frames these clients expect.
+   */
+  openLegacyConnection: async function (
+    s: SocketExtended,
+    host?: string,
+    port?: number,
+  ): Promise<void> {
+    // One connect per socket, matching the typed protocol.
+    if (s.ts || sessionIntegration.hasSession(s)) {
+      srv.rejectLegacy(s, 'This connection already has a session');
+      return;
+    }
+
+    // A bare {connect: 1} means the configured default target. It is not
+    // privileged: the decision below still applies the full target policy.
+    const wantHost = host || srv.tn_host;
+    const wantPort = port || srv.tn_port;
+
+    const decision = await sessionIntegration.authorizeConnect(s, {
+      host: wantHost,
+      port: wantPort,
+    });
+
+    if (!decision.allowed) {
+      srv.rejectLegacy(s, decision.reason);
+      return;
+    }
+
+    // Established capacity is counted for the life of the connection and
+    // released in closeSocket; hand off from the reservation so the same
+    // client is not counted twice.
+    s.legacyCountedIp = decision.ip !== 'unknown' ? decision.ip : undefined;
+    if (s.legacyCountedIp) {
+      sessionIntegration.sessionManager.incrementIPCount(s.legacyCountedIp);
+    }
+    sessionIntegration.sessionManager.releasePendingDial(decision.ip);
+
+    s.host = decision.host;
+    s.port = decision.port;
+    srv.initT(s, decision.dialAddress);
+  },
+
+  /**
+   * Dial the MUD over raw telnet and wire the socket up.
+   *
+   * Callers MUST authorize the target first — `openLegacyConnection` does so
+   * via `sessionIntegration.authorizeConnect`. There is deliberately no
+   * second policy check here: two implementations of the same policy is how
+   * the protocols drift apart, which is the whole point of MWP-90.
+   */
+  initT: function (so: SocketExtended, dialAddress?: string): void {
     const s = so;
     const host = s.host || srv.tn_host;
     const port = s.port || srv.tn_port;
@@ -2004,38 +2096,9 @@ const srv: ServerConfig = {
 
     s.compressed = 0;
 
-    const target = validateTarget(host, port, {
-      targetMode: runtimeConfig.targetMode,
-      defaultHost: srv.tn_host,
-      defaultPort: srv.tn_port,
-      allowedTargets: runtimeConfig.allowedTargets,
-      arbitraryAllowedPorts: runtimeConfig.arbitraryAllowedPorts,
-    });
-    if (!target.allowed) {
-      srv.logWarn(
-        'blocked connection attempt to: ' + s.host + ':' + s.port,
-        s,
-        'telnet',
-      );
-      srv.sendClient(
-        s,
-        Buffer.from(
-          'This proxy does not allow connections to servers different to ' +
-            srv.tn_host +
-            ':' +
-            srv.tn_port +
-            '.\r\nTake a look in ' +
-            REPOSITORY_URL +
-            ' and install it in your own server.\r\n',
-        ),
-      );
-      setTimeout(function () {
-        srv.closeSocket(s);
-      }, SOCKET_CLOSE_DELAY_MS);
-      return;
-    }
-
-    s.ts = net.createConnection(port, host, function () {
+    // Dial the address policy resolved, not the hostname — re-resolving
+    // between validation and connect is the DNS rebinding hole.
+    s.ts = net.createConnection(port, dialAddress || host, function () {
       srv.logInfo(
         'new connection to ' + host + ':' + port + ' for ' + s.remoteAddress,
         s,
@@ -2131,6 +2194,14 @@ const srv: ServerConfig = {
       return;
     }
 
+    // A legacy connection has no Session to own its capacity, so release the
+    // IP count here. Guarded by the field so a double close cannot decrement
+    // twice, which would hand out capacity that was never freed.
+    if (s.legacyCountedIp) {
+      sessionIntegration.sessionManager.decrementIPCount(s.legacyCountedIp);
+      s.legacyCountedIp = undefined;
+    }
+
     // Legacy behavior - close everything
     if (s.ts) {
       srv.logInfo(
@@ -2138,7 +2209,12 @@ const srv: ServerConfig = {
         s,
         'ws',
       );
-      s.terminate();
+      // Destroy the telnet socket, not the WebSocket. `s.terminate` is
+      // rebound at connection time to close the WebSocket, so calling it
+      // here left the upstream MUD connection open — a legacy client has no
+      // session to resume, so nothing would ever have reclaimed it.
+      s.ts.destroy();
+      s.ts = undefined;
     }
 
     server.sockets.delete(s);

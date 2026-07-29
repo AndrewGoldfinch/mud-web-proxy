@@ -28,8 +28,6 @@ import {
   type KnownType,
 } from './client-protocol';
 
-/** Grace period so a rejected legacy client can render the reason. */
-const LEGACY_REJECT_CLOSE_DELAY_MS = 1000;
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -41,10 +39,7 @@ import type {
   ProcessedData,
 } from './types';
 
-export type ConnectFlavor = 'typed' | 'legacy';
-
 export interface ConnectCtx {
-  flavor: ConnectFlavor;
   host?: string;
   port?: number;
   deviceToken?: string;
@@ -52,6 +47,20 @@ export interface ConnectCtx {
   height?: number;
   debug?: boolean;
 }
+
+/**
+ * Verdict from the shared policy path. On `allowed`, the caller owns the
+ * pending-dial reservation and must release it.
+ */
+export type ConnectDecision =
+  | {
+      allowed: true;
+      host: string;
+      port: number;
+      dialAddress: string;
+      ip: string;
+    }
+  | { allowed: false; code: string; reason: string };
 
 export interface SessionIntegrationConfig {
   sessions: {
@@ -99,8 +108,6 @@ export class SessionIntegration {
   config: SessionIntegrationConfig;
   private retryInterval: ReturnType<typeof setInterval> | null = null;
   private terminatingSessions: Set<string> = new Set();
-  private legacyDefaultHost = '';
-  private legacyDefaultPort = 0;
 
   private log(msg: string, ip?: string, sessionId?: string): void {
     const parts = [new Date().toISOString(), '[session]'];
@@ -236,14 +243,18 @@ export class SessionIntegration {
           code: 'invalid_request',
           field: legacy.field,
           reason: legacy.reason,
+          flavor: 'legacy',
         };
       }
-      void this.openTelnetSession(socket, {
-        flavor: 'legacy',
-        host: legacy.value.host ?? this.legacyDefaultHost,
-        port: legacy.value.port ?? this.legacyDefaultPort,
-      });
-      return { kind: 'handled' };
+      // Dispatched by the caller: the legacy protocol uses the raw telnet
+      // path, whose socket wiring lives in wsproxy.ts. Sharing the session
+      // stack instead would hand a legacy client typed JSON envelopes and a
+      // resumable session it has no token for.
+      return {
+        kind: 'legacy-connect',
+        host: legacy.value.host,
+        port: legacy.value.port,
+      };
     }
 
     if (!(KNOWN_TYPES as readonly string[]).includes(recognition.type)) {
@@ -252,6 +263,7 @@ export class SessionIntegration {
         code: 'invalid_request',
         field: 'type',
         reason: `Unknown message type: ${recognition.type}`,
+        flavor: 'typed',
       };
     }
 
@@ -262,6 +274,7 @@ export class SessionIntegration {
         code: 'invalid_request',
         field: validation.field,
         reason: validation.reason,
+        flavor: 'typed',
       };
     }
 
@@ -280,7 +293,7 @@ export class SessionIntegration {
 
     switch (recognition.type as KnownType) {
       case 'connect':
-        void this.handleConnect(socket, clientMsg as ConnectRequest);
+        this.handleConnect(socket, clientMsg as ConnectRequest);
         return { kind: 'handled' };
       case 'resume':
         this.handleResume(socket, clientMsg as ResumeRequest);
@@ -328,12 +341,8 @@ export class SessionIntegration {
   /**
    * Handle connect request - create new session
    */
-  private async handleConnect(
-    socket: SocketExtended,
-    msg: ConnectRequest,
-  ): Promise<void> {
-    await this.openTelnetSession(socket, {
-      flavor: 'typed',
+  private handleConnect(socket: SocketExtended, msg: ConnectRequest): void {
+    this.openTelnetSession(socket, {
       host: msg.host,
       port: msg.port,
       deviceToken: msg.deviceToken,
@@ -344,78 +353,36 @@ export class SessionIntegration {
   }
 
   /**
-   * Supply the default target used when a legacy client sends a bare
-   * `{connect: 1}` with no host or port. wsproxy.ts passes srv.tn_host and
-   * srv.tn_port, matching initT's historical fallback.
+   * The one policy path, shared by both wire protocols.
+   *
+   * Runs target validation, connection limits, capacity reservation, and the
+   * DNS-rebinding guard, in that order. On success the caller **owns the
+   * pending-dial reservation** and must release it — via releasePendingDial
+   * once the connection is established and counted, or on any failure path.
+   *
+   * Only policy is shared. The two protocols deliberately do not share a data
+   * plane: the typed protocol dials through the session stack (buffering,
+   * sequence numbers, resume), while the legacy protocol dials raw telnet in
+   * wsproxy.ts, because a legacy client renders bytes and can consume neither
+   * JSON envelopes nor a session token.
+   *
+   * Returns synchronously unless the DNS-rebinding guard has to run, which
+   * only happens in arbitrary mode. That is deliberate: validation, limits,
+   * and the reservation resolved synchronously before this was extracted, and
+   * deferring a rejection to a later microtask would change when a caller — or
+   * a test — can observe it. Use `awaitDecision` to consume it.
    */
-  setLegacyDefaults(host: string, port: number): void {
-    this.legacyDefaultHost = host;
-    this.legacyDefaultPort = port;
-  }
-
-  /**
-   * Flavor difference 2 of 2: render a rejection. The decision is already
-   * made and identical for both protocols; only the rendering differs.
-   */
-  private rejectConnect(
+  authorizeConnect(
     socket: SocketExtended,
-    flavor: ConnectFlavor,
-    code: string,
-    reason: string,
-  ): void {
-    if (flavor === 'typed') {
-      this.sendError(socket, code, reason);
-      return;
-    }
-    // A legacy client renders whatever bytes arrive, so a JSON frame would
-    // be printed into the player's terminal — the failure MWP-91 exists to
-    // prevent. Write a human-readable line instead, then close.
-    try {
-      socket.sendUTF(`\r\n${reason}\r\n`);
-    } catch (_err) {
-      // Socket might be closed
-    }
-    setTimeout(() => {
-      try {
-        socket.terminate();
-      } catch (_err) {
-        // Already gone
-      }
-    }, LEGACY_REJECT_CLOSE_DELAY_MS);
-  }
-
-  /**
-   * Open a telnet session under the target policy, connection limits, and
-   * DNS-rebinding guard. Both wire protocols come through here; ctx.flavor
-   * changes only the success frame and how a rejection is rendered.
-   */
-  private async openTelnetSession(
-    socket: SocketExtended,
-    ctx: ConnectCtx,
-  ): Promise<void> {
+    ctx: { host?: string; port?: number; deviceToken?: string },
+  ): ConnectDecision | Promise<ConnectDecision> {
     const ip = this.getClientIP(socket);
-
-    // MWP-90: one connect per socket, on both protocols.
-    if (this.sessionManager.findByWebSocket(socket)) {
-      const reason = 'This connection already has a session';
-      this.log(`connect rejected: ${reason}`, ip);
-      this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
-      return;
-    }
-
-    this.log(`connect request to ${ctx.host}:${ctx.port}`, ip);
-
-    // Enable per-client debug logging if requested.
-    // NOTE: this is a client-reachable verbosity toggle. MWP-94 item 1
-    // removes it; carried across verbatim here to keep this a pure refactor.
-    if (ctx.debug) socket.debug = ctx.debug;
 
     const target = validateTarget(ctx.host, ctx.port, this.config.targets);
     if (!target.allowed || !target.host || !target.port) {
       const reason = target.reason || 'Target not allowed';
       this.log(`connect rejected: ${reason}`, ip);
-      this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
-      return;
+      return { allowed: false, code: 'invalid_request', reason };
     }
 
     // Check connection limits
@@ -427,8 +394,7 @@ export class SessionIntegration {
       if (!limits.allowed) {
         const reason = limits.reason || 'Connection limit exceeded';
         this.log(`connect rejected: ${reason}`, ip);
-        this.rejectConnect(socket, ctx.flavor, 'rate_limited', reason);
-        return;
+        return { allowed: false, code: 'rate_limited', reason };
       }
     }
 
@@ -442,8 +408,7 @@ export class SessionIntegration {
     if (!reservation.allowed) {
       const reason = reservation.reason || 'Connection limit exceeded';
       this.log(`connect rejected: ${reason}`, ip);
-      this.rejectConnect(socket, ctx.flavor, 'rate_limited', reason);
-      return;
+      return { allowed: false, code: 'rate_limited', reason };
     }
 
     // In arbitrary mode the hostname is client-supplied, so resolve it and
@@ -455,20 +420,90 @@ export class SessionIntegration {
     // both cheap and must gate the expensive step, so a client cannot drive
     // unbounded DNS lookups without consuming quota (MWP-92). Skipped entirely
     // in fixed and allowlist mode, where the target is operator-configured
-    // rather than client-supplied.
-    let dialAddress = target.host;
+    // rather than client-supplied — which is what keeps those modes
+    // synchronous.
     if (this.config.targets?.targetMode === 'arbitrary') {
       const resolve = this.config.resolveTarget ?? resolveTargetAddress;
-      const resolved = await resolve(target.host);
-      if (!resolved.allowed || !resolved.address) {
-        this.sessionManager.releasePendingDial(ip);
-        const reason = resolved.reason || 'Target address is not permitted';
-        this.log(`connect rejected: ${reason}`, ip);
-        this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
-        return;
-      }
-      dialAddress = resolved.address;
+      const host = target.host;
+      const port = target.port;
+      return resolve(host).then((resolved) => {
+        if (!resolved.allowed || !resolved.address) {
+          this.sessionManager.releasePendingDial(ip);
+          const reason = resolved.reason || 'Target address is not permitted';
+          this.log(`connect rejected: ${reason}`, ip);
+          return { allowed: false, code: 'invalid_request', reason };
+        }
+        return {
+          allowed: true,
+          host,
+          port,
+          dialAddress: resolved.address,
+          ip,
+        };
+      });
     }
+
+    return {
+      allowed: true,
+      host: target.host,
+      port: target.port,
+      dialAddress: target.host,
+      ip,
+    };
+  }
+
+  /**
+   * Open a telnet session for a **typed** client: policy via
+   * authorizeConnect, then the session stack.
+   *
+   * Not `async`. When authorizeConnect resolves synchronously — every mode
+   * except arbitrary — the rejection must reach the socket in the same tick
+   * the message was parsed, which `await` on a plain value would not do.
+   */
+  private openTelnetSession(socket: SocketExtended, ctx: ConnectCtx): void {
+    const ip = this.getClientIP(socket);
+
+    // MWP-90: one connect per socket.
+    if (this.sessionManager.findByWebSocket(socket)) {
+      const reason = 'This connection already has a session';
+      this.log(`connect rejected: ${reason}`, ip);
+      this.sendError(socket, 'invalid_request', reason);
+      return;
+    }
+
+    this.log(`connect request to ${ctx.host}:${ctx.port}`, ip);
+
+    // Enable per-client debug logging if requested.
+    // NOTE: this is a client-reachable verbosity toggle, MWP-94 item 1.
+    if (ctx.debug) socket.debug = ctx.debug;
+
+    const decision = this.authorizeConnect(socket, ctx);
+    if (decision instanceof Promise) {
+      void decision.then((d) => this.dialSession(socket, ctx, d));
+      return;
+    }
+    void this.dialSession(socket, ctx, decision);
+  }
+
+  /**
+   * Create the session and dial, once policy has allowed the target.
+   *
+   * The denial branch runs before any `await`, so a synchronous decision is
+   * still reported synchronously.
+   */
+  private async dialSession(
+    socket: SocketExtended,
+    ctx: ConnectCtx,
+    decision: ConnectDecision,
+  ): Promise<void> {
+    const ip = this.getClientIP(socket);
+
+    if (!decision.allowed) {
+      this.sendError(socket, decision.code, decision.reason);
+      return;
+    }
+    const target = { host: decision.host, port: decision.port };
+    const dialAddress = decision.dialAddress;
 
     // Create new session
     const session = this.sessionManager.create(
@@ -496,17 +531,13 @@ export class SessionIntegration {
     session.markClientForegrounded();
     this.backgroundPushScheduler.untrackSession(session.id);
 
-    // Flavor difference 1 of 2: a legacy client has no session concept, so it
-    // gets no frame at all — telnet data simply starts flowing.
-    if (ctx.flavor === 'typed') {
-      const response = {
-        type: 'session',
-        sessionId: session.id,
-        token: session.authToken,
-        capabilities: ['activityToken', 'syncAck', 'echoState'],
-      };
-      socket.sendUTF(JSON.stringify(response));
-    }
+    const response = {
+      type: 'session',
+      sessionId: session.id,
+      token: session.authToken,
+      capabilities: ['activityToken', 'syncAck', 'echoState'],
+    };
+    socket.sendUTF(JSON.stringify(response));
 
     this.log(
       `session created for ${target.host}:${target.port}`,
@@ -530,7 +561,12 @@ export class SessionIntegration {
 
       // Count this IP only after a successful connection; clientIp on the
       // session is what removeSession uses to decrement on teardown.
-      if (ctx.deviceToken && ip !== 'unknown') {
+      //
+      // Deliberately NOT gated on deviceToken. Established capacity has to be
+      // counted for every client, or a tokenless one passes reservePendingDial
+      // forever: the reservation is handed off at session creation, so without
+      // this the established count never rises and maxPerIP means nothing.
+      if (ip !== 'unknown') {
         session.clientIp = ip;
         this.sessionManager.incrementIPCount(ip);
       }
@@ -541,12 +577,7 @@ export class SessionIntegration {
       });
     } catch (err) {
       this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
-      this.rejectConnect(
-        socket,
-        ctx.flavor,
-        'connection_failed',
-        (err as Error).message,
-      );
+      this.sendError(socket, 'connection_failed', (err as Error).message);
       this.removeSessionAndCleanup(session.id);
     }
   }

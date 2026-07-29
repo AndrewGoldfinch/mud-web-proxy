@@ -147,41 +147,71 @@ outcome, not a special case.
 either. Rejecting would break v3 clients that send extra fields, for no security
 gain — the fields are never read.
 
-### 4. `openTelnetSession(socket, ctx)`
+### 4. Shared policy, separate data planes
 
-Extracted from `handleConnect` (`src/session-integration.ts:244-402`). The
-sequence is unchanged and shared by both protocols:
+**This section was revised after code review. The original design routed the
+legacy protocol through the session stack, with `ctx.flavor` differing in
+"exactly two things" — the success frame and the error rendering. That was
+wrong, and four P1 review findings all traced to it.**
+
+The session stack's *data plane* and *lifecycle* are themselves
+typed-protocol concepts. A legacy client cannot consume any of them:
+
+- **Input.** `forward()` writes to `s.ts`. The session path never sets `s.ts`,
+  so every raw player command from a legacy client was silently dropped.
+- **Output.** `processMudData` broadcasts `{"type":"data","seq":…}` envelopes.
+  Legacy clients decode bare base64, so those envelopes would be printed into
+  the player's terminal — the exact failure MWP-91 exists to prevent.
+- **Lifecycle.** Sessions survive disconnect for resume, addressed by a token
+  the legacy client never receives. Its MUD connection would be orphaned until
+  the session timeout, since nothing could reclaim it.
+- **Accounting.** Established IP capacity was gated on `deviceToken`, which a
+  legacy client never has, so `maxPerIP` never applied to it.
+
+So the seam moves. **Policy is shared; the data plane is not.**
+
+`authorizeConnect(socket, ctx)` is the one policy path, called by both
+protocols:
 
 `validateTarget` → `enforceConnectionLimits` → `reservePendingDial` → DNS
-resolve (arbitrary mode only) → create session → attach WebSocket → respond →
-connect, with the reservation released on every path out.
+resolve (arbitrary only) → decision. On success the caller owns the
+reservation and must release it.
 
 ```ts
-type ConnectCtx = {
-  flavor: 'typed' | 'legacy';
-  host?: string;
-  port?: number;
-  deviceToken?: string;
-  width?: number;
-  height?: number;
-};
+type ConnectDecision =
+  | { allowed: true; host: string; port: number; dialAddress: string; ip: string }
+  | { allowed: false; code: string; reason: string };
 ```
 
-`flavor` changes exactly two things:
+It returns synchronously except in arbitrary mode, where the rebinding guard
+must await DNS. That is deliberate: validation and limits resolved
+synchronously before extraction, and deferring a rejection to a later
+microtask changes when a caller — or a test — can observe it.
+
+Each protocol then dials on its own stack:
 
 | | typed | legacy |
 | --- | --- | --- |
-| success | `{type:'session', sessionId, token, capabilities}` | no frame; telnet data flows |
-| failure | `sendError(socket, code, reason)` | `sendClient()` plaintext line, then close after `SOCKET_CLOSE_DELAY_MS` |
+| dial | session stack (`openTelnetSession`) | raw telnet (`initT`, sets `s.ts`) |
+| output | `{"type":"data","seq":…,"payload":…}` | bare base64 |
+| input | `{"type":"input","text":…}` | raw bytes via `forward()` |
+| success frame | `{"type":"session",…}` | none |
+| rejection | `sendError` JSON | base64 plaintext, then close |
+| resume | yes | none — close tears the MUD connection down |
+| IP capacity | owned by the `Session` | `legacyCountedIp`, released in `closeSocket` |
 
-Everything else — policy, limits, reservation, rebinding guard — is one code
-path. The reason string comes from the same `validateTarget` result in both
-cases, so the decision is identical even though the rendering differs.
+`initT` no longer runs its own `validateTarget`. Two implementations of one
+policy is precisely the drift MWP-90 exists to prevent, so callers must
+authorize first, and `openLegacyConnection` does.
 
-Legacy carries no `deviceToken`, so device-scoped limits do not apply, but
-`reservePendingDial` is IP-scoped and still gates it. Rejecting a second connect
-on a socket that already has one (MWP-90 item 3) is checked inside
-`openTelnetSession`, so both flavors inherit it.
+Rejecting a second connect is checked per stack: `s.ts` for legacy,
+`findByWebSocket` for typed.
+
+Two bugs surfaced only once the legacy path became reachable, both fixed here:
+`closeSocket` called `s.terminate()` — rebound at connection time to close the
+*WebSocket* — so the telnet socket was never destroyed; and `sendClient` reads
+`s.ttype`, which `initT` has not created when a connect is refused before
+dialling, so rejections write base64 directly instead.
 
 ### 5. Authentication
 

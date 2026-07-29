@@ -95,9 +95,9 @@ describe('parseNewMessage outcomes', () => {
   });
 });
 
-describe('legacy connect', () => {
+
+describe('legacy connect recognition', () => {
   let integration: SessionIntegration;
-  let sent: Sent;
   let socket: SocketExtended;
 
   beforeEach(() => {
@@ -108,131 +108,140 @@ describe('legacy connect', () => {
         defaultPort: 4000,
       },
     });
-    integration.setLegacyDefaults('mud.example.org', 4000);
-    sent = [];
-    socket = makeSocket(sent);
+    socket = makeSocket([]);
   });
 
-  test('a well-formed legacy connect is handled, not forwarded', () => {
+  test('a well-formed legacy connect yields legacy-connect, not handled', () => {
     const outcome = integration.parseNewMessage(
       socket,
       buf({ connect: 1, host: 'mud.example.org', port: 4000 }),
     );
-    expect(outcome.kind).toBe('handled');
+    expect(outcome.kind).toBe('legacy-connect');
+    if (outcome.kind === 'legacy-connect') {
+      expect(outcome.host).toBe('mud.example.org');
+      expect(outcome.port).toBe(4000);
+    }
   });
 
-  test('a bare connect is handled and uses the default target', () => {
+  test('a bare connect yields legacy-connect with no host or port', () => {
+    // The caller substitutes TN_HOST/TN_PORT; parse does not invent them.
     const outcome = integration.parseNewMessage(socket, buf({ connect: 1 }));
-    expect(outcome.kind).toBe('handled');
+    expect(outcome.kind).toBe('legacy-connect');
+    if (outcome.kind === 'legacy-connect') {
+      expect(outcome.host).toBeUndefined();
+      expect(outcome.port).toBeUndefined();
+    }
   });
 
-  test('a partially matching legacy object is invalid, not forwarded', () => {
+  test('a partially matching legacy object is invalid, and carries the legacy flavor', () => {
     const outcome = integration.parseNewMessage(
       socket,
       buf({ connect: 1, host: 'mud.example.org', port: 'not-a-port' }),
     );
     expect(outcome.kind).toBe('invalid');
-    if (outcome.kind === 'invalid') expect(outcome.field).toBe('port');
+    if (outcome.kind === 'invalid') {
+      expect(outcome.field).toBe('port');
+      // The flavor is what makes parse() render plaintext rather than a JSON
+      // frame a legacy client would print into the player's terminal.
+      expect(outcome.flavor).toBe('legacy');
+    }
   });
 
-  test('a legacy rejection writes plaintext, never a JSON error frame', async () => {
-    const legacySent: Sent = [];
-    const legacySocket = makeSocket(legacySent);
-
-    integration.parseNewMessage(
-      legacySocket,
-      buf({ connect: 1, host: 'evil.example', port: 4000 }),
+  test('a typed message carries the typed flavor', () => {
+    const outcome = integration.parseNewMessage(
+      socket,
+      buf({ type: 'naws', width: 80 }),
     );
-    await new Promise((r) => setTimeout(r, 50));
+    expect(outcome.kind).toBe('invalid');
+    if (outcome.kind === 'invalid') expect(outcome.flavor).toBe('typed');
+  });
 
-    expect(legacySent.length).toBeGreaterThan(0);
-    for (const frame of legacySent) {
-      expect(frame).not.toContain('"type":"error"');
-    }
+  test('a legacy connect never creates a session', () => {
+    integration.parseNewMessage(
+      socket,
+      buf({ connect: 1, host: 'mud.example.org', port: 4000 }),
+    );
+    // The legacy protocol dials raw telnet in wsproxy.ts. A Session here
+    // would mean typed JSON envelopes and a resume token it cannot use.
+    expect(integration.sessionManager.getActiveCount()).toBe(0);
   });
 });
 
-describe('parity between protocols', () => {
-  const cases = [
-    { host: 'mud.example.org', port: 4000, label: 'allowed target' },
-    { host: 'evil.example', port: 4000, label: 'disallowed target' },
-  ];
+describe('authorizeConnect: the one policy path', () => {
+  // Both protocols call this exact function, so parity is structural rather
+  // than a property two implementations have to be checked against. These
+  // cases pin the decisions themselves.
+  const settle = (d: unknown) => (d instanceof Promise ? d : Promise.resolve(d));
+
+  const build = (mode: 'fixed' | 'allowlist' | 'arbitrary') =>
+    new SessionIntegration({
+      targets: {
+        targetMode: mode,
+        defaultHost: 'mud.example.org',
+        defaultPort: 4000,
+        allowedTargets: ['mud.example.org:4000'],
+        arbitraryAllowedPorts: ['4000'],
+      },
+      resolveTarget: async (host: string) =>
+        host === 'mud.example.org'
+          ? { allowed: true, address: '127.0.0.1' }
+          : { allowed: false, reason: 'blocked by test resolver' },
+    });
 
   for (const mode of ['fixed', 'allowlist', 'arbitrary'] as const) {
-    for (const c of cases) {
-      test(`${mode}: ${c.label} decides the same on both protocols`, async () => {
-        const config = {
-          targets: {
-            targetMode: mode,
-            defaultHost: 'mud.example.org',
-            defaultPort: 4000,
-            allowedTargets: ['mud.example.org:4000'],
-            // Ports-and-ranges entries are strings, not numbers.
-            arbitraryAllowedPorts: ['4000'],
-          },
-          // In arbitrary mode the resolver is a second policy gate, applied
-          // after validateTarget. It mirrors the host decision so the oracle
-          // below can model both gates.
-          resolveTarget: async (host: string) =>
-            host === 'mud.example.org'
-              ? { allowed: true, address: '127.0.0.1' }
-              : { allowed: false, reason: 'blocked by test resolver' },
-        };
+    test(`${mode}: the configured target is allowed`, async () => {
+      const si = build(mode);
+      const decision = await settle(
+        si.authorizeConnect(makeSocket([]), {
+          host: 'mud.example.org',
+          port: 4000,
+        }),
+      );
+      expect(decision.allowed).toBe(true);
+    });
 
-        const typedSent: Sent = [];
-        const typed = new SessionIntegration(config);
-        typed.setLegacyDefaults('mud.example.org', 4000);
-        typed.parseNewMessage(
-          makeSocket(typedSent),
-          buf({ type: 'connect', host: c.host, port: c.port }),
-        );
-
-        const legacySent: Sent = [];
-        const legacy = new SessionIntegration(config);
-        legacy.setLegacyDefaults('mud.example.org', 4000);
-        legacy.parseNewMessage(
-          makeSocket(legacySent),
-          buf({ connect: 1, host: c.host, port: c.port }),
-        );
-
-        await new Promise((r) => setTimeout(r, 60));
-
-        // validateTarget is the oracle: this asserts both protocols route
-        // through it and surface its verdict, not that they merely both
-        // errored. A dial failure ("getaddrinfo ENOTFOUND") is not a policy
-        // denial and must not be mistaken for one.
-        const verdict = validateTarget(c.host, c.port, config.targets);
-        let policyReason: string | null = verdict.allowed
-          ? null
-          : verdict.reason || 'Target not allowed';
-        // Arbitrary mode applies the rebinding guard as a second gate.
-        if (!policyReason && mode === 'arbitrary') {
-          const resolved = await config.resolveTarget(c.host);
-          if (!resolved.allowed) {
-            policyReason = resolved.reason || 'Target address is not permitted';
-          }
-        }
-
-        const typedAll = typedSent.join('');
-        const legacyAll = legacySent.join('');
-
-        if (policyReason) {
-          // Denied: both carry the same reason, rendered differently.
-          expect(typedAll).toContain('"code":"invalid_request"');
-          expect(typedAll).toContain(policyReason);
-          expect(legacyAll).toContain(policyReason);
-          expect(legacyAll).not.toContain('"type":"error"');
-          // A denied target is never dialled.
-          expect(typedAll).not.toContain('"type":"session"');
-        } else {
-          // Allowed: neither may report a policy denial. The typed client
-          // gets a session frame; the legacy client deliberately gets none.
-          expect(typedAll).not.toContain('"code":"invalid_request"');
-          expect(legacyAll).not.toContain('invalid_request');
-          expect(typedAll).toContain('"type":"session"');
-          expect(legacyAll).not.toContain('"type":"session"');
-        }
-      });
-    }
+    test(`${mode}: an unlisted target is denied`, async () => {
+      const si = build(mode);
+      const decision = await settle(
+        si.authorizeConnect(makeSocket([]), {
+          host: 'evil.example',
+          port: 4000,
+        }),
+      );
+      expect(decision.allowed).toBe(false);
+      if (!decision.allowed) expect(decision.reason).toBeTruthy();
+    });
   }
+
+  test('fixed and allowlist decide synchronously', () => {
+    // Rejections must reach the socket in the tick the message was parsed.
+    for (const mode of ['fixed', 'allowlist'] as const) {
+      const si = build(mode);
+      const decision = si.authorizeConnect(makeSocket([]), {
+        host: 'evil.example',
+        port: 4000,
+      });
+      expect(decision).not.toBeInstanceOf(Promise);
+    }
+  });
+
+  test('arbitrary defers only for the DNS rebinding guard', () => {
+    const si = build('arbitrary');
+    const decision = si.authorizeConnect(makeSocket([]), {
+      host: 'mud.example.org',
+      port: 4000,
+    });
+    expect(decision).toBeInstanceOf(Promise);
+  });
+
+  test('a denied target releases the dial reservation', async () => {
+    const si = build('arbitrary');
+    const socket = makeSocket([]);
+    const decision = await settle(
+      si.authorizeConnect(socket, { host: 'evil.example', port: 4000 }),
+    );
+    expect(decision.allowed).toBe(false);
+    // A leaked reservation is capacity that never returns (MWP-92).
+    expect(si.sessionManager.pendingDials('127.0.0.1')).toBe(0);
+  });
 });

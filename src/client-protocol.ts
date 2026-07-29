@@ -6,11 +6,30 @@
  * wsproxy.ts and SessionIntegration.parseNewMessage are its only consumers.
  */
 
+/**
+ * Which wire protocol a message came from. Carried on rejections because the
+ * two protocols render errors differently: a legacy client displays whatever
+ * bytes arrive, so a JSON frame would be printed into the player's terminal.
+ */
+export type ConnectFlavor = 'typed' | 'legacy';
+
 /** Outcome of attempting to handle one client message. */
 export type ParseOutcome =
   | { kind: 'handled' }
   | { kind: 'not-ours'; parsedObject?: Record<string, unknown> }
-  | { kind: 'invalid'; code: string; field?: string; reason: string };
+  /**
+   * A valid legacy connect. Dispatched by the caller rather than here: the
+   * legacy protocol uses the raw telnet path, whose socket wiring lives in
+   * wsproxy.ts. Policy is still shared — see authorizeConnect.
+   */
+  | { kind: 'legacy-connect'; host?: string; port?: number }
+  | {
+      kind: 'invalid';
+      code: string;
+      field?: string;
+      reason: string;
+      flavor: ConnectFlavor;
+    };
 
 export type Recognition =
   | { shape: 'typed'; type: string }
