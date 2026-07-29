@@ -43,9 +43,19 @@ updates:
       - dependencies
     groups:
       # The dev toolchain moves together and is not in the shipped artifact;
-      # reviewing eslint and typescript bumps one PR at a time is noise.
+      # reviewing eslint and prettier patch bumps one PR at a time is noise.
+      #
+      # Majors are excluded deliberately. The first run of this group produced
+      # a PR titled "bump the dev-toolchain group with 3 updates" that
+      # contained TypeScript 5.9 -> 7.0 — a compiler replacement — alongside
+      # two lint bumps. A grouped major reads as routine and reviews as
+      # routine, which is exactly when it should not. Majors now arrive on
+      # their own and get judged on their own.
       dev-toolchain:
         dependency-type: development
+        update-types:
+          - minor
+          - patch
         patterns:
           - '@typescript-eslint/*'
           - 'eslint*'
