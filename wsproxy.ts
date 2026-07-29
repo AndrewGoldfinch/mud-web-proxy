@@ -59,6 +59,7 @@ import { SessionIntegration } from './src/session-integration';
 import {
   escapeDiagnosticHtml,
   getRuntimeConfig,
+  LogLevel,
   isDiagnosticRequestAuthorized,
   resolveTlsSettings,
 } from './src/runtime-config';
@@ -72,6 +73,7 @@ import {
   FailedAuthLimiter,
   authorizeSharedSecret,
   formatMissingTypeLogMessage,
+  isOriginAllowed,
   isTrustedPeer,
   resolveClientAddress,
   readLimitedRequestBody,
@@ -93,12 +95,6 @@ import {
 } from './src/app-attest';
 
 // Log levels enum
-const enum LogLevel {
-  DEBUG = 0,
-  INFO = 1,
-  WARN = 2,
-  ERROR = 3,
-}
 
 // ANSI color codes
 const Colors = {
@@ -114,25 +110,13 @@ const Colors = {
   gray: '\x1b[90m',
 };
 
-// Get log level from environment
-const getLogLevel = (): LogLevel => {
-  const envLevel = process.env.LOG_LEVEL?.toUpperCase();
-  switch (envLevel) {
-    case 'DEBUG':
-      return LogLevel.DEBUG;
-    case 'INFO':
-      return LogLevel.INFO;
-    case 'WARN':
-      return LogLevel.WARN;
-    case 'ERROR':
-      return LogLevel.ERROR;
-    default:
-      return LogLevel.INFO;
-  }
-};
+// Parsed once in runtime-config, which rejects an unrecognized value rather
+// than silently falling back to INFO as this used to.
+const getLogLevel = (): LogLevel => runtimeConfig.log.level;
 
 // Check if TTY for color support
-const useColors = process.stdout.isTTY && process.env.NO_COLOR !== '1';
+const useColors = (): boolean =>
+  !!process.stdout.isTTY && !runtimeConfig.log.noColor;
 
 // Get current file directory in ES modules
 const __filename = fileURLToPath(import.meta.url);
@@ -168,17 +152,7 @@ const sessionIntegration = new SessionIntegration({
   trustedProxyCidrs: runtimeConfig.trustedProxyCidrs,
   mudTlsMode: runtimeConfig.mudTlsMode,
   // APNS config from environment
-  apns: process.env.APNS_KEY_PATH
-    ? {
-        keyPath: process.env.APNS_KEY_PATH,
-        keyId: process.env.APNS_KEY_ID || '',
-        teamId: process.env.APNS_TEAM_ID || '',
-        topic: process.env.APNS_TOPIC || '',
-        environment:
-          (process.env.APNS_ENVIRONMENT as 'sandbox' | 'production') ||
-          'sandbox',
-      }
-    : undefined,
+  apns: runtimeConfig.apns,
 });
 
 // if this is true, only allow connections to srv.tn_host, ignoring
@@ -973,10 +947,8 @@ const srv: ServerConfig = {
       const cert = fs.readFileSync(tlsSettings.certPath);
       const key = fs.readFileSync(tlsSettings.keyPath);
       const tlsOptions: https.ServerOptions = { cert, key };
-      const clientCaPath = process.env.MTLS_CLIENT_CA_PATH;
-      const allowMtlsFallback =
-        process.env.ALLOW_MTLS_FALLBACK === 'true' &&
-        process.env.NODE_ENV !== 'production';
+      const clientCaPath = runtimeConfig.mtlsClientCaPath;
+      const allowMtlsFallback = runtimeConfig.allowMtlsFallback;
       if (clientCaPath && allowMtlsFallback) {
         try {
           const clientCa = fs.readFileSync(path.resolve(clientCaPath));
@@ -1059,7 +1031,7 @@ const srv: ServerConfig = {
     }
 
     const attestedKeysPath =
-      process.env.ATTESTED_KEYS_PATH ||
+      runtimeConfig.appAttest.attestedKeysPath ||
       path.resolve(__dirname, 'config/attested-keys.json');
     loadAttestedKeys(attestedKeysPath);
     srv.logInfo(
@@ -1069,17 +1041,14 @@ const srv: ServerConfig = {
     );
 
     const requireAppAuth = runtimeConfig.requireAppAuth;
-    const appAttestBundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
-    const appAttestTeamId = process.env.APPATTEST_TEAM_ID ?? '';
-    const mtlsFallbackEnabled =
-      process.env.ALLOW_MTLS_FALLBACK === 'true' &&
-      process.env.NODE_ENV !== 'production';
-    const allowAssertionBypass =
-      process.env.APPATTEST_ALLOW_ASSERTION_BYPASS === 'true';
-    const apnsTestSecret = process.env.APNS_TEST_SECRET ?? '';
+    const appAttestBundleId = runtimeConfig.appAttest.bundleId;
+    const appAttestTeamId = runtimeConfig.appAttest.teamId;
+    const mtlsFallbackEnabled = runtimeConfig.allowMtlsFallback;
+    const allowAssertionBypass = runtimeConfig.appAttest.allowAssertionBypass;
+    const apnsTestSecret = runtimeConfig.apnsTestSecret;
 
     srv.logInfo(
-      `App auth startup: requireAppAuth=${requireAppAuth} mtlsFallback=${mtlsFallbackEnabled} nodeEnv=${process.env.NODE_ENV || 'unset'}`,
+      `App auth startup: requireAppAuth=${requireAppAuth} mtlsFallback=${mtlsFallbackEnabled} nodeEnv=${runtimeConfig.nodeEnv || 'unset'}`,
       undefined,
       'auth',
     );
@@ -1146,6 +1115,26 @@ const srv: ServerConfig = {
     // plaintext-listener acknowledgment on that basis; listening without the
     // host would expose the same listener on every interface, making that
     // check a statement about a socket we never actually created.
+    // An unset allowlist accepts every Origin. That is a deliberate default
+    // for the public fixed-target deployment, but it is security-relevant, so
+    // say so rather than leaving the operator to infer it from silence.
+    if (runtimeConfig.allowedOrigins.length === 0) {
+      srv.logWarn(
+        'ALLOWED_ORIGINS is not set: connections from any Origin are ' +
+          'accepted. Set it for internet-facing deployments. Note Origin is ' +
+          'browser hardening, not authentication — see AUTH_MODE.',
+        undefined,
+        'init',
+      );
+    } else if (runtimeConfig.allowMissingOrigin) {
+      srv.logWarn(
+        'ALLOW_MISSING_ORIGIN=true: clients sending no Origin header bypass ' +
+          'the allowlist. Such clients are gated only by AUTH_MODE.',
+        undefined,
+        'init',
+      );
+    }
+
     webserver.listen(srv.ws_port, srv.bind_host, function () {
       srv.logInfo(
         `server listening: ${srv.bind_host}:${srv.ws_port}`,
@@ -1538,8 +1527,8 @@ const srv: ServerConfig = {
               res.end(JSON.stringify({ error: 'Invalid or expired nonce' }));
               return;
             }
-            const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
-            const teamId = process.env.APPATTEST_TEAM_ID ?? '';
+            const bundleId = runtimeConfig.appAttest.bundleId;
+            const teamId = runtimeConfig.appAttest.teamId;
             if (!bundleId || !teamId) {
               srv.logError(
                 `App Attest register failed: server misconfigured bundleIdPresent=${Boolean(bundleId)} teamIdPresent=${Boolean(teamId)}`,
@@ -1563,7 +1552,7 @@ const srv: ServerConfig = {
               teamId,
             });
             const keysPath =
-              process.env.ATTESTED_KEYS_PATH ||
+              runtimeConfig.appAttest.attestedKeysPath ||
               path.resolve(__dirname, 'config/attested-keys.json');
             setAttestedKey(result.keyId, {
               publicKey: result.publicKey,
@@ -1709,8 +1698,8 @@ const srv: ServerConfig = {
               return;
             }
 
-            const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
-            const teamId = process.env.APPATTEST_TEAM_ID ?? '';
+            const bundleId = runtimeConfig.appAttest.bundleId;
+            const teamId = runtimeConfig.appAttest.teamId;
             if (!bundleId) {
               srv.logWarn(
                 'Rejected upgrade: APPATTEST_BUNDLE_ID is not configured',
@@ -1747,11 +1736,10 @@ const srv: ServerConfig = {
                 'auth',
               );
             } catch (err) {
-              const diagnosticCrossKey =
-                process.env.APPATTEST_DIAG_CROSSKEY === 'true';
+              const diagnosticCrossKey = runtimeConfig.appAttest.diagCrosskey;
               if (diagnosticCrossKey && keyId && assertionB64 && nonce) {
-                const bundleId = process.env.APPATTEST_BUNDLE_ID ?? '';
-                const teamId = process.env.APPATTEST_TEAM_ID ?? '';
+                const bundleId = runtimeConfig.appAttest.bundleId;
+                const teamId = runtimeConfig.appAttest.teamId;
                 const allKeys = getAllAttestedKeys();
                 const assertionBuffer = Buffer.from(assertionB64, 'base64');
                 for (const candidate of allKeys) {
@@ -1789,9 +1777,7 @@ const srv: ServerConfig = {
               return;
             }
           } else {
-            const mtlsAllowed =
-              process.env.ALLOW_MTLS_FALLBACK === 'true' &&
-              process.env.NODE_ENV !== 'production';
+            const mtlsAllowed = runtimeConfig.allowMtlsFallback;
             if (!mtlsAllowed) {
               srv.logWarn(
                 'Rejected upgrade: App Attest headers missing and mTLS fallback disabled',
@@ -2422,11 +2408,16 @@ const srv: ServerConfig = {
   },
 
   originAllowed: function (req?: IncomingMessage): number {
-    const allowedOrigins = process.env.ALLOWED_ORIGINS;
-    if (!allowedOrigins) return 1; // backward compatible
-    const origin = req?.headers?.origin || '';
-    const allowed = allowedOrigins.split(',').map((s) => s.trim());
-    return allowed.includes(origin) || allowed.includes('*') ? 1 : 0;
+    // Reads the parsed config, not process.env. The ad-hoc read here meant
+    // the startup wildcard rejection was bypassed and ALLOW_MISSING_ORIGIN
+    // could not be turned on at all.
+    return isOriginAllowed(
+      req?.headers?.origin,
+      runtimeConfig.allowedOrigins,
+      runtimeConfig.allowMissingOrigin,
+    )
+      ? 1
+      : 0;
   },
 
   log: function (
@@ -2489,7 +2480,7 @@ const srv: ServerConfig = {
 
     // Format context if provided
     const contextStr = context
-      ? useColors
+      ? useColors()
         ? `${Colors.cyan}[${context}]${Colors.reset}`
         : `[${context}]`
       : '';
@@ -2506,7 +2497,7 @@ const srv: ServerConfig = {
     } else {
       messageStr = util.inspect(msg, {
         depth: 3,
-        colors: useColors,
+        colors: useColors(),
         compact: true,
       });
     }
@@ -2514,7 +2505,7 @@ const srv: ServerConfig = {
     // Build final output
     const metaStr = `${clientStr}${targetStr}${sidStr}`;
     const parts: string[] = [];
-    if (useColors) {
+    if (useColors()) {
       parts.push(
         `${Colors.dim}${timestamp}${Colors.reset}`,
         `${levelColor}${levelStr}${Colors.reset}`,

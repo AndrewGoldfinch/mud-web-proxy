@@ -452,7 +452,16 @@ export const parseRuntimeConfig = (
 
   // mTLS
   const mtlsClientCaPath = env.MTLS_CLIENT_CA_PATH || '';
-  const allowMtlsFallback = readBooleanEnv(env, 'ALLOW_MTLS_FALLBACK', false);
+  // The production guard belongs with the flag. wsproxy.ts computed
+  // `ALLOW_MTLS_FALLBACK === 'true' && NODE_ENV !== 'production'` in three
+  // places while the config parsed the flag alone; centralizing on the config
+  // value without the guard would have enabled the fallback in production.
+  //
+  // MWP-95 removes NODE_ENV-keyed security decisions entirely. Until then the
+  // condition lives here, once, rather than in three copies.
+  const allowMtlsFallback =
+    readBooleanEnv(env, 'ALLOW_MTLS_FALLBACK', false) &&
+    env.NODE_ENV !== 'production';
 
   // Background push
   const backgroundPush: BackgroundPushEnvConfig = {
@@ -542,6 +551,21 @@ export const parseRuntimeConfig = (
         `TLS key not found at ${tlsKeyPath}. INBOUND_TLS_MODE=required requires both TLS_CERT_PATH and TLS_KEY_PATH to point to existing files.`,
       );
     }
+  }
+
+  // Plaintext in production requires the same acknowledgement, even on
+  // loopback: a production deployment terminating TLS elsewhere is a
+  // deliberate topology, not a default.
+  if (
+    inboundTlsMode === 'off' &&
+    nodeEnv === 'production' &&
+    !readBooleanEnv(env, 'ALLOW_INSECURE_INBOUND_NO_TLS', false)
+  ) {
+    errors.push(
+      'INBOUND_TLS_MODE=off in production requires ' +
+        'ALLOW_INSECURE_INBOUND_NO_TLS=true to acknowledge that this process ' +
+        'serves plaintext and must sit behind a proxy that terminates TLS.',
+    );
   }
 
   // INBOUND_TLS_MODE=off on non-loopback requires acknowledgement
@@ -657,7 +681,9 @@ export const resolveTlsSettings = (
   const production = env.NODE_ENV === 'production';
   const allowInsecureProductionNoTls = readBooleanEnv(
     env,
-    'ALLOW_INSECURE_PRODUCTION_NO_TLS',
+    // Honour the live variable; the retired one is still accepted here only
+    // so the legacy DISABLE_TLS tests keep exercising this wrapper.
+    'ALLOW_INSECURE_INBOUND_NO_TLS',
     false,
   );
 
@@ -679,7 +705,8 @@ export const resolveTlsSettings = (
   if (inboundTlsMode === 'off') {
     if (production && !allowInsecureProductionNoTls) {
       throw new Error(
-        'INBOUND_TLS_MODE=off is not allowed in production without ALLOW_INSECURE_PRODUCTION_NO_TLS=true',
+        'INBOUND_TLS_MODE=off is not allowed in production without ' +
+          'ALLOW_INSECURE_INBOUND_NO_TLS=true',
       );
     }
     return { useTls: false, certPath, keyPath, reason: 'disabled' };
@@ -705,7 +732,8 @@ export const resolveTlsSettings = (
 
   if (production && !allowInsecureProductionNoTls) {
     throw new Error(
-      'TLS certificate and key are required in production unless ALLOW_INSECURE_PRODUCTION_NO_TLS=true',
+      'TLS certificate and key are required in production unless ' +
+        'ALLOW_INSECURE_INBOUND_NO_TLS=true',
     );
   }
 

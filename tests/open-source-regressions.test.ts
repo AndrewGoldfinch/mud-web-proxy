@@ -248,7 +248,10 @@ describe('open-source release regression coverage', () => {
         {
           NODE_ENV: 'production',
           DISABLE_TLS: '1',
-          ALLOW_INSECURE_PRODUCTION_NO_TLS: 'true',
+          // ALLOW_INSECURE_PRODUCTION_NO_TLS is retired — getRuntimeConfig
+          // aborts on it, so acknowledging with it could never work in
+          // practice and the error message that named it was a dead end.
+          ALLOW_INSECURE_INBOUND_NO_TLS: 'true',
         },
         '/app',
         existsSync,

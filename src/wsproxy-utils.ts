@@ -592,3 +592,36 @@ export const resolveClientAddress = (
 
   return peer;
 };
+
+/**
+ * Is this Origin permitted?
+ *
+ * Browser hardening, not authentication — it stops a page on another site
+ * opening a WebSocket with a victim's ambient credentials. A non-browser
+ * client sends whatever Origin it likes, so this is never a substitute for
+ * AUTH_MODE.
+ *
+ * An empty allowlist means no restriction. A wildcard entry is never honoured:
+ * startup rejects "*", and accepting it here as well would be a second door to
+ * the same room.
+ */
+export const isOriginAllowed = (
+  origin: string | undefined,
+  allowedOrigins: string[],
+  allowMissingOrigin: boolean,
+): boolean => {
+  if (allowedOrigins.length === 0) return true;
+
+  const normalize = (value: string): string =>
+    value.trim().toLowerCase().replace(/\/+$/, '');
+
+  const supplied = normalize(origin ?? '');
+  // Native clients send no Origin at all. Permitting that is an explicit
+  // operator decision, because it means Origin is no longer filtering anything.
+  if (!supplied) return allowMissingOrigin;
+
+  return allowedOrigins
+    .filter((entry) => entry.trim() !== '*')
+    .map(normalize)
+    .includes(supplied);
+};
