@@ -63,7 +63,7 @@
   },
   "dependencies": {
     "cbor-x": "^1.6.5",
-    "iconv-lite": "^0.6.3",
+    "iconv-lite": "^0.7.3",
     "ws": "^8.21.1"
   },
   "overrides": {
