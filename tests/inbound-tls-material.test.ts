@@ -23,7 +23,10 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, rmSync, writeFileSync, chmodSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
-import { validateTlsMaterial } from '../src/runtime-config.js';
+import {
+  parseRuntimeConfig,
+  validateTlsMaterial,
+} from '../src/runtime-config.js';
 
 let dir: string;
 let certPath: string;
@@ -133,5 +136,55 @@ describe('a mismatched pair is rejected', () => {
     const result = validateTlsMaterial(certPath, otherKeyPath);
     expect(result).not.toBeNull();
     expect(result).toMatch(/match/i);
+  });
+});
+
+describe('the dist-parent fallback survives startup validation', () => {
+  // Raised by Codex review of #71. A compiled server started from its own
+  // dist directory keeps certificates beside the PROJECT, not beside the
+  // bundle. resolveTlsSettings has always searched the parent for exactly
+  // this layout, but the new startup check resolved against basePath alone
+  // and aborted before that code could run — so a supported deployment
+  // stopped starting. Two resolutions of the same paths disagreed, which is
+  // the duplication this issue set out to remove.
+
+  const parentLayout = (p: string) =>
+    p === '/app/cert.pem' || p === '/app/privkey.pem';
+
+  test('finds certificates beside the project when run from dist', () => {
+    const { config, errors } = parseRuntimeConfig(
+      { INBOUND_TLS_MODE: 'required' },
+      parentLayout,
+      '/app/dist',
+    );
+    expect(errors.join(' ')).not.toMatch(/TLS certificate not found/);
+    expect(config.tlsCertPath).toBe('/app/cert.pem');
+    expect(config.tlsKeyPath).toBe('/app/privkey.pem');
+  });
+
+  test('an explicit path is never second-guessed', () => {
+    // The fallback only applies when the operator has expressed no preference.
+    const { config } = parseRuntimeConfig(
+      {
+        INBOUND_TLS_MODE: 'required',
+        TLS_CERT_PATH: '/etc/tls/c.pem',
+        TLS_KEY_PATH: '/etc/tls/k.pem',
+      },
+      parentLayout,
+      '/app/dist',
+    );
+    expect(config.tlsCertPath).toBe('/etc/tls/c.pem');
+    expect(config.tlsKeyPath).toBe('/etc/tls/k.pem');
+  });
+
+  test('a non-dist working directory does not reach into its parent', () => {
+    // Silently climbing out of the configured directory would be surprising
+    // anywhere else.
+    const { config } = parseRuntimeConfig(
+      { INBOUND_TLS_MODE: 'required' },
+      parentLayout,
+      '/app/srv',
+    );
+    expect(config.tlsCertPath).toBe('/app/srv/cert.pem');
   });
 });

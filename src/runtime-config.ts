@@ -391,8 +391,29 @@ export const parseRuntimeConfig = (
   }
 
   // TLS paths
-  const tlsCertPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
-  const tlsKeyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
+  let tlsCertPath = env.TLS_CERT_PATH || path.resolve(basePath, 'cert.pem');
+  let tlsKeyPath = env.TLS_KEY_PATH || path.resolve(basePath, 'privkey.pem');
+
+  // A compiled server started from its own dist directory keeps its
+  // certificates beside the PROJECT, not beside the bundle. resolveTlsSettings
+  // has always searched the parent for that layout; resolving here against
+  // basePath alone aborted startup before it could, so the supported
+  // deployment stopped starting. Applied only when the operator has expressed
+  // no preference — an explicit path is never second-guessed.
+  if (
+    !env.TLS_CERT_PATH &&
+    !env.TLS_KEY_PATH &&
+    path.basename(basePath) === 'dist' &&
+    !existsSync(tlsCertPath) &&
+    !existsSync(tlsKeyPath)
+  ) {
+    const parentCertPath = path.resolve(basePath, '..', 'cert.pem');
+    const parentKeyPath = path.resolve(basePath, '..', 'privkey.pem');
+    if (existsSync(parentCertPath) && existsSync(parentKeyPath)) {
+      tlsCertPath = parentCertPath;
+      tlsKeyPath = parentKeyPath;
+    }
+  }
 
   // MUD upstream TLS
   // Defaults to `prefer`, NOT `plain`. Current behaviour is to attempt TLS
