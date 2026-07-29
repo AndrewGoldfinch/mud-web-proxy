@@ -155,6 +155,13 @@ const sessionIntegration = new SessionIntegration({
   apns: runtimeConfig.apns,
 });
 
+// A legacy client may send a bare {connect: 1} with no host or port, meaning
+// the configured default target. Matches initT's historical fallback.
+sessionIntegration.setLegacyDefaults(
+  runtimeConfig.tnHost,
+  runtimeConfig.tnPort,
+);
+
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = runtimeConfig.onlyAllowDefaultServer;

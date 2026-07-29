@@ -22,10 +22,14 @@ import { resolveClientAddress } from './wsproxy-utils';
 import {
   recognize,
   validateTyped,
+  validateLegacy,
   KNOWN_TYPES,
   type ParseOutcome,
   type KnownType,
 } from './client-protocol';
+
+/** Grace period so a rejected legacy client can render the reason. */
+const LEGACY_REJECT_CLOSE_DELAY_MS = 1000;
 import type {
   ConnectRequest,
   ResumeRequest,
@@ -95,6 +99,8 @@ export class SessionIntegration {
   config: SessionIntegrationConfig;
   private retryInterval: ReturnType<typeof setInterval> | null = null;
   private terminatingSessions: Set<string> = new Set();
+  private legacyDefaultHost = '';
+  private legacyDefaultPort = 0;
 
   private log(msg: string, ip?: string, sessionId?: string): void {
     const parts = [new Date().toISOString(), '[session]'];
@@ -223,14 +229,21 @@ export class SessionIntegration {
     const o = parsed as Record<string, unknown>;
 
     if (recognition.shape === 'legacy') {
-      // Wired in Task 4. Until then a legacy message is rejected rather than
-      // forwarded, which is already an improvement on the current behaviour.
-      return {
-        kind: 'invalid',
-        code: 'invalid_request',
-        field: 'connect',
-        reason: 'Legacy connect is not yet supported',
-      };
+      const legacy = validateLegacy(o);
+      if (!legacy.ok) {
+        return {
+          kind: 'invalid',
+          code: 'invalid_request',
+          field: legacy.field,
+          reason: legacy.reason,
+        };
+      }
+      void this.openTelnetSession(socket, {
+        flavor: 'legacy',
+        host: legacy.value.host ?? this.legacyDefaultHost,
+        port: legacy.value.port ?? this.legacyDefaultPort,
+      });
+      return { kind: 'handled' };
     }
 
     if (!(KNOWN_TYPES as readonly string[]).includes(recognition.type)) {
@@ -331,9 +344,18 @@ export class SessionIntegration {
   }
 
   /**
+   * Supply the default target used when a legacy client sends a bare
+   * `{connect: 1}` with no host or port. wsproxy.ts passes srv.tn_host and
+   * srv.tn_port, matching initT's historical fallback.
+   */
+  setLegacyDefaults(host: string, port: number): void {
+    this.legacyDefaultHost = host;
+    this.legacyDefaultPort = port;
+  }
+
+  /**
    * Flavor difference 2 of 2: render a rejection. The decision is already
    * made and identical for both protocols; only the rendering differs.
-   * Legacy is filled in by Task 4.
    */
   private rejectConnect(
     socket: SocketExtended,
@@ -343,7 +365,23 @@ export class SessionIntegration {
   ): void {
     if (flavor === 'typed') {
       this.sendError(socket, code, reason);
+      return;
     }
+    // A legacy client renders whatever bytes arrive, so a JSON frame would
+    // be printed into the player's terminal — the failure MWP-91 exists to
+    // prevent. Write a human-readable line instead, then close.
+    try {
+      socket.sendUTF(`\r\n${reason}\r\n`);
+    } catch (_err) {
+      // Socket might be closed
+    }
+    setTimeout(() => {
+      try {
+        socket.terminate();
+      } catch (_err) {
+        // Already gone
+      }
+    }, LEGACY_REJECT_CLOSE_DELAY_MS);
   }
 
   /**
@@ -356,6 +394,14 @@ export class SessionIntegration {
     ctx: ConnectCtx,
   ): Promise<void> {
     const ip = this.getClientIP(socket);
+
+    // MWP-90: one connect per socket, on both protocols.
+    if (this.sessionManager.findByWebSocket(socket)) {
+      const reason = 'This connection already has a session';
+      this.log(`connect rejected: ${reason}`, ip);
+      this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
+      return;
+    }
 
     this.log(`connect request to ${ctx.host}:${ctx.port}`, ip);
 
