@@ -1,6 +1,9 @@
 import globals from 'globals';
 import eslintJsonc from 'eslint-plugin-jsonc';
-import eslintJsoncParser from 'jsonc-eslint-parser';
+// Namespace import, not default: jsonc-eslint-parser v3 dropped its default
+// export. ESLint only needs the parseForESLint/parse pair, which the module
+// namespace exposes under both v2 and v3.
+import * as eslintJsoncParser from 'jsonc-eslint-parser';
 import prettier from 'eslint-plugin-prettier';
 import js from '@eslint/js';
 import tseslint from 'typescript-eslint';
