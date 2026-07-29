@@ -11,26 +11,37 @@
 import { describe, expect, test } from 'bun:test';
 import { getRuntimeConfig } from '../src/runtime-config.js';
 
+/**
+ * INBOUND_TLS_MODE defaults to `required`, which now demands a usable
+ * certificate and key at startup (MWP-81). These tests are about proxy trust,
+ * not TLS, so they opt out explicitly rather than depending on whether a
+ * cert.pem happens to exist in the working directory — which is exactly what
+ * made an earlier version of this change pass locally and fail in CI.
+ */
+const base = { INBOUND_TLS_MODE: 'off' };
+
 describe('TRUSTED_PROXY_CIDRS parsing', () => {
   test('defaults to trusting no proxy', () => {
-    expect(getRuntimeConfig({}).trustedProxyCidrs).toBe(false);
+    expect(getRuntimeConfig({ ...base }).trustedProxyCidrs).toBe(false);
   });
 
   test('treats "true" as trusting every peer', () => {
     expect(
-      getRuntimeConfig({ TRUSTED_PROXY_CIDRS: 'true' }).trustedProxyCidrs,
+      getRuntimeConfig({ ...base, TRUSTED_PROXY_CIDRS: 'true' })
+        .trustedProxyCidrs,
     ).toBe(true);
   });
 
   test('treats "false" as trusting no peer', () => {
     expect(
-      getRuntimeConfig({ TRUSTED_PROXY_CIDRS: 'false' }).trustedProxyCidrs,
+      getRuntimeConfig({ ...base, TRUSTED_PROXY_CIDRS: 'false' })
+        .trustedProxyCidrs,
     ).toBe(false);
   });
 
   test('parses a single CIDR entry into a list', () => {
     expect(
-      getRuntimeConfig({ TRUSTED_PROXY_CIDRS: '10.0.0.0/8' })
+      getRuntimeConfig({ ...base, TRUSTED_PROXY_CIDRS: '10.0.0.0/8' })
         .trustedProxyCidrs,
     ).toEqual(['10.0.0.0/8']);
   });
@@ -38,6 +49,7 @@ describe('TRUSTED_PROXY_CIDRS parsing', () => {
   test('parses a comma-separated list and trims whitespace', () => {
     expect(
       getRuntimeConfig({
+        ...base,
         TRUSTED_PROXY_CIDRS: ' 127.0.0.1 , 172.16.0.0/12 ',
       }).trustedProxyCidrs,
     ).toEqual(['127.0.0.1', '172.16.0.0/12']);
@@ -45,7 +57,8 @@ describe('TRUSTED_PROXY_CIDRS parsing', () => {
 
   test('treats an empty value as trusting no peer', () => {
     expect(
-      getRuntimeConfig({ TRUSTED_PROXY_CIDRS: '   ' }).trustedProxyCidrs,
+      getRuntimeConfig({ ...base, TRUSTED_PROXY_CIDRS: '   ' })
+        .trustedProxyCidrs,
     ).toBe(false);
   });
 });
@@ -73,7 +86,7 @@ describe('TRUST_PROXY is retired and fails fast', () => {
 
   test('does not abort when only the new name is set', () => {
     expect(() =>
-      getRuntimeConfig({ TRUSTED_PROXY_CIDRS: '10.0.0.0/8' }),
+      getRuntimeConfig({ ...base, TRUSTED_PROXY_CIDRS: '10.0.0.0/8' }),
     ).not.toThrow();
   });
 });

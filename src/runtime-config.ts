@@ -1,6 +1,11 @@
-import { existsSync as nodeExistsSync } from 'fs';
+import { existsSync as nodeExistsSync, readFileSync } from 'fs';
 import path from 'path';
-import { timingSafeEqual } from 'crypto';
+import {
+  createPrivateKey,
+  createPublicKey,
+  timingSafeEqual,
+  X509Certificate,
+} from 'crypto';
 import { parseAllowedTargets } from './target-policy';
 import { isValidTrustedProxyEntry } from './wsproxy-utils';
 
@@ -10,6 +15,72 @@ import { isValidTrustedProxyEntry } from './wsproxy-utils';
 
 const TRUE_VALUES = new Set(['1', 'true', 'yes', 'on']);
 const FALSE_VALUES = new Set(['0', 'false', 'no', 'off']);
+
+/**
+ * Check that a certificate and key are usable together, returning an error
+ * message or null.
+ *
+ * `existsSync` is not enough. A file can be present and still be unreadable,
+ * truncated, or paired with the wrong key — and each of those fails at the
+ * first TLS handshake rather than at startup, which turns an operator error
+ * into a user-visible outage. The mismatch case is the likeliest of the three
+ * in practice: a certificate renewed without its key, or copied from another
+ * host.
+ *
+ * The pair is compared by exporting both public keys to SPKI DER rather than
+ * via `X509Certificate.checkPrivateKey`, because the DER comparison behaves
+ * the same across runtimes.
+ */
+export const validateTlsMaterial = (
+  certPath: string,
+  keyPath: string,
+): string | null => {
+  let certPem: Buffer;
+  try {
+    certPem = readFileSync(certPath);
+  } catch (err) {
+    return `TLS certificate at ${certPath} could not be read: ${(err as Error).message}`;
+  }
+
+  let keyPem: Buffer;
+  try {
+    keyPem = readFileSync(keyPath);
+  } catch (err) {
+    return `TLS key at ${keyPath} could not be read: ${(err as Error).message}`;
+  }
+
+  let certificate: X509Certificate;
+  try {
+    certificate = new X509Certificate(certPem);
+  } catch (err) {
+    return `TLS certificate at ${certPath} is not a valid certificate: ${(err as Error).message}`;
+  }
+
+  let privateKey;
+  try {
+    privateKey = createPrivateKey(keyPem);
+  } catch (err) {
+    return `TLS key at ${keyPath} is not a valid private key: ${(err as Error).message}`;
+  }
+
+  try {
+    const fromKey = createPublicKey(privateKey).export({
+      type: 'spki',
+      format: 'der',
+    });
+    const fromCert = certificate.publicKey.export({
+      type: 'spki',
+      format: 'der',
+    });
+    if (!fromKey.equals(fromCert)) {
+      return `TLS certificate at ${certPath} does not match the private key at ${keyPath}.`;
+    }
+  } catch (err) {
+    return `TLS certificate at ${certPath} and key at ${keyPath} could not be compared: ${(err as Error).message}`;
+  }
+
+  return null;
+};
 
 /** Throw when a present-but-unparseable value is encountered. */
 const fail = (name: string, value: string, accepted: string): never => {
@@ -638,29 +709,25 @@ export const getRuntimeConfig = (
   existsSync: (filePath: string) => boolean = nodeExistsSync,
   basePath: string = process.cwd(),
 ): RuntimeConfig => {
-  // Only an *explicitly* configured INBOUND_TLS_MODE=required makes missing
-  // certificates fatal. Previously these errors were filtered out
-  // unconditionally, so `required` fell back to a plaintext listener — the
-  // setting was accepted and then ignored. Defaulted behaviour still defers
-  // to resolveTlsSettings, which existing callers depend on.
-  const explicitlyRequired =
-    env.INBOUND_TLS_MODE?.trim().toLowerCase() === 'required';
+  const { config, errors } = parseRuntimeConfig(env, existsSync, basePath);
 
-  const { config, errors } = parseRuntimeConfig(
-    env,
-    explicitlyRequired ? existsSync : () => false,
-    basePath,
-  );
+  // `required` is also the DEFAULT, so enforcing it only when the operator
+  // spelled it out meant the default path fell through to a plaintext
+  // listener. Missing certificates are fatal under `required` however the
+  // mode was arrived at; an operator who wants plaintext says so with
+  // INBOUND_TLS_MODE=off.
+  //
+  // Existence is checked in parseRuntimeConfig, which takes an injected
+  // existsSync and stays free of real I/O. The deeper check — readable,
+  // parseable, matching pair — happens here, at the real entry point, where
+  // touching the filesystem is appropriate.
+  if (config.inboundTlsMode === 'required' && errors.length === 0) {
+    const problem = validateTlsMaterial(config.tlsCertPath, config.tlsKeyPath);
+    if (problem) errors.push(problem);
+  }
 
-  const fatalErrors = explicitlyRequired
-    ? errors
-    : errors.filter(
-        (e) =>
-          !e.includes('TLS certificate not found') &&
-          !e.includes('TLS key not found'),
-      );
-  if (fatalErrors.length > 0) {
-    throw new Error('Configuration errors:\n  ' + fatalErrors.join('\n  '));
+  if (errors.length > 0) {
+    throw new Error('Configuration errors:\n  ' + errors.join('\n  '));
   }
   return config;
 };

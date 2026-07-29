@@ -176,8 +176,20 @@ describe('open-source release regression coverage', () => {
     );
   });
 
+  test('bare defaults refuse to start without usable TLS material', () => {
+    // INBOUND_TLS_MODE defaults to `required` (MWP-81). Previously that
+    // default was not enforced — startup succeeded and served plain HTTP,
+    // so the setting was accepted and then ignored. Serving plaintext is now
+    // something an operator has to ask for.
+    expect(() =>
+      getRuntimeConfig({ TLS_CERT_PATH: '/nonexistent/cert.pem' }),
+    ).toThrow(/TLS/i);
+  });
+
   test('runtime environment defaults are safe for private self-hosting', () => {
-    expect(getRuntimeConfig({})).toMatchObject({
+    // TLS is opted out of here so the remaining defaults can be asserted;
+    // the default TLS posture is covered by the test above.
+    expect(getRuntimeConfig({ INBOUND_TLS_MODE: 'off' })).toMatchObject({
       wsPort: 6200,
       tnHost: 'muds.maldorne.org',
       tnPort: 5010,
@@ -185,6 +197,8 @@ describe('open-source release regression coverage', () => {
       requireAppAuth: false,
       diagnosticsEnabled: false,
       adminToken: '',
+      inboundTlsMode: 'off',
+      bindHost: '127.0.0.1',
     });
   });
 
