@@ -125,7 +125,10 @@ export const readOptionalIntegerEnv = (
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return undefined;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
+  // isInteger, not isFinite: the name promises an integer, and callers compare
+  // against it with >=. A fractional cap of 1.5 admits 2, so the setting
+  // reports one limit and enforces another.
+  if (!Number.isInteger(parsed)) {
     fail(name, raw, 'an integer or empty');
   }
   return parsed;
@@ -224,6 +227,14 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface SessionLimitsConfig {
+  timeoutHours: number;
+  maxPerDevice: number;
+  maxPerIP: number;
+  /** Undefined means unbounded; see SessionManagerConfig for the rationale. */
+  maxGlobal?: number;
+}
+
 export interface RuntimeConfig {
   // Listener
   bindHost: string;
@@ -264,6 +275,9 @@ export interface RuntimeConfig {
 
   // Trusted proxy
   trustedProxyCidrs: boolean | string[];
+
+  // Session limits (sibling MWP-92)
+  sessions: SessionLimitsConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -677,6 +691,34 @@ export const parseRuntimeConfig = (
   // TARGET_MODE=arbitrary with AUTH_MODE=none is already covered above
   // ALLOWED_ORIGINS requires allowlist to be set (unset = no restriction)
 
+  // ---- Session limits (MWP-92) ----
+  // Previously hardcoded at wsproxy.ts:147-151, so an operator could neither
+  // change them nor see them reported. A limit nobody can configure is a
+  // constant pretending to be a control.
+  const readPositive = (name: string, fallback: number): number => {
+    const value = readIntegerEnv(env, name, fallback);
+    if (value <= 0) {
+      errors.push(`${name} must be a positive integer (got ${value}).`);
+    }
+    return value;
+  };
+
+  // Absent means unbounded, so this cannot go through readPositive.
+  const rawMaxGlobal = readOptionalIntegerEnv(env, 'MAX_SESSIONS_GLOBAL');
+  if (rawMaxGlobal !== undefined && rawMaxGlobal <= 0) {
+    errors.push(
+      `MAX_SESSIONS_GLOBAL must be a positive integer when set (got ${rawMaxGlobal}). ` +
+        'Leave it unset for no global bound.',
+    );
+  }
+
+  const sessions: SessionLimitsConfig = {
+    timeoutHours: readPositive('SESSION_TIMEOUT_HOURS', 24),
+    maxPerDevice: readPositive('MAX_SESSIONS_PER_DEVICE', 5),
+    maxPerIP: readPositive('MAX_SESSIONS_PER_IP', 10),
+    maxGlobal: rawMaxGlobal,
+  };
+
   // Build config object
   const config: RuntimeConfig = {
     bindHost,
@@ -697,6 +739,7 @@ export const parseRuntimeConfig = (
     adminToken,
     proxySharedSecret,
     trustedProxyCidrs,
+    sessions,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,

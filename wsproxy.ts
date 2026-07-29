@@ -144,11 +144,10 @@ const runtimeConfig = getRuntimeConfig(process.env);
 
 // Initialize session persistence layer
 const sessionIntegration = new SessionIntegration({
-  sessions: {
-    timeoutHours: 24,
-    maxPerDevice: 5,
-    maxPerIP: 10,
-  },
+  // From the config module rather than literals: a limit the operator cannot
+  // set is a constant pretending to be a control, and a value parsed by config
+  // while enforcement reads something else is the defect class behind MWP-80.
+  sessions: runtimeConfig.sessions,
   buffer: {
     sizeKB: 50,
   },
