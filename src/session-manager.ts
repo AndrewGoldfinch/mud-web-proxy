@@ -21,6 +21,15 @@ export interface SessionManagerConfig {
   timeoutHours: number;
   maxPerDevice: number;
   maxPerIP: number;
+  /**
+   * Total concurrent sessions across every client, or undefined for no bound.
+   *
+   * A per-IP limit only limits an attacker who has one address, and addresses
+   * are the cheapest thing to acquire: N sources each staying politely under
+   * maxPerIP still exhaust the process. Undefined by default so an upgrade
+   * does not impose a surprise ceiling on a working deployment.
+   */
+  maxGlobal?: number;
 }
 
 export class SessionManager {
@@ -29,6 +38,12 @@ export class SessionManager {
   private deviceSessions: Map<string, Set<Session>> = new Map();
   private ipConnections: Map<string, number> = new Map();
   private readonly pendingDialCounts = new Map<string, number>();
+
+  // Running totals rather than summing the maps on every reservation, which
+  // would be O(distinct addresses) on the hot path — the exact path a flood
+  // drives hardest.
+  private globalEstablished = 0;
+  private globalPendingCount = 0;
 
   private config: SessionManagerConfig;
   private cleanupInterval: NodeJS.Timeout | null = null;
@@ -260,6 +275,9 @@ export class SessionManager {
     const established = this.ipConnections.get(ip) || 0;
     const pending = this.pendingDialCounts.get(ip) || 0;
 
+    // Per-IP first, so a single address exhausting its own quota is reported
+    // as such. Reporting that as global exhaustion would send an operator to
+    // investigate the whole service over one noisy client.
     if (established + pending >= this.config.maxPerIP) {
       return {
         allowed: false,
@@ -267,8 +285,25 @@ export class SessionManager {
       };
     }
 
+    const { maxGlobal } = this.config;
+    if (
+      maxGlobal !== undefined &&
+      this.globalEstablished + this.globalPendingCount >= maxGlobal
+    ) {
+      return {
+        allowed: false,
+        reason: 'Server is at global session capacity',
+      };
+    }
+
     this.pendingDialCounts.set(ip, pending + 1);
+    this.globalPendingCount++;
     return { allowed: true };
+  }
+
+  /** Pending reservations across every address. Exposed for tests. */
+  globalPending(): number {
+    return this.globalPendingCount;
   }
 
   /**
@@ -278,8 +313,15 @@ export class SessionManager {
    */
   releasePendingDial(ip: string): void {
     const pending = this.pendingDialCounts.get(ip) || 0;
-    if (pending <= 1) this.pendingDialCounts.delete(ip);
+    // A release with nothing reserved for this address must be a no-op.
+    // Decrementing the global counter here would manufacture capacity and
+    // silently raise the cap.
+    if (pending <= 0) return;
+
+    if (pending === 1) this.pendingDialCounts.delete(ip);
     else this.pendingDialCounts.set(ip, pending - 1);
+
+    if (this.globalPendingCount > 0) this.globalPendingCount--;
   }
 
   /** Pending reservations for an address. Exposed for tests. */
@@ -290,6 +332,7 @@ export class SessionManager {
   incrementIPCount(ip: string): void {
     const count = this.ipConnections.get(ip) || 0;
     this.ipConnections.set(ip, count + 1);
+    this.globalEstablished++;
   }
 
   /**
@@ -297,6 +340,7 @@ export class SessionManager {
    */
   decrementIPCount(ip: string): void {
     const count = this.ipConnections.get(ip) || 0;
+    if (count > 0 && this.globalEstablished > 0) this.globalEstablished--;
     if (count > 1) {
       this.ipConnections.set(ip, count - 1);
     } else {
