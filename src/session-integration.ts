@@ -17,7 +17,7 @@ import {
   type ResolvedTarget,
   type TargetPolicyConfig,
 } from './target-policy';
-import type { MudTlsMode } from './runtime-config';
+import type { MudTlsMode, SessionLimitsConfig } from './runtime-config';
 import { resolveClientAddress } from './wsproxy-utils';
 import {
   recognize,
@@ -63,11 +63,11 @@ export type ConnectDecision =
   | { allowed: false; code: string; reason: string };
 
 export interface SessionIntegrationConfig {
-  sessions: {
-    timeoutHours: number;
-    maxPerDevice: number;
-    maxPerIP: number;
-  };
+  // The shared type, not a structural copy. An inline duplicate here silently
+  // dropped maxGlobal from the declared contract while still carrying it at
+  // runtime — the kind of divergence that survives review because it
+  // typechecks.
+  sessions: SessionLimitsConfig;
   buffer: {
     sizeKB: number;
   };
