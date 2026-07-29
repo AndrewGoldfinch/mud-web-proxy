@@ -34,13 +34,13 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/maldorne/mud-web-proxy.git"
+    "url": "git+https://github.com/AndrewGoldfinch/mud-web-proxy.git"
   },
-  "license": "gpl-3.0",
+  "license": "GPL-3.0-or-later",
   "bugs": {
-    "url": "https://github.com/maldorne/mud-web-proxy/issues"
+    "url": "https://github.com/AndrewGoldfinch/mud-web-proxy/issues"
   },
-  "homepage": "https://github.com/maldorne/mud-web-proxy#readme",
+  "homepage": "https://github.com/AndrewGoldfinch/mud-web-proxy#readme",
   "devDependencies": {
     "@babel/eslint-parser": "^7.29.7",
     "@eslint/js": "^9.39.5",
@@ -70,5 +70,6 @@
     "brace-expansion": ">=5.0.7",
     "flatted": ">=3.4.0",
     "picomatch": ">=4.0.4"
-  }
+  },
+  "private": true
 }
