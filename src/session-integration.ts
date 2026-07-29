@@ -514,9 +514,13 @@ export class SessionIntegration {
       dialAddress,
       this.config.mudTlsMode ?? 'prefer',
     );
-    // The session now owns this client's capacity; hand off from the
-    // reservation so it is not counted twice.
-    this.sessionManager.releasePendingDial(ip);
+    // The reservation is deliberately NOT released here. Creating the Session
+    // object does not consume capacity — connecting does, and the established
+    // count only rises once `session.connect()` resolves below. Releasing at
+    // this point leaves the dial counted as neither pending nor established
+    // for the whole duration of the TCP connect, so concurrent dials each see
+    // spare capacity and pass. That is the hole the reservation exists to
+    // close, and it is why the handoff happens after the connect resolves.
 
     // Set device token and window size
     if (ctx.deviceToken) {
@@ -571,11 +575,19 @@ export class SessionIntegration {
         this.sessionManager.incrementIPCount(ip);
       }
 
+      // Release only now, and only after incrementing: counting first means
+      // the running total never dips, so a concurrent reservation cannot slip
+      // through the gap between the two calls.
+      this.sessionManager.releasePendingDial(ip);
+
       // Set up error handler
       session.onError((err: Error) => {
         this.handleMudTermination(session, err.message);
       });
     } catch (err) {
+      // The dial failed, so nothing was counted as established — release the
+      // reservation here or it is capacity that never returns until restart.
+      this.sessionManager.releasePendingDial(ip);
       this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
       this.sendError(socket, 'connection_failed', (err as Error).message);
       this.removeSessionAndCleanup(session.id);

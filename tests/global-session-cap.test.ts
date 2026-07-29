@@ -181,3 +181,69 @@ describe('session limits are configuration, not constants', () => {
     }
   });
 });
+
+describe('a reservation is held until capacity is actually counted', () => {
+  // Raised by Codex review of #72. The reservation was released the moment the
+  // session object existed, but the established count only rises after
+  // `await session.connect()` resolves. In between, an in-flight dial is
+  // counted as neither pending nor established — so concurrent slow dials each
+  // see spare capacity and pass. That is the exact hole the reservation exists
+  // to close, reintroduced one layer up.
+
+  test('handing off must not leave a gap in the total', () => {
+    const m = mgr(1);
+    m.reservePendingDial('1.1.1.1');
+
+    // Simulate the handoff as the connect path performs it: count the
+    // established session BEFORE dropping the reservation, so the running
+    // total never dips and a concurrent reservation cannot slip through.
+    m.incrementIPCount('1.1.1.1');
+    m.releasePendingDial('1.1.1.1');
+
+    expect(m.globalPending()).toBe(0);
+    expect(m.reservePendingDial('2.2.2.2').allowed).toBe(false);
+  });
+
+  test('releasing before counting would admit an extra session', () => {
+    // The ordering this guards against, stated explicitly: drop first and the
+    // total momentarily reads zero.
+    const m = mgr(1);
+    m.reservePendingDial('1.1.1.1');
+    m.releasePendingDial('1.1.1.1');
+    expect(m.reservePendingDial('2.2.2.2').allowed).toBe(true);
+  });
+});
+
+describe('fractional limits are rejected, not silently rounded', () => {
+  // Raised by Codex review of #72. readOptionalIntegerEnv checked
+  // Number.isFinite, so "1.5" was accepted despite the name promising an
+  // integer. The comparison `total >= 1.5` then admits 2 — the configuration
+  // says one thing and enforcement does another, the recurring defect class.
+
+  test('MAX_SESSIONS_GLOBAL rejects a fraction', () => {
+    expect(() =>
+      getRuntimeConfig({
+        INBOUND_TLS_MODE: 'off',
+        MAX_SESSIONS_GLOBAL: '1.5',
+      }),
+    ).toThrow(/MAX_SESSIONS_GLOBAL/);
+  });
+
+  test('the same guard covers the other optional integers', () => {
+    // The helper is shared by six push-timing settings; fixing it at the call
+    // site would have left those accepting fractions.
+    expect(() =>
+      getRuntimeConfig({
+        INBOUND_TLS_MODE: 'off',
+        SILENT_PUSH_INTERVAL_MS: '1500.5',
+      }),
+    ).toThrow(/SILENT_PUSH_INTERVAL_MS/);
+  });
+
+  test('whole numbers are still accepted', () => {
+    expect(
+      getRuntimeConfig({ INBOUND_TLS_MODE: 'off', MAX_SESSIONS_GLOBAL: '12' })
+        .sessions.maxGlobal,
+    ).toBe(12);
+  });
+});

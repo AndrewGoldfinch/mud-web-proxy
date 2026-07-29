@@ -54,7 +54,10 @@ export const readOptionalIntegerEnv = (
   const raw = env[name];
   if (raw === undefined || raw.trim() === '') return undefined;
   const parsed = Number(raw);
-  if (!Number.isFinite(parsed)) {
+  // isInteger, not isFinite: the name promises an integer, and callers compare
+  // against it with >=. A fractional cap of 1.5 admits 2, so the setting
+  // reports one limit and enforces another.
+  if (!Number.isInteger(parsed)) {
     fail(name, raw, 'an integer or empty');
   }
   return parsed;
