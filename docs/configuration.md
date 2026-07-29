@@ -115,6 +115,29 @@ address and tripping per-IP limits service-wide — while reading as configured.
 All four must be positive integers when set. Sessions and resume state are
 memory-local and are lost on restart.
 
+## WebSocket liveness
+
+| Variable                   | Description                                                 | Default |
+| -------------------------- | ----------------------------------------------------------- | ------- |
+| `WS_HEARTBEAT_ENABLED`     | Ping connected clients and reclaim slots from silent peers. | `true`  |
+| `WS_HEARTBEAT_INTERVAL_MS` | How often to ping.                                          | `30000` |
+| `WS_HEARTBEAT_TIMEOUT_MS`  | Silence beyond this terminates the connection.              | `90000` |
+
+These are what reclaim capacity from connections that are gone but not closed
+— a closed laptop lid, or a NAT that dropped its mapping without telling
+either end. Without them such a connection holds its session slot until
+`SESSION_TIMEOUT_HOURS` elapses, so the limits above bound live clients while
+dead ones accumulate underneath.
+
+`WS_HEARTBEAT_TIMEOUT_MS` must be greater than `WS_HEARTBEAT_INTERVAL_MS`, and
+startup fails otherwise: at or below the interval, every peer is reclaimed
+before it can answer a ping. The default leaves room for two lost pings before
+a live client is dropped.
+
+Turning the heartbeat off is supported but logs a warning, because the
+connection limits become progressively less meaningful as dead slots
+accumulate.
+
 ## Diagnostics and logging
 
 | Variable             | Description                                                                    | Default   |
