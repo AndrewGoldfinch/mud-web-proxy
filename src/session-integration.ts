@@ -37,6 +37,18 @@ import type {
   ProcessedData,
 } from './types';
 
+export type ConnectFlavor = 'typed' | 'legacy';
+
+export interface ConnectCtx {
+  flavor: ConnectFlavor;
+  host?: string;
+  port?: number;
+  deviceToken?: string;
+  width?: number;
+  height?: number;
+  debug?: boolean;
+}
+
 export interface SessionIntegrationConfig {
   sessions: {
     timeoutHours: number;
@@ -307,43 +319,69 @@ export class SessionIntegration {
     socket: SocketExtended,
     msg: ConnectRequest,
   ): Promise<void> {
+    await this.openTelnetSession(socket, {
+      flavor: 'typed',
+      host: msg.host,
+      port: msg.port,
+      deviceToken: msg.deviceToken,
+      width: msg.width,
+      height: msg.height,
+      debug: msg.debug,
+    });
+  }
+
+  /**
+   * Flavor difference 2 of 2: render a rejection. The decision is already
+   * made and identical for both protocols; only the rendering differs.
+   * Legacy is filled in by Task 4.
+   */
+  private rejectConnect(
+    socket: SocketExtended,
+    flavor: ConnectFlavor,
+    code: string,
+    reason: string,
+  ): void {
+    if (flavor === 'typed') {
+      this.sendError(socket, code, reason);
+    }
+  }
+
+  /**
+   * Open a telnet session under the target policy, connection limits, and
+   * DNS-rebinding guard. Both wire protocols come through here; ctx.flavor
+   * changes only the success frame and how a rejection is rendered.
+   */
+  private async openTelnetSession(
+    socket: SocketExtended,
+    ctx: ConnectCtx,
+  ): Promise<void> {
     const ip = this.getClientIP(socket);
 
-    this.log(`connect request to ${msg.host}:${msg.port}`, ip);
+    this.log(`connect request to ${ctx.host}:${ctx.port}`, ip);
 
-    // Enable per-client debug logging if requested
-    if (msg.debug) socket.debug = msg.debug;
+    // Enable per-client debug logging if requested.
+    // NOTE: this is a client-reachable verbosity toggle. MWP-94 item 1
+    // removes it; carried across verbatim here to keep this a pure refactor.
+    if (ctx.debug) socket.debug = ctx.debug;
 
-    const target = validateTarget(msg.host, msg.port, this.config.targets);
+    const target = validateTarget(ctx.host, ctx.port, this.config.targets);
     if (!target.allowed || !target.host || !target.port) {
-      this.log(
-        `connect rejected: ${target.reason || 'Target not allowed'}`,
-        ip,
-      );
-      this.sendError(
-        socket,
-        'invalid_request',
-        target.reason || 'Target not allowed',
-      );
+      const reason = target.reason || 'Target not allowed';
+      this.log(`connect rejected: ${reason}`, ip);
+      this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
       return;
     }
 
     // Check connection limits
-    if (msg.deviceToken) {
+    if (ctx.deviceToken) {
       const limits = this.sessionManager.enforceConnectionLimits(
-        msg.deviceToken,
+        ctx.deviceToken,
         ip,
       );
       if (!limits.allowed) {
-        this.log(
-          `connect rejected: ${limits.reason || 'Connection limit exceeded'}`,
-          ip,
-        );
-        this.sendError(
-          socket,
-          'rate_limited',
-          limits.reason || 'Connection limit exceeded',
-        );
+        const reason = limits.reason || 'Connection limit exceeded';
+        this.log(`connect rejected: ${reason}`, ip);
+        this.rejectConnect(socket, ctx.flavor, 'rate_limited', reason);
         return;
       }
     }
@@ -358,7 +396,7 @@ export class SessionIntegration {
     if (!reservation.allowed) {
       const reason = reservation.reason || 'Connection limit exceeded';
       this.log(`connect rejected: ${reason}`, ip);
-      this.sendError(socket, 'rate_limited', reason);
+      this.rejectConnect(socket, ctx.flavor, 'rate_limited', reason);
       return;
     }
 
@@ -380,7 +418,7 @@ export class SessionIntegration {
         this.sessionManager.releasePendingDial(ip);
         const reason = resolved.reason || 'Target address is not permitted';
         this.log(`connect rejected: ${reason}`, ip);
-        this.sendError(socket, 'invalid_request', reason);
+        this.rejectConnect(socket, ctx.flavor, 'invalid_request', reason);
         return;
       }
       dialAddress = resolved.address;
@@ -390,7 +428,7 @@ export class SessionIntegration {
     const session = this.sessionManager.create(
       target.host,
       target.port,
-      msg.deviceToken,
+      ctx.deviceToken,
       this.config.buffer.sizeKB * 1024,
       dialAddress,
       this.config.mudTlsMode ?? 'prefer',
@@ -400,11 +438,11 @@ export class SessionIntegration {
     this.sessionManager.releasePendingDial(ip);
 
     // Set device token and window size
-    if (msg.deviceToken) {
-      session.setDeviceToken(msg.deviceToken);
+    if (ctx.deviceToken) {
+      session.setDeviceToken(ctx.deviceToken);
     }
-    if (msg.width && msg.height) {
-      session.updateWindowSize(msg.width, msg.height);
+    if (ctx.width && ctx.height) {
+      session.updateWindowSize(ctx.width, ctx.height);
     }
 
     // Attach WebSocket to session
@@ -412,14 +450,17 @@ export class SessionIntegration {
     session.markClientForegrounded();
     this.backgroundPushScheduler.untrackSession(session.id);
 
-    // Send session response
-    const response = {
-      type: 'session',
-      sessionId: session.id,
-      token: session.authToken,
-      capabilities: ['activityToken', 'syncAck', 'echoState'],
-    };
-    socket.sendUTF(JSON.stringify(response));
+    // Flavor difference 1 of 2: a legacy client has no session concept, so it
+    // gets no frame at all — telnet data simply starts flowing.
+    if (ctx.flavor === 'typed') {
+      const response = {
+        type: 'session',
+        sessionId: session.id,
+        token: session.authToken,
+        capabilities: ['activityToken', 'syncAck', 'echoState'],
+      };
+      socket.sendUTF(JSON.stringify(response));
+    }
 
     this.log(
       `session created for ${target.host}:${target.port}`,
@@ -443,7 +484,7 @@ export class SessionIntegration {
 
       // Count this IP only after a successful connection; clientIp on the
       // session is what removeSession uses to decrement on teardown.
-      if (msg.deviceToken && ip !== 'unknown') {
+      if (ctx.deviceToken && ip !== 'unknown') {
         session.clientIp = ip;
         this.sessionManager.incrementIPCount(ip);
       }
@@ -454,7 +495,12 @@ export class SessionIntegration {
       });
     } catch (err) {
       this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
-      this.sendError(socket, 'connection_failed', (err as Error).message);
+      this.rejectConnect(
+        socket,
+        ctx.flavor,
+        'connection_failed',
+        (err as Error).message,
+      );
       this.removeSessionAndCleanup(session.id);
     }
   }
