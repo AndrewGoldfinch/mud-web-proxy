@@ -506,7 +506,7 @@ export class NotificationManager {
             : undefined;
           reason = parsed?.reason || '';
         } catch {
-          reason = '';
+          // A non-JSON body leaves `reason` at its initial empty string.
         }
 
         if (statusCode >= 200 && statusCode < 300) {

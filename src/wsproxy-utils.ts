@@ -381,7 +381,8 @@ export const authorizeSharedSecret = (
         'secret',
       );
     } catch {
-      supplied = null;
+      // A malformed URL leaves `supplied` at its initial null, which fails
+      // the check below.
     }
     if (supplied && secretsMatch(supplied, config.sharedSecret)) {
       return { authorized: true };
