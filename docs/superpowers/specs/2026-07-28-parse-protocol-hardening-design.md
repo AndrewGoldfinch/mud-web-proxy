@@ -250,10 +250,23 @@ Verification: `bun run test` and `bun run test:mock`.
 types are handled today; anything outside that set is currently ignored
 silently and will now produce an `invalid_request`. This matches MWP-91's
 wording, but MWP-91 was written without checking what the client actually
-sends. **Confirm against MUDBasher before merging.** If the client sends
-anything outside the seven — including forward-compatibility probes — this
-becomes a breaking change that needs either a client fix first or an
-ignore-list for known-benign types.
+sends.
+
+Repo evidence narrows this. The client→server types documented in
+`docs/session-integration-guide.md` and exercised in `tests/e2e/` are
+`connect`, `resume`, `input`, `naws`, and `disconnect`, plus `activityToken`
+and `syncAck`, which the proxy advertises through the
+`capabilities: ['activityToken', 'syncAck', 'echoState']` frame and the client
+therefore sends only after opting in. That is exactly the seven handled types,
+with nothing outside the set. (`challenge`/`attest`/`assert` are declared in
+`ClientMessage` but are HTTP-routed, never sent over the socket.)
+
+MUDBasher is external to this repository, so this evidence is strong but not
+conclusive. **Confirm against the client before merging.** If it sends anything
+outside the seven — including forward-compatibility probes — this becomes a
+breaking change needing either a client fix first or an ignore-list for
+known-benign types, and the ignore-list would change the recognition table in
+section 3.
 
 **Merge conflict.** PR #38 (the `process.env` sweep, +127/−72 across ~29 sites
 in `wsproxy.ts` plus `runtime-config.ts`) merged as `038feb6`. This worktree
