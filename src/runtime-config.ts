@@ -241,12 +241,19 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface HeartbeatConfig {
+  enabled: boolean;
+  intervalMs: number;
+  timeoutMs: number;
+}
+
 export interface SessionLimitsConfig {
   timeoutHours: number;
   maxPerDevice: number;
   maxPerIP: number;
   /** Undefined means unbounded; see SessionManagerConfig for the rationale. */
   maxGlobal?: number;
+  resumeGraceMs?: number;
 }
 
 export interface RuntimeConfig {
@@ -292,6 +299,9 @@ export interface RuntimeConfig {
 
   // Session limits (sibling MWP-92)
   sessions: SessionLimitsConfig;
+
+  // WebSocket liveness (sibling MWP-92)
+  heartbeat: HeartbeatConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -725,6 +735,44 @@ export const parseRuntimeConfig = (
   // TARGET_MODE=arbitrary with AUTH_MODE=none is already covered above
   // ALLOWED_ORIGINS requires allowlist to be set (unset = no restriction)
 
+  // ---- WebSocket liveness (MWP-92) ----
+  // On by default: without pings a half-open connection holds its session slot
+  // until the 24-hour session timeout, so the connection caps bound live
+  // clients while dead ones accumulate underneath.
+  const heartbeatEnabled = readBooleanEnv(env, 'WS_HEARTBEAT_ENABLED', true);
+  const heartbeatIntervalMs = readIntegerEnv(
+    env,
+    'WS_HEARTBEAT_INTERVAL_MS',
+    30_000,
+  );
+  const heartbeatTimeoutMs = readIntegerEnv(
+    env,
+    'WS_HEARTBEAT_TIMEOUT_MS',
+    90_000,
+  );
+
+  if (heartbeatIntervalMs <= 0) {
+    errors.push(
+      `WS_HEARTBEAT_INTERVAL_MS must be a positive integer (got ${heartbeatIntervalMs}).`,
+    );
+  }
+  // At or below the interval, the first sweep reclaims every peer before a
+  // ping could be answered. A configuration that disconnects all clients
+  // should fail to start rather than start and misbehave.
+  if (heartbeatTimeoutMs <= heartbeatIntervalMs) {
+    errors.push(
+      `WS_HEARTBEAT_TIMEOUT_MS (${heartbeatTimeoutMs}) must be greater than ` +
+        `WS_HEARTBEAT_INTERVAL_MS (${heartbeatIntervalMs}), or every peer is ` +
+        'reclaimed before it can answer a ping.',
+    );
+  }
+
+  const heartbeat: HeartbeatConfig = {
+    enabled: heartbeatEnabled,
+    intervalMs: heartbeatIntervalMs,
+    timeoutMs: heartbeatTimeoutMs,
+  };
+
   // ---- Session limits (MWP-92) ----
   // Previously hardcoded at wsproxy.ts:147-151, so an operator could neither
   // change them nor see them reported. A limit nobody can configure is a
@@ -746,11 +794,18 @@ export const parseRuntimeConfig = (
     );
   }
 
+  // How long a session with no attached client keeps its capacity. Default 45
+  // minutes: silent push runs every 20 minutes, so this tolerates one lost
+  // push before a backgrounded client's session is reclaimed. Reaping sooner
+  // would delete the session before the push that would have woken it.
+  const resumeGraceMinutes = readPositive('RESUME_GRACE_MINUTES', 45);
+
   const sessions: SessionLimitsConfig = {
     timeoutHours: readPositive('SESSION_TIMEOUT_HOURS', 24),
     maxPerDevice: readPositive('MAX_SESSIONS_PER_DEVICE', 5),
     maxPerIP: readPositive('MAX_SESSIONS_PER_IP', 10),
     maxGlobal: rawMaxGlobal,
+    resumeGraceMs: resumeGraceMinutes * 60 * 1000,
   };
 
   // REQUIRE_APP_AUTH without App Attest configured is not a stricter posture,
@@ -786,6 +841,7 @@ export const parseRuntimeConfig = (
     proxySharedSecret,
     trustedProxyCidrs,
     sessions,
+    heartbeat,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,
