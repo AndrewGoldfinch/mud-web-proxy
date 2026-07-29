@@ -15,8 +15,23 @@ updates:
       prefix: 'ci'
     labels:
       - dependencies
+    groups:
+      # init and analyze are one action in one repository and share a version
+      # check at runtime. Dependabot's default is a PR per action, which
+      # upgrades one half and leaves the other behind — neither PR can pass.
+      codeql-action:
+        patterns:
+          - 'github/codeql-action*'
 
-  - package-ecosystem: npm
+  # `bun`, not `npm`: this repository's only lockfile is bun.lock. The npm
+  # ecosystem edits package.json without touching it, so every pull request it
+  # opened failed `bun install --frozen-lockfile` in the quality job.
+  #
+  # The trade is that the bun ecosystem does not support Dependabot *security*
+  # updates, only version updates. Advisories are still caught on every push
+  # and pull request by the dependency-scan job (`bun audit`), so they are
+  # detected rather than auto-proposed.
+  - package-ecosystem: bun
     directory: '/'
     schedule:
       interval: weekly
