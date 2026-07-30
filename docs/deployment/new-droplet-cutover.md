@@ -5,8 +5,8 @@
 This runbook moves production from the legacy PM2/git-checkout host to a new
 Ubuntu 26.04 LTS x64 Droplet. It consumes the native host layout in
 [Native systemd deployment](systemd.md); MWP-103 supplies the verified release
-and MWP-105 supplies the systemd and Caddy files. It does not convert the old
-host in place.
+and MWP-105 supplies the systemd and Caddy files. MWP-106 owns execution of the
+production cutover. This runbook does not convert the old host in place.
 
 Complete the private cutover record before the window. Do not put production
 hostnames, addresses, Droplet IDs, secret values, resolved legacy paths, or
