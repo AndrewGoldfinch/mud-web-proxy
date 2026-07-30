@@ -197,6 +197,11 @@ Dockerfile volume would create an anonymous writable volume and orphan it for
 every container even when the feature is unused. MWP-99 owns the optional named
 volume because it owns the deployment topology.
 
+Container acceptance also runs the image read-only with App Attest disabled and
+no state mount, then requires shutdown to complete without a filesystem error.
+The shutdown flush is gated on App Attest being enabled, so setting the image's
+default state path does not turn an optional volume into an unconditional one.
+
 APNS key material is read-only operator input and is never copied into the
 image. An operator enabling APNS supplies `APNS_KEY_PATH` and mounts the key
 read-only at that path.
@@ -231,16 +236,19 @@ The test performs these checks:
 3. Start a shell in the image and require:
    - `/opt/mud-web-proxy/dist/wsproxy.js` exists
    - `/opt/mud-web-proxy/config/apple-app-attest-root-ca.pem` exists and is
-     root-owned with mode `0444`
+     root-owned with mode `0444`, and its SHA-256 matches the known Apple root
    - the three production packages resolve
    - source, tests, scripts, development dependencies, `cert.pem`, and
      `privkey.pem` are absent
-4. Create the fresh named volume `mwp-test-state`, mount it at
+4. Run the image with App Attest disabled, `--read-only`, no state volume, and
+   a short valid shutdown timing pair. Send SIGTERM and require
+   `shutdown: completed` with no read-only filesystem or failed-step log.
+5. Create the fresh named volume `mwp-test-state`, mount it at
    `/var/lib/mud-web-proxy`, and, as UID 10001, reproduce the key store's
    `mkdtemp` → write → rename → cleanup sequence. Preserve that volume for the
-   proxy run in step 6. This proves that the directory-level volume and
+   proxy run in step 7. This proves that the directory-level volume and
    ownership support the atomic persistence algorithm.
-5. Create a private Docker network. Start the pinned-Bun mock helper with the
+6. Create a private Docker network. Start the pinned-Bun mock helper with the
    repository mounted read-only, and run this exact positional CLI invocation
    on that network:
 
@@ -252,7 +260,7 @@ The test performs these checks:
    variable for its listening port. Start a separate pinned-Bun client helper
    under the same mount and network constraints.
 
-6. Start the proxy on that network with:
+7. Start the proxy on that network with:
 
    ```text
    --read-only
@@ -277,9 +285,9 @@ The test performs these checks:
    is strictly greater than the grace period, as required by
    `runtime-config.ts`; equal values are a startup error.
 
-7. Wait for `GET /health` to return HTTP 200. The acceptance script publishes
+8. Wait for `GET /health` to return HTTP 200. The acceptance script publishes
    the container port with `-p`; this works without `EXPOSE` metadata.
-8. Exercise the actual App Attest CA loader:
+9. Exercise the actual App Attest CA loader:
    - obtain a valid nonce from `/attest/challenge`
    - have the client helper encode an otherwise well-shaped App Attest CBOR
      object containing a deliberately invalid two-certificate chain
@@ -293,13 +301,13 @@ The test performs these checks:
    the CA from its compiled path; a missing or misplaced file produces the
    distinct rejected error.
 
-9. Through the separate client helper, open a real WebSocket connection, send
-   a typed `connect` request, establish the Telnet connection to the mock MUD,
-   exchange payload data in both directions, and leave the session active.
-10. Send SIGTERM to the proxy container.
-11. During the 3000 ms grace window, require `GET /health` to return HTTP 503
+10. Through the separate client helper, open a real WebSocket connection, send
+    a typed `connect` request, establish the Telnet connection to the mock MUD,
+    exchange payload data in both directions, and leave the session active.
+11. Send SIGTERM to the proxy container.
+12. During the 3000 ms grace window, require `GET /health` to return HTTP 503
     while the real session still exists.
-12. Require the container to exit within 10000 ms. Require logs to contain
+13. Require the container to exit within 10000 ms. Require logs to contain
     `shutdown: completed`, and fail if they contain any of:
     - `EROFS`
     - `read-only file system`, matched case-insensitively
@@ -309,6 +317,9 @@ The test performs these checks:
     `shutdown: completed`, so the completion line alone is not evidence that
     the read-only filesystem contract held. The negative log assertions turn
     swallowed filesystem and shutdown-step errors into acceptance failures.
+    Inspect the state volume after exit and require the preflight `{}\n` file
+    to have been atomically replaced by the flushed `{}` file, with no staging
+    directory left behind.
 
 The real session is essential: merely starting the process under
 `--read-only` would not execute connection-path behavior and could miss a new

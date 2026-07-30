@@ -89,8 +89,12 @@ creates and renames a sibling temporary directory.
 
 To upgrade Bun, change `.bun-version`, mirror that exact value in
 `package.json#engines.bun` and the digest-pinned `BUN_IMAGE` in `Dockerfile`,
-then regenerate `bun.lock` with the new runtime. CI reads `.bun-version`
-directly, and `bun run check:bun-version` enforces the package metadata mirror.
+update the pinned image occurrences in `tests/container/` and
+`tests/docker-image-contract.test.ts`, then regenerate `bun.lock` with the new
+runtime. CI reads `.bun-version` directly, and
+`bun run check:bun-version` enforces the package metadata mirror. Use
+`rg 'oven/bun:' Dockerfile tests/container tests/docker-image-contract.test.ts`
+to find every container pin.
 
 You need to have your certificates available to use wsproxy. Inbound TLS is required by default, so starting without usable certificates aborts at startup rather than quietly falling back to plaintext:
 

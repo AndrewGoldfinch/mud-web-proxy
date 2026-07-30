@@ -472,6 +472,7 @@ readonly NETWORK="${PREFIX}-network"
 readonly MOCK_CONTAINER="${PREFIX}-mud"
 readonly PROXY_CONTAINER="${PREFIX}-proxy"
 readonly CLIENT_CONTAINER="${PREFIX}-client"
+readonly NO_STATE_CONTAINER="${PREFIX}-no-state"
 readonly MOCK_DEPS="${PREFIX}-mock-deps"
 readonly CLIENT_DEPS="${PREFIX}-client-deps"
 readonly STATE_VOLUME='mwp-test-state'
@@ -479,7 +480,11 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 state_volume_created=0
 
 fail() {
-  for container in "${CLIENT_CONTAINER}" "${PROXY_CONTAINER}" "${MOCK_CONTAINER}"; do
+  for container in \
+    "${CLIENT_CONTAINER}" \
+    "${PROXY_CONTAINER}" \
+    "${MOCK_CONTAINER}" \
+    "${NO_STATE_CONTAINER}"; do
     if docker container inspect "${container}" >/dev/null 2>&1; then
       echo "container-acceptance: logs: ${container}" >&2
       docker logs "${container}" >&2 || true
@@ -493,7 +498,8 @@ cleanup() {
   docker rm -f \
     "${CLIENT_CONTAINER}" \
     "${PROXY_CONTAINER}" \
-    "${MOCK_CONTAINER}" >/dev/null 2>&1 || true
+    "${MOCK_CONTAINER}" \
+    "${NO_STATE_CONTAINER}" >/dev/null 2>&1 || true
   docker network rm "${NETWORK}" >/dev/null 2>&1 || true
   docker volume rm \
     "${MOCK_DEPS}" \
@@ -502,7 +508,9 @@ cleanup() {
     docker volume rm "${STATE_VOLUME}" >/dev/null 2>&1 || true
   fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 wait_for_log() {
   local container="$1"
@@ -552,6 +560,7 @@ docker build --pull --tag "${IMAGE}" "${REPO_ROOT}"
 docker run --rm --entrypoint sh "${IMAGE}" -ec '
   test -f /opt/mud-web-proxy/dist/wsproxy.js
   test "$(stat -c "%u:%g %a" /opt/mud-web-proxy/config/apple-app-attest-root-ca.pem)" = "0:0 444"
+  test "$(sha256sum /opt/mud-web-proxy/config/apple-app-attest-root-ca.pem | cut -d " " -f 1)" = "c778d09ac341f7fd9f8f3b19e2b815af6aed4ad4490e1e92c05cb355212a5013"
   bun -e "await import(\"cbor-x\"); await import(\"iconv-lite\"); await import(\"ws\")"
   for path in \
     /opt/mud-web-proxy/src \
@@ -567,6 +576,29 @@ docker run --rm --entrypoint sh "${IMAGE}" -ec '
   done
   test -z "$(find /opt/mud-web-proxy -type f \( -name cert.pem -o -name privkey.pem \) -print -quit)"
 '
+
+docker run --detach \
+  --name "${NO_STATE_CONTAINER}" \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --env INBOUND_TLS_MODE=off \
+  --env SHUTDOWN_GRACE_MS=1 \
+  --env SHUTDOWN_DEADLINE_MS=3000 \
+  "${IMAGE}" >/dev/null
+wait_for_log "${NO_STATE_CONTAINER}" 'server listening:'
+docker kill --signal=TERM "${NO_STATE_CONTAINER}" >/dev/null
+no_state_status="$(timeout 5s docker wait "${NO_STATE_CONTAINER}")" ||
+  fail 'disabled App Attest shutdown exceeded its deadline'
+[[ "${no_state_status}" == 0 ]] ||
+  fail "disabled App Attest proxy exited ${no_state_status}"
+no_state_logs="$(docker logs "${NO_STATE_CONTAINER}" 2>&1)"
+grep -Fq 'shutdown: completed' <<<"${no_state_logs}" ||
+  fail 'disabled App Attest shutdown did not complete'
+if grep -Eiq 'EROFS|read-only file system|shutdown: .* failed:' <<<"${no_state_logs}"; then
+  printf '%s\n' "${no_state_logs}" >&2
+  fail 'disabled App Attest wrote to the read-only root'
+fi
 
 docker volume create "${STATE_VOLUME}" >/dev/null
 state_volume_created=1
@@ -677,6 +709,17 @@ if grep -Eiq 'EROFS|read-only file system|shutdown: .* failed:' <<<"${proxy_logs
   fail 'proxy swallowed a filesystem or shutdown-step failure'
 fi
 
+docker run --rm \
+  --mount "type=volume,source=${STATE_VOLUME},target=/var/lib/mud-web-proxy" \
+  --entrypoint sh \
+  "${IMAGE}" \
+  -ec '
+    test "$(stat -c "%s" /var/lib/mud-web-proxy/attested-keys.json)" = 2
+    test "$(cat /var/lib/mud-web-proxy/attested-keys.json)" = "{}"
+    test -z "$(find /var/lib/mud-web-proxy -mindepth 1 -maxdepth 1 \
+      -type d -name ".attested-keys-*" -print -quit)"
+  '
+
 client_logs="$(docker logs "${CLIENT_CONTAINER}" 2>&1)"
 grep -Fq 'container-acceptance: ca-loaded' <<<"${client_logs}"
 grep -Fq 'container-acceptance: proxy-closed' <<<"${client_logs}"
@@ -691,10 +734,12 @@ while preserving the reason, so the helper asserts `Server restarting`.
 - [ ] **Step 4: Keep the listener fallback alive through state flush**
 
 In `wsproxy.ts`, remove `bail.unref?.()` from the bounded
-`LISTENER_CLOSE_WAIT_MS` timer. Once sockets and the listener close, that timer
-can be Bun's only referenced handle; unref'ing it lets the process exit before
-the state flush and `shutdown: completed`. The overall shutdown deadline still
-bounds the sequence.
+`LISTENER_CLOSE_WAIT_MS` timer and guard the key flush on
+`runtimeConfig.appAttest.enabled`. Once sockets and the listener close, that
+timer can be Bun's only referenced handle; unref'ing it lets the process exit
+before the state flush and `shutdown: completed`. The overall shutdown deadline
+still bounds the sequence. The enabled guard preserves the optional-volume
+contract by avoiding state writes when App Attest is disabled.
 
 - [ ] **Step 5: Make the harness executable and expose the package command**
 

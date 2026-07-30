@@ -2978,7 +2978,10 @@ const srv: ServerConfig = {
           // timer.
           name: 'flush attested keys',
           run: () => {
-            if (runtimeConfig.appAttest?.attestedKeysPath) {
+            if (
+              runtimeConfig.appAttest.enabled &&
+              runtimeConfig.appAttest.attestedKeysPath
+            ) {
               flushAttestedKeys(runtimeConfig.appAttest.attestedKeysPath);
             }
           },
