@@ -22,7 +22,7 @@ import type {
   SessionLimitsConfig,
   TelnetLimitsConfig,
 } from './runtime-config';
-import { resolveClientAddress } from './wsproxy-utils';
+import { resolveSocketAddress } from './wsproxy-utils';
 import { neutralizeControlSequences } from './log-redaction';
 import {
   recognize,
@@ -918,15 +918,10 @@ export class SessionIntegration {
    * Check if socket is part of a session
    */
   private getClientIP(socket: SocketExtended): string {
-    // Shared with wsproxy.ts. Two copies of this diverged once already,
-    // leaving the rate limiter and the logger disagreeing about the client.
-    return (
-      resolveClientAddress(
-        socket.remoteAddress || socket.req?.connection?.remoteAddress,
-        socket.req?.headers ?? {},
-        this.config.trustedProxyCidrs,
-      ) || 'unknown'
-    );
+    // Delegates to the shared wrapper. Two copies of this diverged once
+    // already, leaving the rate limiter and the logger disagreeing about the
+    // client, so there is one implementation (MWP-124).
+    return resolveSocketAddress(socket, this.config.trustedProxyCidrs);
   }
 
   hasSession(socket: SocketExtended): boolean {

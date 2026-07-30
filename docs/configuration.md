@@ -129,6 +129,52 @@ tolerates one lost push before the session is reclaimed. Shortening it below
 the push interval will reclaim sessions before the push that would have woken
 them, breaking resume for backgrounded clients.
 
+## Message rate
+
+| Variable                         | Description                                       | Default |
+| -------------------------------- | ------------------------------------------------- | ------- |
+| `MAX_MESSAGES_PER_SECOND`        | Inbound frames per second for one session.        | `60`    |
+| `MAX_MESSAGES_PER_SECOND_PER_IP` | Inbound frames per second for one client address. | `240`   |
+
+The session limits bound how many connections a client may hold; these bound how
+fast it may talk through them. Without them a client inside every connection cap
+could send frames as fast as the socket allowed — and because each `input` frame
+becomes a telnet write, the first casualty is the upstream MUD, whose own flood
+protection sees a single abusive address: this proxy's.
+
+Authentication does not substitute for this. `AUTH_MODE=shared-secret` proves a
+client is entitled to connect, not that it is behaving.
+
+Both dimensions apply, because either alone is trivially defeated: a
+per-connection limit is bypassed by opening several connections, and a
+per-address limit alone throttles a legitimate multi-session user as though they
+were one noisy client. `MAX_MESSAGES_PER_SECOND_PER_IP` must therefore be at
+least `MAX_MESSAGES_PER_SECOND`, and startup fails otherwise — below it, a single
+connection could never reach its own allowance and the per-connection limit would
+be dead configuration.
+
+The narrower limit is keyed on the **connection**, not the session, so both wire
+protocols get both dimensions: a legacy raw-telnet connection has no resumable
+session, and keying on one would have left legacy traffic bound only by the
+address allowance. It is also checked first, so a frame refused for exceeding a
+connection's own allowance does not consume the address budget its siblings
+share — addresses are shared routinely by NAT, and one abusive client should not
+throttle innocent players behind the same address.
+
+The address is the server-derived one, after `TRUSTED_PROXY_CIDRS` is applied.
+Keying on anything the client supplies would make the limit advisory.
+
+Over the limit, the frame is dropped and the client is sent one
+`rate_limited` error **per window**, not per dropped frame — replying to every
+one would amplify outbound traffic during exactly the flood being damped. The
+rejection names which dimension was hit, so an operator investigating is not
+sent after the wrong client.
+
+Defaults are far above a human at a keyboard and above what a well-behaved MUD
+client sends. Measured: a client sending 8 commands per second is never
+throttled, while 300 frames sent in a tight loop against a 10/second allowance
+delivers 9 and produces one notice.
+
 ## Shutdown
 
 | Variable               | Description                                                         | Default |
