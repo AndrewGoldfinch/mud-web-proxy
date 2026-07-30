@@ -167,6 +167,7 @@ const sessionIntegration = new SessionIntegration({
   // set is a constant pretending to be a control, and a value parsed by config
   // while enforcement reads something else is the defect class behind MWP-80.
   sessions: runtimeConfig.sessions,
+  telnet: runtimeConfig.telnet,
   buffer: {
     sizeKB: 50,
   },

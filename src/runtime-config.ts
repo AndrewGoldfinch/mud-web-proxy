@@ -241,6 +241,13 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface TelnetLimitsConfig {
+  /** Cap on one subnegotiation payload before the sequence is discarded. */
+  maxSubnegotiationBytes: number;
+  /** Per-session output buffer used for resume replay. */
+  outputBufferBytes: number;
+}
+
 export interface HeartbeatConfig {
   enabled: boolean;
   intervalMs: number;
@@ -302,6 +309,9 @@ export interface RuntimeConfig {
 
   // WebSocket liveness (sibling MWP-92)
   heartbeat: HeartbeatConfig;
+
+  // Telnet-side byte caps (sibling MWP-93)
+  telnet: TelnetLimitsConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -808,6 +818,24 @@ export const parseRuntimeConfig = (
     resumeGraceMs: resumeGraceMinutes * 60 * 1000,
   };
 
+  // ---- Telnet byte caps (MWP-93) ----
+  // The telnet parser is stateful across chunks, which is what lets it handle
+  // an IAC sequence split over a TCP boundary — and what made an unterminated
+  // subnegotiation a memory sink. Measured before the cap: 12.5 MiB streamed
+  // produced 435 MiB RSS, roughly 35x, because the accumulator is a number[].
+  // Defaults sit above what real MUDs send; a cap that breaks Aardwolf is a
+  // worse outcome than the memory it saves.
+  const maxSubnegotiationBytes = readPositive(
+    'MAX_SUBNEGOTIATION_BYTES',
+    64 * 1024,
+  );
+  const outputBufferBytes = readPositive('OUTPUT_BUFFER_BYTES', 50 * 1024);
+
+  const telnet: TelnetLimitsConfig = {
+    maxSubnegotiationBytes,
+    outputBufferBytes,
+  };
+
   // REQUIRE_APP_AUTH without App Attest configured is not a stricter posture,
   // it is a closed door: every upgrade would be rejected for missing headers
   // the client has no way to obtain, because the routes that mint them are
@@ -842,6 +870,7 @@ export const parseRuntimeConfig = (
     trustedProxyCidrs,
     sessions,
     heartbeat,
+    telnet,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,

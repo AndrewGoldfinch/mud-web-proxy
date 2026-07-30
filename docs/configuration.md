@@ -129,6 +129,34 @@ tolerates one lost push before the session is reclaimed. Shortening it below
 the push interval will reclaim sessions before the push that would have woken
 them, breaking resume for backgrounded clients.
 
+## Telnet byte caps
+
+| Variable                   | Description                                           | Default |
+| -------------------------- | ----------------------------------------------------- | ------- |
+| `MAX_SUBNEGOTIATION_BYTES` | Cap on one telnet subnegotiation payload.             | `65536` |
+| `OUTPUT_BUFFER_BYTES`      | Per-session output buffer retained for resume replay. | `51200` |
+
+The telnet parser is stateful across TCP chunks, which is what lets it handle
+an `IAC` sequence split over a packet boundary. It is also what made an
+unterminated subnegotiation a memory sink: a MUD that sends `IAC SB <option>`
+and then never sends `IAC SE` grew the accumulator for as long as it kept
+talking. Measured before the cap, 12.5 MiB streamed produced 435 MiB of RSS —
+roughly 35x, because the accumulator holds one JavaScript number per byte.
+
+In `TARGET_MODE=arbitrary` the MUD is chosen by the client, so this is memory a
+client can make the server allocate on demand, per session.
+
+On overflow the whole sequence is **discarded** and the parser consumes to the
+real `IAC SE` before resuming. It is not truncated and delivered: a truncated
+GMCP payload is invalid at best and misleading at worst, and treating the
+remaining payload as text would show the player binary. Overflow is logged once
+per sequence with the option code — per byte, the logging would itself be the
+denial of service.
+
+The default is above what real MUDs send. Aardwolf, Achaea and Discworld all
+push large MSDP/GMCP payloads, and a cap that breaks a legitimate game is a
+worse outcome than the memory it saves.
+
 ## WebSocket liveness
 
 | Variable                   | Description                                                 | Default |
