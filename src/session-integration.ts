@@ -19,6 +19,7 @@ import {
 } from './target-policy';
 import type { MudTlsMode, SessionLimitsConfig } from './runtime-config';
 import { resolveClientAddress } from './wsproxy-utils';
+import { neutralizeControlSequences } from './log-redaction';
 import {
   recognize,
   validateTyped,
@@ -45,7 +46,6 @@ export interface ConnectCtx {
   deviceToken?: string;
   width?: number;
   height?: number;
-  debug?: boolean;
 }
 
 /**
@@ -115,7 +115,12 @@ export class SessionIntegration {
     if (sessionId) parts.push(`[sid:${sessionId}]`);
     parts.push(msg);
     // eslint-disable-next-line no-console
-    console.log(parts.join(' '));
+    // Neutralized before writing (MWP-94). This logger does not go through
+    // srv.log, so it never inherited its redaction — and it logs the
+    // client-supplied target host. A host containing ANSI and a newline let a
+    // client forge an entry indistinguishable from a genuine one, which is
+    // worse than a leak: it makes the log actively misleading.
+    console.log(neutralizeControlSequences(parts.join(' ')));
   }
 
   constructor(config: Partial<SessionIntegrationConfig> = {}) {
@@ -280,16 +285,10 @@ export class SessionIntegration {
 
     const clientMsg = parsed as ClientMessage;
 
-    if (socket.debug) {
-      // Redact sensitive fields before logging
-      const sanitized = { ...o };
-      if ('token' in sanitized) sanitized.token = '***';
-      if ('deviceToken' in sanitized) sanitized.deviceToken = '***';
-      this.log(
-        `client msg: ${JSON.stringify(sanitized)}`,
-        this.getClientIP(socket),
-      );
-    }
+    // No per-message content dump. It was gated on a client-settable flag and
+    // redacted only `token` and `deviceToken`, so an `input` frame — the
+    // player's keystrokes, including anything typed at a password prompt the
+    // proxy did not recognise as one — went to the log verbatim.
 
     switch (recognition.type as KnownType) {
       case 'connect':
@@ -348,7 +347,6 @@ export class SessionIntegration {
       deviceToken: msg.deviceToken,
       width: msg.width,
       height: msg.height,
-      debug: msg.debug,
     });
   }
 
@@ -473,9 +471,11 @@ export class SessionIntegration {
 
     this.log(`connect request to ${ctx.host}:${ctx.port}`, ip);
 
-    // Enable per-client debug logging if requested.
-    // NOTE: this is a client-reachable verbosity toggle, MWP-94 item 1.
-    if (ctx.debug) socket.debug = ctx.debug;
+    // A `debug` field in the connect frame is deliberately ignored (MWP-94).
+    // It used to set socket.debug, which turned on logging of this client's
+    // own messages and its raw forwarded input — a disclosure and disk-fill
+    // vector reachable by anyone who can connect. Log level is an operator
+    // decision, taken from configuration only.
 
     const decision = this.authorizeConnect(socket, ctx);
     if (decision instanceof Promise) {

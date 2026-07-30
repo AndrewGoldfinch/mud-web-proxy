@@ -80,6 +80,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 import { HeartbeatMonitor } from './src/heartbeat';
+import { redactLogMessage } from './src/log-redaction';
 import {
   escapeDiagnosticHtml,
   getRuntimeConfig,
@@ -135,6 +136,17 @@ const Colors = {
 
 // Parsed once in runtime-config, which rejects an unrecognized value rather
 // than silently falling back to INFO as this used to.
+/**
+ * Values that must never appear in a log line, read from configuration rather
+ * than hardcoded so a secret cannot be added in one place and forgotten in the
+ * other. Recomputed per call: cheap, and it cannot go stale.
+ */
+const logSecrets = (): (string | undefined)[] => [
+  runtimeConfig.proxySharedSecret,
+  runtimeConfig.adminToken,
+  runtimeConfig.apnsTestSecret,
+];
+
 const getLogLevel = (): LogLevel => runtimeConfig.log.level;
 
 // Check if TTY for color support
@@ -2692,12 +2704,23 @@ const srv: ServerConfig = {
         messageStr += `\n${msg.stack}`;
       }
     } else {
+      // colors: false deliberately. inspect would embed its own ANSI, which the
+      // redaction below strips anyway — and stripping our own escapes to
+      // neutralize an attacker's is a fight with no winner. The logger adds
+      // colour to the level and metadata instead, after redaction.
       messageStr = util.inspect(msg, {
         depth: 3,
-        colors: useColors(),
+        colors: false,
         compact: true,
       });
     }
+
+    // Redaction happens here, once, rather than at each call site (MWP-94).
+    // Applied centrally it also covers log statements nobody has written yet,
+    // which is the only form of this guarantee that survives future changes.
+    // Secret values come from configuration, so a secret reaching a log by any
+    // route — including inside a library's error message — is removed.
+    messageStr = redactLogMessage(messageStr, { secrets: logSecrets() });
 
     // Build final output
     const metaStr = `${clientStr}${targetStr}${sidStr}`;
@@ -2809,13 +2832,15 @@ const srv: ServerConfig = {
 
   forward: function (s: SocketExtended, d: Buffer): void {
     if (s.ts) {
-      if (s.debug) {
-        if (s.password_mode) {
-          srv.logDebug('forward: **** (omitted)', s, 'ws');
-        } else {
-          srv.logDebug('forward: ' + d, s, 'ws');
-        }
-      }
+      // Shape, never content (MWP-94). This logged keystrokes verbatim unless
+      // password_mode happened to be set, and password_mode is best-effort
+      // ECHO detection — a password typed at a prompt the proxy did not
+      // recognise was logged in full. Byte count is enough to debug framing.
+      srv.logDebug(
+        `forward: ${d.length} bytes${s.password_mode ? ' (password mode)' : ''}`,
+        s,
+        'ws',
+      );
 
       // reset password mode after forwarding the message
       if (s.password_mode) {
