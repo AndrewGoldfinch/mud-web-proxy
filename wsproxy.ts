@@ -109,7 +109,6 @@ import {
   resolveClientAddress,
   resolveSocketAddress,
   readLimitedRequestBody,
-  resolveBackgroundPushEnvConfig,
   sendBase64IfOpen,
 } from './src/wsproxy-utils';
 import {
@@ -181,9 +180,13 @@ const sessionIntegration = new SessionIntegration({
       totalPerHour: 10,
     },
   },
-  backgroundPush: {
-    ...resolveBackgroundPushEnvConfig(process.env),
-  },
+  // From the parsed config, not a second read of process.env. Two parsers
+  // existed for the same six variables: runtimeConfig.backgroundPush was
+  // computed and never read, while this re-parsed them through a laxer helper
+  // that silently dropped an unparseable value where the config module aborts.
+  // Config parsed in one place while enforcement reads another is the defect
+  // class MWP-80 exists to remove, and it had survived to the end of Phase 1.
+  backgroundPush: runtimeConfig.backgroundPush,
   targets: {
     targetMode: runtimeConfig.targetMode,
     defaultHost: runtimeConfig.tnHost,

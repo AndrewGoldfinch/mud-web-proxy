@@ -1,0 +1,30 @@
+# What NOT to publish.
+#
+# npm does not read .gitignore when a .npmignore exists, and it never reads
+# .git/info/exclude — which is where the agent worktree exclusion lives. Without
+# this file, `npm pack` included 263 entries from .claude/worktrees: 98 MB and
+# 5,218 files of separate full checkouts (Phase 1 audit).
+#
+# Prefer adding entries here over a `files` allowlist in package.json, so a new
+# source directory is published by default rather than silently omitted.
+
+# Agent runtime state and worktrees
+.claude/
+
+# Local development artefacts
+cert.pem
+privkey.pem
+config/attested-keys.json
+coverage/
+*.log
+
+# Repository furniture that a consumer does not need
+.github/
+docs/superpowers/
+tests/
+scripts/
+.editorconfig
+.prettierignore
+.prettierrc.json
+eslint.config.js
+tsconfig.json
