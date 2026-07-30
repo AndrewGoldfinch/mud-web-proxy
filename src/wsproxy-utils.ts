@@ -8,59 +8,8 @@ import {
 
 const JSON_RESPONSE_HEADERS = { 'Content-Type': 'application/json' };
 
-export interface BackgroundPushEnvConfig {
-  silentPushIntervalMs?: number;
-  activityPushIntervalMs?: number;
-  activityAckTimeoutMs?: number;
-  fallbackCooldownMs?: number;
-  maxFallbacksPerHour?: number;
-  maxSnippetLength?: number;
-}
-
 export type ApnsDebugAuthResult =
   'authorized' | 'disabled' | 'diagnosticUnauthorized' | 'invalidSecret';
-
-const readOptionalNumberEnv = (
-  env: NodeJS.ProcessEnv,
-  name: string,
-): number | undefined => {
-  const raw = env[name];
-  if (raw === undefined || raw.trim() === '') return undefined;
-
-  const parsed = Number(raw);
-  return Number.isFinite(parsed) ? parsed : undefined;
-};
-
-export const resolveBackgroundPushEnvConfig = (
-  env: NodeJS.ProcessEnv,
-): BackgroundPushEnvConfig => {
-  return {
-    silentPushIntervalMs: readOptionalNumberEnv(
-      env,
-      'SILENT_PUSH_INTERVAL_MS',
-    ),
-    activityPushIntervalMs: readOptionalNumberEnv(
-      env,
-      'ACTIVITY_PUSH_INTERVAL_MS',
-    ),
-    activityAckTimeoutMs: readOptionalNumberEnv(
-      env,
-      'ACTIVITY_PUSH_ACK_TIMEOUT_MS',
-    ),
-    fallbackCooldownMs: readOptionalNumberEnv(
-      env,
-      'ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS',
-    ),
-    maxFallbacksPerHour: readOptionalNumberEnv(
-      env,
-      'ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR',
-    ),
-    maxSnippetLength: readOptionalNumberEnv(
-      env,
-      'ACTIVITY_PUSH_MAX_SNIPPET_LENGTH',
-    ),
-  };
-};
 
 const readHeaderValue = (
   headers: Record<string, string | string[] | undefined>,

@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { getRuntimeConfig } from '../src/runtime-config.js';
 import { EventEmitter } from 'events';
 import type { IncomingMessage, ServerResponse } from 'http';
 import {
@@ -6,7 +7,6 @@ import {
   encodeTelnetOutbound,
   formatMissingTypeLogMessage,
   readLimitedRequestBody,
-  resolveBackgroundPushEnvConfig,
   sendBase64IfOpen,
 } from '../src/wsproxy-utils.js';
 
@@ -38,17 +38,32 @@ class MockResponse {
 }
 
 describe('wsproxy utility regressions', () => {
-  test('preserves explicit zero values in background push env config', () => {
-    expect(
-      resolveBackgroundPushEnvConfig({
-        SILENT_PUSH_INTERVAL_MS: '0',
-        ACTIVITY_PUSH_INTERVAL_MS: '1500',
+  test('an unparseable push interval aborts startup, it is not dropped', () => {
+    // This replaces a test that asserted the opposite: that
+    // ACTIVITY_PUSH_ACK_TIMEOUT_MS='not-a-number' silently became undefined.
+    // That test described a second, laxer parser for six variables the config
+    // module already owned — and blessed the silent fallback MWP-80 exists to
+    // remove. An operator who mistypes a timing value should be told, not have
+    // the setting quietly vanish.
+    expect(() =>
+      getRuntimeConfig({
+        INBOUND_TLS_MODE: 'off',
         ACTIVITY_PUSH_ACK_TIMEOUT_MS: 'not-a-number',
       }),
-    ).toMatchObject({
+    ).toThrow(/ACTIVITY_PUSH_ACK_TIMEOUT_MS/);
+  });
+
+  test('an explicit zero is preserved, not treated as unset', () => {
+    // The one property worth keeping from the removed test: 0 is a meaningful
+    // value for an interval and must survive the optional-integer path.
+    const { backgroundPush } = getRuntimeConfig({
+      INBOUND_TLS_MODE: 'off',
+      SILENT_PUSH_INTERVAL_MS: '0',
+      ACTIVITY_PUSH_INTERVAL_MS: '1500',
+    });
+    expect(backgroundPush).toMatchObject({
       silentPushIntervalMs: 0,
       activityPushIntervalMs: 1500,
-      activityAckTimeoutMs: undefined,
     });
   });
 
