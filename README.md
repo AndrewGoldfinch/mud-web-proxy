@@ -82,6 +82,14 @@ Compose own port publication and the HTTP readiness probe because that layer
 selects the internal TLS mode. Docker port publication still works without
 `EXPOSE`.
 
+### Native systemd deployment
+
+The preferred single-VM deployment uses immutable releases, a versioned Bun
+runtime, a hardened systemd service on loopback, and host Caddy for HTTPS/WSS.
+See [Native systemd deployment](docs/deployment/systemd.md). The systemd unit
+and native release bundle land in MWP-105 and MWP-103 respectively; the guide
+already defines the filesystem and operational contract they must implement.
+
 App Attest is disabled unless both `APPATTEST_BUNDLE_ID` and
 `APPATTEST_TEAM_ID` are set. When enabled, mount the writable directory
 `/var/lib/mud-web-proxy`, not the `attested-keys.json` file; atomic persistence
