@@ -243,7 +243,7 @@ The test performs these checks:
 4. Run the image with App Attest disabled, `--read-only`, no state volume, and
    a short valid shutdown timing pair. Send SIGTERM and require
    `shutdown: completed` with no read-only filesystem or failed-step log.
-5. Create the fresh named volume `mwp-test-state`, mount it at
+5. Create a fresh per-run named state volume, mount it at
    `/var/lib/mud-web-proxy`, and, as UID 10001, reproduce the key store's
    `mkdtemp` → write → rename → cleanup sequence. Preserve that volume for the
    proxy run in step 7. This proves that the directory-level volume and
@@ -257,8 +257,11 @@ The test performs these checks:
    ```
 
    Port 6300 is passed through `argv[2]`; the mock does not read an environment
-   variable for its listening port. Start a separate pinned-Bun client helper
-   under the same mount and network constraints.
+   variable for its listening port. It imports only Bun built-ins and therefore
+   needs no dependency tree. Start a separate pinned-Bun client helper with its
+   source mounted read-only beside a production dependency volume, so module
+   resolution is structural and does not depend on host packages or
+   `NODE_PATH`.
 
 7. Start the proxy on that network with:
 
@@ -266,7 +269,7 @@ The test performs these checks:
    --read-only
    --cap-drop=ALL
    --security-opt=no-new-privileges
-   --mount type=volume,source=mwp-test-state,target=/var/lib/mud-web-proxy
+   --mount type=volume,source=<per-run-state>,target=/var/lib/mud-web-proxy
    BIND_HOST=0.0.0.0
    INBOUND_TLS_MODE=off
    ALLOW_INSECURE_INBOUND_NO_TLS=true

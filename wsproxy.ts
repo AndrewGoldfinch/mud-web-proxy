@@ -2961,9 +2961,10 @@ const srv: ServerConfig = {
             new Promise<void>((resolve) => {
               if (!httpServer) return resolve();
               const bail = setTimeout(resolve, LISTENER_CLOSE_WAIT_MS);
-              // Keep this fallback referenced. Once sockets and the listener
-              // are closed, it can be the only handle keeping Bun alive long
-              // enough to flush state and report shutdown completion.
+              // In Bun 1.3.14, unref caused the container to exit here before
+              // flushing state or logging shutdown completion. Keep the
+              // bounded fallback referenced; the container acceptance test
+              // asserts both later steps run.
               httpServer.close(() => {
                 clearTimeout(bail);
                 resolve();

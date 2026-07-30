@@ -473,9 +473,8 @@ readonly MOCK_CONTAINER="${PREFIX}-mud"
 readonly PROXY_CONTAINER="${PREFIX}-proxy"
 readonly CLIENT_CONTAINER="${PREFIX}-client"
 readonly NO_STATE_CONTAINER="${PREFIX}-no-state"
-readonly MOCK_DEPS="${PREFIX}-mock-deps"
 readonly CLIENT_DEPS="${PREFIX}-client-deps"
-readonly STATE_VOLUME='mwp-test-state'
+readonly STATE_VOLUME="${PREFIX}-state"
 readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 state_volume_created=0
 
@@ -501,9 +500,7 @@ cleanup() {
     "${MOCK_CONTAINER}" \
     "${NO_STATE_CONTAINER}" >/dev/null 2>&1 || true
   docker network rm "${NETWORK}" >/dev/null 2>&1 || true
-  docker volume rm \
-    "${MOCK_DEPS}" \
-    "${CLIENT_DEPS}" >/dev/null 2>&1 || true
+  docker volume rm "${CLIENT_DEPS}" >/dev/null 2>&1 || true
   if (( state_volume_created == 1 )); then
     docker volume rm "${STATE_VOLUME}" >/dev/null 2>&1 || true
   fi
@@ -618,7 +615,6 @@ docker run --rm \
     fs.rmSync(staging, { recursive: true });
   '
 
-prepare_helper_deps "${MOCK_DEPS}"
 prepare_helper_deps "${CLIENT_DEPS}"
 docker network create "${NETWORK}" >/dev/null
 
@@ -627,8 +623,6 @@ docker run --detach \
   --network "${NETWORK}" \
   --network-alias mwp-test-mud \
   --mount "type=bind,source=${REPO_ROOT},target=/repo,readonly" \
-  --mount "type=volume,source=${MOCK_DEPS},target=/workspace/node_modules" \
-  --env NODE_PATH=/workspace/node_modules \
   --workdir /repo \
   "${BUN_IMAGE}" \
   bun /repo/tests/e2e/mock-mud.ts 6300 generic >/dev/null
@@ -671,11 +665,11 @@ docker run --detach \
   --name "${CLIENT_CONTAINER}" \
   --network "${NETWORK}" \
   --mount "type=bind,source=${REPO_ROOT},target=/repo,readonly" \
-  --mount "type=volume,source=${CLIENT_DEPS},target=/workspace/node_modules" \
-  --env NODE_PATH=/workspace/node_modules \
-  --workdir /repo \
+  --mount "type=bind,source=${REPO_ROOT}/tests/container/acceptance-client.ts,target=/home/bun/app/acceptance-client.ts,readonly" \
+  --mount "type=volume,source=${CLIENT_DEPS},target=/home/bun/app/node_modules" \
+  --workdir /home/bun/app \
   "${BUN_IMAGE}" \
-  bun /repo/tests/container/acceptance-client.ts >/dev/null
+  bun /home/bun/app/acceptance-client.ts >/dev/null
 wait_for_log "${CLIENT_CONTAINER}" 'container-acceptance: session-ready'
 
 docker kill --signal=TERM "${PROXY_CONTAINER}" >/dev/null
