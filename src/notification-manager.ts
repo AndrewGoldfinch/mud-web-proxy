@@ -19,6 +19,7 @@ import type {
   ActivityContentState,
 } from './types';
 import { TriggerMatcher } from './trigger-matcher';
+import { tokenSummary } from './log-redaction';
 
 export interface NotificationManagerConfig {
   apns?: APNSConfig;
@@ -723,12 +724,9 @@ export class NotificationManager {
     };
   }
 
+  /** Delegates to the shared helper so there is only one implementation. */
   private redactToken(token: string): string {
-    const trimmed = token.trim();
-    if (!trimmed) {
-      return '<empty>';
-    }
-    return `${trimmed.slice(0, 8)}... (len=${trimmed.length})`;
+    return tokenSummary(token);
   }
 
   private logFailure(message: string): void {

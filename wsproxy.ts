@@ -81,6 +81,10 @@ import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 import { HeartbeatMonitor } from './src/heartbeat';
 import {
+  redactLogMessage,
+  tokenSummary as summarizeToken,
+} from './src/log-redaction';
+import {
   escapeDiagnosticHtml,
   getRuntimeConfig,
   LogLevel,
@@ -135,6 +139,17 @@ const Colors = {
 
 // Parsed once in runtime-config, which rejects an unrecognized value rather
 // than silently falling back to INFO as this used to.
+/**
+ * Values that must never appear in a log line, read from configuration rather
+ * than hardcoded so a secret cannot be added in one place and forgotten in the
+ * other. Recomputed per call: cheap, and it cannot go stale.
+ */
+const logSecrets = (): (string | undefined)[] => [
+  runtimeConfig.proxySharedSecret,
+  runtimeConfig.adminToken,
+  runtimeConfig.apnsTestSecret,
+];
+
 const getLogLevel = (): LogLevel => runtimeConfig.log.level;
 
 // Check if TTY for color support
@@ -1156,9 +1171,7 @@ const srv: ServerConfig = {
       const assertionStr = typeof assertion === 'string' ? assertion : '';
       const nonceStr = typeof nonce === 'string' ? nonce : '';
       const clientHashStr = typeof clientHash === 'string' ? clientHash : '';
-      const keySummary = keyIdStr
-        ? `${keyIdStr.slice(0, 8)}... (len=${keyIdStr.length})`
-        : '<missing>';
+      const keySummary = keyIdStr ? summarizeToken(keyIdStr) : '<missing>';
       const assertionHasSpaces = assertionStr.includes(' ');
       return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length} clientHashLen=${clientHashStr.length} assertionHasSpaces=${assertionHasSpaces}`;
     };
@@ -1375,16 +1388,16 @@ const srv: ServerConfig = {
                 targetDeviceToken,
                 resolvedSessionId,
               );
-            const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
+            const tokenLabel = summarizeToken(targetDeviceToken);
             if (sent) {
               srv.logInfo(
-                `APNS silent push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS silent push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
             } else {
               srv.logWarn(
-                `APNS silent push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS silent push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
@@ -1398,7 +1411,7 @@ const srv: ServerConfig = {
               JSON.stringify({
                 sent,
                 sessionId: resolvedSessionId,
-                deviceToken: tokenSummary,
+                deviceToken: tokenLabel,
                 notifications: status,
               }),
             );
@@ -1523,16 +1536,16 @@ const srv: ServerConfig = {
                   type: 'debugAlert',
                 },
               );
-            const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
+            const tokenLabel = summarizeToken(targetDeviceToken);
             if (sent) {
               srv.logInfo(
-                `APNS alert push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS alert push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
             } else {
               srv.logWarn(
-                `APNS alert push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS alert push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
@@ -1546,7 +1559,7 @@ const srv: ServerConfig = {
               JSON.stringify({
                 sent,
                 sessionId: resolvedSessionId,
-                deviceToken: tokenSummary,
+                deviceToken: tokenLabel,
                 notifications: status,
               }),
             );
@@ -1622,7 +1635,7 @@ const srv: ServerConfig = {
             }
             if (!validateAndConsumeNonce(body.nonce)) {
               srv.logWarn(
-                `App Attest register rejected: invalid nonce keyId=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)}`,
+                `App Attest register rejected: invalid nonce keyId=${summarizeToken(body.keyId)} peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
@@ -1653,7 +1666,7 @@ const srv: ServerConfig = {
             });
             debouncedSaveAttestedKeys(keysPath);
             srv.logInfo(
-              `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)} keySource=${result.keySource} coseExtracted=${result.coseKeyExtracted} keyIdMatchesCose=${result.keyIdMatchesCoseHash} keyIdMatchesCert=${result.keyIdMatchesCertHash}`,
+              `Registered App Attest key=${summarizeToken(body.keyId)} peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)} keySource=${result.keySource} coseExtracted=${result.coseKeyExtracted} keyIdMatchesCose=${result.keyIdMatchesCoseHash} keyIdMatchesCert=${result.keyIdMatchesCertHash}`,
               undefined,
               'auth',
             );
@@ -1867,7 +1880,7 @@ const srv: ServerConfig = {
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);
               srv.logInfo(
-                `App Attest verified keyId=${keyId.slice(0, 8)}... signCount=${previousSignCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
+                `App Attest verified keyId=${summarizeToken(keyId)} signCount=${previousSignCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
@@ -2692,12 +2705,23 @@ const srv: ServerConfig = {
         messageStr += `\n${msg.stack}`;
       }
     } else {
+      // colors: false deliberately. inspect would embed its own ANSI, which the
+      // redaction below strips anyway — and stripping our own escapes to
+      // neutralize an attacker's is a fight with no winner. The logger adds
+      // colour to the level and metadata instead, after redaction.
       messageStr = util.inspect(msg, {
         depth: 3,
-        colors: useColors(),
+        colors: false,
         compact: true,
       });
     }
+
+    // Redaction happens here, once, rather than at each call site (MWP-94).
+    // Applied centrally it also covers log statements nobody has written yet,
+    // which is the only form of this guarantee that survives future changes.
+    // Secret values come from configuration, so a secret reaching a log by any
+    // route — including inside a library's error message — is removed.
+    messageStr = redactLogMessage(messageStr, { secrets: logSecrets() });
 
     // Build final output
     const metaStr = `${clientStr}${targetStr}${sidStr}`;
@@ -2809,13 +2833,15 @@ const srv: ServerConfig = {
 
   forward: function (s: SocketExtended, d: Buffer): void {
     if (s.ts) {
-      if (s.debug) {
-        if (s.password_mode) {
-          srv.logDebug('forward: **** (omitted)', s, 'ws');
-        } else {
-          srv.logDebug('forward: ' + d, s, 'ws');
-        }
-      }
+      // Shape, never content (MWP-94). This logged keystrokes verbatim unless
+      // password_mode happened to be set, and password_mode is best-effort
+      // ECHO detection — a password typed at a prompt the proxy did not
+      // recognise was logged in full. Byte count is enough to debug framing.
+      srv.logDebug(
+        `forward: ${d.length} bytes${s.password_mode ? ' (password mode)' : ''}`,
+        s,
+        'ws',
+      );
 
       // reset password mode after forwarding the message
       if (s.password_mode) {
