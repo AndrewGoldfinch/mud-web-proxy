@@ -123,3 +123,22 @@ export const redactLogMessage = (
 
   return text;
 };
+
+/**
+ * A log-safe summary of a credential: device token, App Attest key id, or any
+ * other value that identifies while also authenticating.
+ *
+ * Several call sites each built their own `value.slice(0, 8) + '... (len=N)'`.
+ * A prefix of a credential is credential material — enough to correlate, and
+ * also a genuine fragment of a real secret, so "redacted" in name only. Worse,
+ * the duplication meant fixing one site left six others leaking, which is
+ * exactly what happened. One helper, used everywhere.
+ *
+ * Length is retained: it is genuinely useful for spotting a truncated or
+ * malformed token and reveals nothing.
+ */
+export const tokenSummary = (value: string): string => {
+  const trimmed = value.trim();
+  if (!trimmed) return '<empty>';
+  return `${shortHash(trimmed)} (len=${trimmed.length})`;
+};

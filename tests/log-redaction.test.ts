@@ -25,6 +25,7 @@ import {
   neutralizeControlSequences,
   redactLogMessage,
   shortHash,
+  tokenSummary,
 } from '../src/log-redaction.js';
 
 describe('secrets are removed by value', () => {
@@ -179,8 +180,11 @@ describe('device tokens are hashed, not truncated', () => {
     // Logging the first 8 characters is credential material in a log file:
     // enough to correlate, and also a genuine fragment of a real secret.
     const nm = readFileSync('src/notification-manager.ts', 'utf8');
-    expect(nm).not.toMatch(/trimmed\.slice\(0,\s*8\)/);
-    expect(nm).toMatch(/shortHash\(trimmed\)/);
+    // The property, not the implementation: an earlier version of this asserted
+    // a literal `shortHash(trimmed)` call and broke when the helper was shared,
+    // even though nothing about the behaviour had changed.
+    expect(nm).not.toMatch(/slice\(0,\s*8\)/);
+    expect(nm).toMatch(/tokenSummary/);
   });
 });
 
@@ -208,5 +212,49 @@ describe('a client cannot inject or forge log lines', () => {
     // read logs at all.
     expect(out).toContain('evil');
     expect(out).toContain('connect request to');
+  });
+});
+
+describe('credential summaries hash rather than truncate', () => {
+  // Raised by Codex review of #76. The first fix covered
+  // NotificationManager's private helper and missed six other sites, each of
+  // which had rolled its own `slice(0, 8)`. The duplication is why the miss
+  // happened, so this is one exported helper used everywhere.
+
+  test('the summary contains no prefix of the value', () => {
+    // Built rather than written as a literal. A 32-character hex string in the
+    // source is indistinguishable from a real credential to a secret scanner —
+    // gitleaks flagged the literal version of this line as a generic-api-key —
+    // and allowlisting it would have taught the scanner to ignore exactly the
+    // shape it exists to catch.
+    const token = Array.from({ length: 8 }, (_, i) => `dead${i}beef`).join('');
+    const summary = tokenSummary(token);
+    expect(summary).not.toContain(token.slice(0, 8));
+    expect(summary).not.toContain(token);
+  });
+
+  test('it keeps the length, which is diagnostic and not sensitive', () => {
+    expect(tokenSummary('0123456789')).toContain('len=10');
+  });
+
+  test('it is stable, so lines still correlate', () => {
+    expect(tokenSummary('same-token')).toBe(tokenSummary('same-token'));
+  });
+
+  test('empty and whitespace values are reported, not hashed', () => {
+    expect(tokenSummary('')).toBe('<empty>');
+    expect(tokenSummary('   ')).toBe('<empty>');
+  });
+
+  test('no call site truncates a device token or App Attest key id', () => {
+    // The mechanical check the review would have caught earlier: a prefix of a
+    // credential is credential material, wherever it is built.
+    const proxy = readFileSync('wsproxy.ts', 'utf8');
+    expect(proxy).not.toMatch(/targetDeviceToken\.slice\(0,\s*8\)/);
+    expect(proxy).not.toMatch(/keyId(?:Str)?\.slice\(0,\s*8\)/);
+    expect(proxy).not.toMatch(/body\.keyId\.slice\(0,\s*8\)/);
+
+    const nm = readFileSync('src/notification-manager.ts', 'utf8');
+    expect(nm).not.toMatch(/trimmed\.slice\(0,\s*8\)/);
   });
 });

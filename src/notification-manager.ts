@@ -19,7 +19,7 @@ import type {
   ActivityContentState,
 } from './types';
 import { TriggerMatcher } from './trigger-matcher';
-import { shortHash } from './log-redaction';
+import { tokenSummary } from './log-redaction';
 
 export interface NotificationManagerConfig {
   apns?: APNSConfig;
@@ -724,22 +724,9 @@ export class NotificationManager {
     };
   }
 
-  /**
-   * A stable label for a device or activity token.
-   *
-   * Previously this logged the token's first 8 characters, which is credential
-   * material in a log file — enough to correlate, but also a real fragment of
-   * a real secret, and "redacted" in name only. A hash correlates just as well
-   * across lines while holding nothing (MWP-94). Length is kept because it is
-   * genuinely useful for spotting a truncated or malformed token and reveals
-   * nothing.
-   */
+  /** Delegates to the shared helper so there is only one implementation. */
   private redactToken(token: string): string {
-    const trimmed = token.trim();
-    if (!trimmed) {
-      return '<empty>';
-    }
-    return `${shortHash(trimmed)} (len=${trimmed.length})`;
+    return tokenSummary(token);
   }
 
   private logFailure(message: string): void {

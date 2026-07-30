@@ -80,7 +80,10 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 import { HeartbeatMonitor } from './src/heartbeat';
-import { redactLogMessage } from './src/log-redaction';
+import {
+  redactLogMessage,
+  tokenSummary as summarizeToken,
+} from './src/log-redaction';
 import {
   escapeDiagnosticHtml,
   getRuntimeConfig,
@@ -1168,9 +1171,7 @@ const srv: ServerConfig = {
       const assertionStr = typeof assertion === 'string' ? assertion : '';
       const nonceStr = typeof nonce === 'string' ? nonce : '';
       const clientHashStr = typeof clientHash === 'string' ? clientHash : '';
-      const keySummary = keyIdStr
-        ? `${keyIdStr.slice(0, 8)}... (len=${keyIdStr.length})`
-        : '<missing>';
+      const keySummary = keyIdStr ? summarizeToken(keyIdStr) : '<missing>';
       const assertionHasSpaces = assertionStr.includes(' ');
       return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length} clientHashLen=${clientHashStr.length} assertionHasSpaces=${assertionHasSpaces}`;
     };
@@ -1387,16 +1388,16 @@ const srv: ServerConfig = {
                 targetDeviceToken,
                 resolvedSessionId,
               );
-            const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
+            const tokenLabel = summarizeToken(targetDeviceToken);
             if (sent) {
               srv.logInfo(
-                `APNS silent push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS silent push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
             } else {
               srv.logWarn(
-                `APNS silent push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS silent push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
@@ -1410,7 +1411,7 @@ const srv: ServerConfig = {
               JSON.stringify({
                 sent,
                 sessionId: resolvedSessionId,
-                deviceToken: tokenSummary,
+                deviceToken: tokenLabel,
                 notifications: status,
               }),
             );
@@ -1535,16 +1536,16 @@ const srv: ServerConfig = {
                   type: 'debugAlert',
                 },
               );
-            const tokenSummary = `${targetDeviceToken.slice(0, 8)}... (len=${targetDeviceToken.length})`;
+            const tokenLabel = summarizeToken(targetDeviceToken);
             if (sent) {
               srv.logInfo(
-                `APNS alert push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS alert push test sent peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
             } else {
               srv.logWarn(
-                `APNS alert push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenSummary}`,
+                `APNS alert push test failed peer=${requestPeer(req)} sessionId=${resolvedSessionId} deviceToken=${tokenLabel}`,
                 undefined,
                 'auth',
               );
@@ -1558,7 +1559,7 @@ const srv: ServerConfig = {
               JSON.stringify({
                 sent,
                 sessionId: resolvedSessionId,
-                deviceToken: tokenSummary,
+                deviceToken: tokenLabel,
                 notifications: status,
               }),
             );
@@ -1634,7 +1635,7 @@ const srv: ServerConfig = {
             }
             if (!validateAndConsumeNonce(body.nonce)) {
               srv.logWarn(
-                `App Attest register rejected: invalid nonce keyId=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)}`,
+                `App Attest register rejected: invalid nonce keyId=${summarizeToken(body.keyId)} peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
@@ -1665,7 +1666,7 @@ const srv: ServerConfig = {
             });
             debouncedSaveAttestedKeys(keysPath);
             srv.logInfo(
-              `Registered App Attest key=${body.keyId.slice(0, 8)}... peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)} keySource=${result.keySource} coseExtracted=${result.coseKeyExtracted} keyIdMatchesCose=${result.keyIdMatchesCoseHash} keyIdMatchesCert=${result.keyIdMatchesCertHash}`,
+              `Registered App Attest key=${summarizeToken(body.keyId)} peer=${requestPeer(req)} hasAlternateKey=${Boolean(result.alternatePublicKey)} keySource=${result.keySource} coseExtracted=${result.coseKeyExtracted} keyIdMatchesCose=${result.keyIdMatchesCoseHash} keyIdMatchesCert=${result.keyIdMatchesCertHash}`,
               undefined,
               'auth',
             );
@@ -1879,7 +1880,7 @@ const srv: ServerConfig = {
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);
               srv.logInfo(
-                `App Attest verified keyId=${keyId.slice(0, 8)}... signCount=${previousSignCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
+                `App Attest verified keyId=${summarizeToken(keyId)} signCount=${previousSignCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
