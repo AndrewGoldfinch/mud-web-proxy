@@ -11,9 +11,9 @@ proxy as a fixed non-root user, contains no source, tests, development
 dependencies, or private TLS material, and works with a read-only root
 filesystem, all Linux capabilities dropped, and `no-new-privileges`.
 
-This issue builds the proxy image only. MWP-99 will define the Caddy and proxy
-Compose services, internal networking, readiness probe, and optional App Attest
-state volume.
+This issue builds the proxy image only. MWP-100 will define the Caddy and proxy
+Compose services and internal networking. MWP-101 will define the readiness
+probe and optional App Attest state volume.
 
 ## Base image and build stages
 
@@ -123,7 +123,7 @@ The exec-form entrypoint makes Bun PID 1, so Docker's SIGTERM reaches the
 signal handlers implemented by MWP-96. No shell wrapper or process manager sits
 between Docker and the proxy.
 
-The image declares no `EXPOSE` instruction. MWP-99 will connect Caddy to port
+The image declares no `EXPOSE` instruction. MWP-100 will connect Caddy to port
 6200 on an internal network and publish only Caddy's ports 80 and 443.
 `EXPOSE` is image metadata, not a prerequisite for networking: Docker's `-p`
 and Compose port or network configuration can still reach an undeclared
@@ -135,7 +135,7 @@ The image retains the application's secure defaults. It does not bake in the
 Caddy topology by changing `BIND_HOST`, `INBOUND_TLS_MODE`, or
 `ALLOW_INSECURE_INBOUND_NO_TLS`.
 
-MWP-99 must explicitly set all three values for the internal plaintext hop:
+MWP-100 must explicitly set all three values for the internal plaintext hop:
 
 ```text
 BIND_HOST=0.0.0.0
@@ -158,7 +158,7 @@ No image-level `HEALTHCHECK` is defined. The correct scheme is controlled by
 deployment layer. Hard-coding HTTP in the image would break an operator who
 terminates TLS in-process; constructing an HTTPS loopback probe would fail
 normal hostname verification for a certificate issued to the public host.
-MWP-99 will define the HTTP readiness probe after it explicitly selects
+MWP-101 will define the HTTP readiness probe after MWP-100 explicitly selects
 `INBOUND_TLS_MODE=off`.
 
 This intentionally supersedes MWP-98's original image-level `HEALTHCHECK`
@@ -174,7 +174,7 @@ WebSocket-to-Telnet session before graceful shutdown.
 
 App Attest persists atomically by calling `fs.mkdtempSync` inside the directory
 containing `ATTESTED_KEYS_PATH`, writing a temporary file, and renaming it over
-the live JSON file. MWP-99 must therefore mount a writable named volume at the
+the live JSON file. MWP-101 must therefore mount a writable named volume at the
 directory:
 
 ```text
@@ -194,8 +194,8 @@ UID/GID `10001:10001`.
 The Dockerfile creates `/var/lib/mud-web-proxy` with that ownership but does
 not declare `VOLUME`. App Attest is disabled by default, and an unconditional
 Dockerfile volume would create an anonymous writable volume and orphan it for
-every container even when the feature is unused. MWP-99 owns the optional named
-volume because it owns the deployment topology.
+every container even when the feature is unused. MWP-101 owns the optional
+named volume because it owns the deployment's writable-state contract.
 
 Container acceptance also runs the image read-only with App Attest disabled and
 no state mount, then requires shutdown to complete without a filesystem error.

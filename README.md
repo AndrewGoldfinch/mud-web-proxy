@@ -56,7 +56,7 @@ docker build --pull -t mud-web-proxy:local .
 ```
 
 The supported Phase 2 deployment places Caddy in front of the proxy. Until the
-Compose topology lands in MWP-99, this loopback-only command exercises the same
+Compose topology lands in MWP-100, this loopback-only command exercises the same
 internal plaintext hop without exposing port 6200 beyond the host:
 
 ```bash
