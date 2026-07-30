@@ -193,17 +193,8 @@ export class TelnetParser {
         case State.SUBNEG:
           if (byte === IAC) {
             this.state = State.SUBNEG_IAC;
-          } else if (this.subnegBuffer.length >= this.maxSubnegotiationBytes) {
-            // Over the cap. Drop what was collected and consume the rest of the
-            // sequence without keeping it, rather than truncating and carrying
-            // on: a truncated GMCP payload is invalid at best and misleading at
-            // worst, and treating the remaining payload as text would hand the
-            // player binary. Discarding to the real IAC SE resynchronizes.
-            this.logSubnegOverflow();
-            this.subnegBuffer = [];
-            this.state = State.SUBNEG_DISCARD;
           } else {
-            this.subnegBuffer.push(byte);
+            this.appendSubnegByte(byte);
           }
           break;
 
@@ -216,12 +207,13 @@ export class TelnetParser {
           if (byte === SE) {
             this.state = State.TEXT;
             this.subnegOverflowLogged = false;
-          } else if (byte === IAC) {
-            // Escaped IAC in the discarded payload; keep discarding.
-            this.state = State.SUBNEG_DISCARD;
           } else {
-            this.state = State.TEXT;
-            this.subnegOverflowLogged = false;
+            // Anything else — an escaped IAC, or IAC NOP and friends — keeps
+            // the discard going. Returning to TEXT here emitted the rest of the
+            // payload as game text and left the real IAC SE unrecognised as its
+            // terminator, which is the desynchronization this state exists to
+            // prevent. Only the genuine terminator ends the sequence.
+            this.state = State.SUBNEG_DISCARD;
           }
           break;
 
@@ -235,9 +227,13 @@ export class TelnetParser {
             );
             this.state = State.TEXT;
           } else if (byte === IAC) {
-            // Escaped IAC inside subneg
-            this.subnegBuffer.push(0xff);
-            this.state = State.SUBNEG;
+            // Escaped IAC inside subneg. Goes through the same choke point as
+            // any other payload byte: this push used to be unconditional, so a
+            // payload of nothing but legal IAC IAC pairs grew the buffer with
+            // the cap never consulted — 10,000 entries against a cap of 8.
+            if (this.appendSubnegByte(0xff)) {
+              this.state = State.SUBNEG;
+            }
           } else {
             // Unexpected byte after IAC in subneg, treat as end
             this.state = State.TEXT;
@@ -264,6 +260,33 @@ export class TelnetParser {
       segments: output.segments,
       gmcpMessages: output.gmcpMessages,
     };
+  }
+
+  /**
+   * Append one payload byte, or begin discarding if that would exceed the cap.
+   *
+   * Every path that grows subnegBuffer goes through here. It was previously
+   * checked in one branch only, and the escaped-IAC branch pushed
+   * unconditionally — so the cap was bypassable by a payload made entirely of
+   * legal `IAC IAC` pairs. One choke point is the difference between a cap and
+   * the appearance of one.
+   *
+   * Returns true if the byte was stored, false if the sequence is now being
+   * discarded.
+   */
+  private appendSubnegByte(byte: number): boolean {
+    if (this.subnegBuffer.length >= this.maxSubnegotiationBytes) {
+      // Drop what was collected and consume the rest without keeping it, rather
+      // than truncating and carrying on: a truncated GMCP payload is invalid at
+      // best and misleading at worst, and treating the remaining payload as
+      // text would hand the player binary.
+      this.logSubnegOverflow();
+      this.subnegBuffer = [];
+      this.state = State.SUBNEG_DISCARD;
+      return false;
+    }
+    this.subnegBuffer.push(byte);
+    return true;
   }
 
   /**

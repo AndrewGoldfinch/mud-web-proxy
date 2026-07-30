@@ -137,3 +137,72 @@ describe('legitimate payloads are unaffected', () => {
     expect(out.gmcpMessages[0].package).toBe('Core.Supports');
   });
 });
+
+describe('the cap cannot be bypassed by escaped IAC bytes', () => {
+  // Raised by Codex review of #77, and it defeated the whole fix. In
+  // State.SUBNEG the `byte === IAC` branch was taken BEFORE the length check,
+  // and SUBNEG_IAC then pushed 0xff unconditionally — so a payload made only of
+  // legal `IAC IAC` pairs grew the buffer with the cap never consulted.
+  // Reproduced: 10,000 entries against a cap of 8.
+
+  test('a payload of only escaped IAC pairs is still bounded', () => {
+    const p = parser(8);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.alloc(20000, IAC));
+
+    expect(bufferLength(p)).toBeLessThanOrEqual(8);
+  });
+
+  test('escaped IAC pairs mixed with ordinary bytes are bounded', () => {
+    const p = parser(64);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    for (let i = 0; i < 200; i++) {
+      p.process(Buffer.from([0x41, IAC, IAC, 0x42]));
+    }
+
+    expect(bufferLength(p)).toBeLessThanOrEqual(64);
+  });
+
+  test('an escaped IAC below the cap is still preserved verbatim', () => {
+    // The cap must not break the escaping it interacts with: IAC IAC in a
+    // payload means one literal 0xff byte, and MSDP payloads rely on it.
+    const p = parser(64 * 1024);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.from('Core.X ', 'utf8'));
+    p.process(Buffer.from([IAC, IAC]));
+    const out = p.process(Buffer.from([IAC, SE]));
+
+    expect(out.gmcpMessages.length).toBe(1);
+    expect(out.gmcpMessages[0].package).toBe('Core.X');
+    // IAC IAC un-escapes to exactly one payload byte. Asserting the decoded
+    // character would be asserting the decoder's choice — a lone 0xff is not
+    // valid UTF-8, so it surfaces as U+FFFD. What matters is that one byte
+    // arrived and the pair did not terminate the sequence.
+    expect(out.gmcpMessages[0].data.length).toBe(1);
+  });
+});
+
+describe('discarding continues to the real terminator', () => {
+  // Raised by Codex review of #77. On any IAC <cmd> other than SE or escaped
+  // IAC — IAC NOP, for instance — the discard state returned to TEXT
+  // immediately. The rest of the payload was then emitted as game text and the
+  // real IAC SE was no longer recognised as its terminator, which is exactly
+  // the desynchronization the discard state exists to prevent.
+
+  test('IAC NOP inside a discarded payload does not end the discard', () => {
+    const NOP = 241;
+    const p = parser(16);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.alloc(100, 0x41)); // overflow -> discard
+    p.process(Buffer.from([IAC, NOP])); // must NOT end the discard
+    p.process(Buffer.from('still payload, not text', 'utf8'));
+
+    // Only after the genuine terminator does text resume.
+    const during = p.process(Buffer.from('more payload', 'utf8'));
+    expect(during.text.toString()).toBe('');
+
+    p.process(Buffer.from([IAC, SE]));
+    const after = p.process(Buffer.from('now text', 'utf8'));
+    expect(after.text.toString()).toBe('now text');
+  });
+});
