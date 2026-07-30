@@ -28,6 +28,7 @@
     "test:e2e:raw": "bun --env-file=.env.raw.example --env-file=.env.raw.local test tests/e2e/raw-telnet.test.ts",
     "test:e2e:mock": "USE_MOCK_MUD=1 bun tests/e2e/run-mock-tests.ts",
     "test:mock": "USE_MOCK_MUD=1 bun tests/e2e/run-mock-tests.ts",
+    "test:container": "bash tests/container/run.sh",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
     "format": "prettier --check .",

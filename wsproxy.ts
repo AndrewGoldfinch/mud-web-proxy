@@ -2961,7 +2961,9 @@ const srv: ServerConfig = {
             new Promise<void>((resolve) => {
               if (!httpServer) return resolve();
               const bail = setTimeout(resolve, LISTENER_CLOSE_WAIT_MS);
-              bail.unref?.();
+              // Keep this fallback referenced. Once sockets and the listener
+              // are closed, it can be the only handle keeping Bun alive long
+              // enough to flush state and report shutdown completion.
               httpServer.close(() => {
                 clearTimeout(bail);
                 resolve();

@@ -262,6 +262,7 @@ git commit -m "feat(container): add production Docker image (MWP-98)"
 - Create: `tests/container/acceptance-client.ts`
 - Create: `tests/container/run.sh`
 - Modify: `package.json`
+- Modify: `wsproxy.ts`
 
 **Interfaces:**
 
@@ -273,6 +274,8 @@ git commit -m "feat(container): add production Docker image (MWP-98)"
   `container-acceptance: session-ready`, and
   `container-acceptance: proxy-closed`.
 - Produces: package script `test:container`.
+- Keeps the bounded listener-close fallback referenced so Bun cannot exit
+  before state flush and the `shutdown: completed` marker.
 
 - [ ] **Step 1: Establish the missing-test red state**
 
@@ -405,7 +408,11 @@ const exerciseSession = async (): Promise<void> => {
       if (message.type !== 'data' || !message.payload) return;
 
       const text = Buffer.from(message.payload, 'base64').toString('utf8');
-      if (phase === 'login' && text.includes('Welcome to the Mock MUD!')) {
+      const plainText = text.replace(/\x1b\[[0-9;]*m/g, '');
+      if (
+        phase === 'login' &&
+        plainText.includes('Welcome to the Mock MUD!')
+      ) {
         if (loginTimer) clearInterval(loginTimer);
         phase = 'ready';
         ready = true;
@@ -426,10 +433,10 @@ const exerciseSession = async (): Promise<void> => {
         );
         return;
       }
-      if (event.code !== 1001) {
+      if (event.reason !== 'Server restarting') {
         reject(
           new Error(
-            `container-acceptance: expected close 1001, got ${event.code}`,
+            `container-acceptance: unexpected close ${event.code}: ${event.reason}`,
           ),
         );
         return;
@@ -472,6 +479,12 @@ readonly REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
 state_volume_created=0
 
 fail() {
+  for container in "${CLIENT_CONTAINER}" "${PROXY_CONTAINER}" "${MOCK_CONTAINER}"; do
+    if docker container inspect "${container}" >/dev/null 2>&1; then
+      echo "container-acceptance: logs: ${container}" >&2
+      docker logs "${container}" >&2 || true
+    fi
+  done
   echo "container-acceptance: $*" >&2
   exit 1
 }
@@ -514,7 +527,8 @@ prepare_helper_deps() {
   local volume="$1"
   docker volume create "${volume}" >/dev/null
   docker run --rm \
-    --mount "type=bind,source=${REPO_ROOT},target=/workspace,readonly" \
+    --mount "type=bind,source=${REPO_ROOT}/package.json,target=/workspace/package.json,readonly" \
+    --mount "type=bind,source=${REPO_ROOT}/bun.lock,target=/workspace/bun.lock,readonly" \
     --mount "type=volume,source=${volume},target=/workspace/node_modules" \
     --workdir /workspace \
     "${BUN_IMAGE}" \
@@ -580,11 +594,12 @@ docker run --detach \
   --name "${MOCK_CONTAINER}" \
   --network "${NETWORK}" \
   --network-alias mwp-test-mud \
-  --mount "type=bind,source=${REPO_ROOT},target=/workspace,readonly" \
+  --mount "type=bind,source=${REPO_ROOT},target=/repo,readonly" \
   --mount "type=volume,source=${MOCK_DEPS},target=/workspace/node_modules" \
-  --workdir /workspace \
+  --env NODE_PATH=/workspace/node_modules \
+  --workdir /repo \
   "${BUN_IMAGE}" \
-  bun tests/e2e/mock-mud.ts 6300 generic >/dev/null
+  bun /repo/tests/e2e/mock-mud.ts 6300 generic >/dev/null
 wait_for_log "${MOCK_CONTAINER}" 'listening on port 6300'
 
 docker run --detach \
@@ -623,11 +638,12 @@ done
 docker run --detach \
   --name "${CLIENT_CONTAINER}" \
   --network "${NETWORK}" \
-  --mount "type=bind,source=${REPO_ROOT},target=/workspace,readonly" \
+  --mount "type=bind,source=${REPO_ROOT},target=/repo,readonly" \
   --mount "type=volume,source=${CLIENT_DEPS},target=/workspace/node_modules" \
-  --workdir /workspace \
+  --env NODE_PATH=/workspace/node_modules \
+  --workdir /repo \
   "${BUN_IMAGE}" \
-  bun tests/container/acceptance-client.ts >/dev/null
+  bun /repo/tests/container/acceptance-client.ts >/dev/null
 wait_for_log "${CLIENT_CONTAINER}" 'container-acceptance: session-ready'
 
 docker kill --signal=TERM "${PROXY_CONTAINER}" >/dev/null
@@ -654,6 +670,8 @@ client_status="$(timeout 5s docker wait "${CLIENT_CONTAINER}")" ||
 proxy_logs="$(docker logs "${PROXY_CONTAINER}" 2>&1)"
 grep -Fq 'shutdown: completed' <<<"${proxy_logs}" ||
   fail 'shutdown completion was not logged'
+grep -Fq 'peer disconnected: code=1001 reason=Server restarting' <<<"${proxy_logs}" ||
+  fail 'proxy did not use the graceful restart close code'
 if grep -Eiq 'EROFS|read-only file system|shutdown: .* failed:' <<<"${proxy_logs}"; then
   printf '%s\n' "${proxy_logs}" >&2
   fail 'proxy swallowed a filesystem or shutdown-step failure'
@@ -666,7 +684,19 @@ grep -Fq 'container-acceptance: proxy-closed' <<<"${client_logs}"
 echo 'container-acceptance: passed'
 ```
 
-- [ ] **Step 4: Make the harness executable and expose the package command**
+The exact close code is asserted from the proxy's authoritative log. Bun
+1.3.14's global WebSocket client reports a server-issued code 1001 as 1000,
+while preserving the reason, so the helper asserts `Server restarting`.
+
+- [ ] **Step 4: Keep the listener fallback alive through state flush**
+
+In `wsproxy.ts`, remove `bail.unref?.()` from the bounded
+`LISTENER_CLOSE_WAIT_MS` timer. Once sockets and the listener close, that timer
+can be Bun's only referenced handle; unref'ing it lets the process exit before
+the state flush and `shutdown: completed`. The overall shutdown deadline still
+bounds the sequence.
+
+- [ ] **Step 5: Make the harness executable and expose the package command**
 
 Run:
 
@@ -680,7 +710,7 @@ Add to `package.json#scripts`:
 "test:container": "bash tests/container/run.sh"
 ```
 
-- [ ] **Step 5: Run the acceptance test**
+- [ ] **Step 6: Run the acceptance test**
 
 Run:
 
@@ -697,10 +727,12 @@ container-acceptance: passed
 Also inspect the proxy logs printed on failure; the test is not passing if they
 contain `EROFS`, `read-only file system`, or `shutdown: ... failed:`.
 
-- [ ] **Step 6: Commit the acceptance coverage**
+- [ ] **Step 7: Commit the acceptance coverage**
 
 ```bash
-git add package.json tests/container/acceptance-client.ts tests/container/run.sh
+git add docs/superpowers/plans/2026-07-30-production-docker-image.md \
+  package.json wsproxy.ts tests/container/acceptance-client.ts \
+  tests/container/run.sh
 git commit -m "test(container): verify hardened runtime behavior (MWP-98)"
 ```
 
