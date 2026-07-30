@@ -71,10 +71,20 @@ export const varsInSource = (source: string): Set<string> => {
   return names;
 };
 
-/** Every variable named in the reference, which cites them in backticks. */
+/**
+ * Every variable named in the reference's tables.
+ *
+ * Only the first column of a table row counts, not any backticked uppercase
+ * token anywhere in the prose. Matching prose reported `IAC`, `SIGINT` and
+ * `SIGTERM` as stale configuration variables — noise that teaches a reader to
+ * skim this check's output, which is worse than the drift it exists to catch.
+ *
+ * It also sets a clearer bar: a variable mentioned only in a paragraph is not
+ * documented. It belongs in a table with its default.
+ */
 const varsInDocs = (docs: string): Set<string> => {
   const names = new Set<string>();
-  for (const [, name] of docs.matchAll(/`([A-Z][A-Z0-9_]{2,})`/g)) {
+  for (const [, name] of docs.matchAll(/^\|\s*`([A-Z][A-Z0-9_]{2,})`/gm)) {
     names.add(name);
   }
   return names;

@@ -1,0 +1,56 @@
+# What NOT to publish.
+#
+# CAREFUL: npm reads ONLY this file when it exists — it REPLACES .gitignore
+# rather than extending it. Every secret exclusion that .gitignore provides must
+# therefore be repeated here. The first version of this file omitted them, and a
+# dry run from a configured checkout packed .env, an APNS .p8 key, server.key,
+# config/client-ca/ and private e2e config. Fixing a size problem introduced a
+# credential-disclosure one.
+#
+# It also cannot simply mirror .gitignore: dist/ is gitignored but IS published,
+# because package.json main points at dist/wsproxy.js.
+#
+# Before changing this file, check BOTH directions: that secrets are absent and
+# that the artifact is still usable. Verifying only that the essentials survived
+# is what let the first version through.
+
+# --- Secrets and local credentials (mirrors .gitignore) ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+.envrc
+!.envrc.example
+*.key
+*.p8
+*.p12
+*.pfx
+cert.pem
+privkey.pem
+config/client-ca/
+config/e2e/*.json
+!config/e2e.example.json
+config/attested-keys.json
+
+# --- Agent runtime state and worktrees ---
+# Excluded via .git/info/exclude for git, which npm never reads. Without this
+# the tarball carried 263 entries and 98 MB of separate full checkouts.
+.claude/
+
+# --- Local artefacts ---
+coverage/
+.nyc_output/
+logs/
+*.log
+**/.DS_Store
+
+# --- Repository furniture a consumer does not need ---
+.github/
+docs/superpowers/
+tests/
+scripts/
+.editorconfig
+.prettierignore
+.prettierrc.json
+eslint.config.js
+tsconfig.json
