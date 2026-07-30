@@ -23,23 +23,35 @@ Every stage derives from the same multi-platform OCI image:
 oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
 ```
 
-The digest is the `oven/bun:1.3.14` OCI index and contains both `linux/amd64`
-and `linux/arm64` manifests. The tag records the human-readable Bun version;
-the digest makes the actual base immutable. The version must remain identical
-to `.bun-version` and the exact `package.json#engines.bun` value.
+The digest was resolved and inspected through the registry on 2026-07-30. It
+is the `oven/bun:1.3.14` OCI index and contains:
 
-The Dockerfile has four named stages:
+- `linux/amd64`:
+  `sha256:50317d83cd5a5ae1d8b35b3379c69f57ce1a0dbf4def91f0965653d767851834`
+- `linux/arm64`:
+  `sha256:d8a4c24744b290bf789d58966a6f2521fc4d8bec36ec02cead6c541147b7d550`
+
+The tag records the human-readable Bun version; the index digest makes the
+actual base immutable while selecting the correct child manifest for each
+platform. The version must remain identical to `.bun-version` and the exact
+`package.json#engines.bun` value.
+
+The Dockerfile has five named stages:
 
 1. `base` sets the application work directory.
-2. `install` copies only `package.json` and `bun.lock`, then creates separate
-   dependency trees with:
-   - `bun install --frozen-lockfile`
-   - `bun install --frozen-lockfile --production`
-3. `build` copies the development dependency tree and the source needed by the
-   existing `bun run build` script. The existing esbuild command keeps
+2. `deps-dev` copies only `package.json` and `bun.lock`, then runs
+   `bun install --frozen-lockfile`.
+3. `deps-prod` independently copies only `package.json` and `bun.lock`, then
+   runs `bun install --frozen-lockfile --production`.
+4. `build` copies `node_modules` only from `deps-dev` and the source needed by
+   the existing `bun run build` script. The existing esbuild command keeps
    `--packages=external` and produces `dist/wsproxy.js`.
-4. `runtime` copies only the compiled bundle, production `node_modules`, and
-   the public Apple App Attest root CA.
+5. `runtime` copies `node_modules` only from `deps-prod`, plus the compiled
+   bundle and the public Apple App Attest root CA.
+
+The two dependency stages are structurally independent. They may execute in
+parallel under BuildKit, and neither `bun install` command can mutate or prune
+the other stage's `node_modules`.
 
 Production dependencies cannot be omitted because the bundle externalizes
 `cbor-x`, `iconv-lite`, and `ws`. They must not be bundled as part of this
@@ -78,6 +90,10 @@ Container acceptance tests must assert that exact path and must exercise App
 Attest CA loading. A misplaced CA is otherwise detected only when attestation
 is first used.
 
+The public CA remains owned by root and is copied with mode `0444`. The runtime
+user needs read access but no ownership or write access. The acceptance test
+must exercise the real loader rather than infer readability from `stat`.
+
 The image must not contain:
 
 - repository application source outside `dist/wsproxy.js`
@@ -109,6 +125,9 @@ between Docker and the proxy.
 
 The image declares no `EXPOSE` instruction. MWP-99 will connect Caddy to port
 6200 on an internal network and publish only Caddy's ports 80 and 443.
+`EXPOSE` is image metadata, not a prerequisite for networking: Docker's `-p`
+and Compose port or network configuration can still reach an undeclared
+container port.
 
 ## Configuration and TLS boundary
 
@@ -188,6 +207,19 @@ The repository adds a repeatable Docker acceptance script and runs it in the
 GitHub Actions quality workflow. The script uses traps to remove containers,
 networks, and test volumes on both success and failure.
 
+The mock MUD and acceptance client are never copied into or mounted inside the
+image under test. They run in separate helper containers derived from the same
+digest-pinned `oven/bun:1.3.14` base. Each helper receives the repository as a
+read-only bind mount plus its own writable dependency/cache volume. The mock
+helper runs `tests/e2e/mock-mud.ts`; the client helper runs a dedicated
+container-acceptance client from the repository. Both join the test's private
+Docker network.
+
+The image under test receives no repository, source, test, or dependency bind
+mount. Its only permitted mount is the named state volume at
+`/var/lib/mud-web-proxy` when the state-volume and App Attest paths are under
+test.
+
 The test performs these checks:
 
 1. Build the image from the repository root with BuildKit.
@@ -199,7 +231,7 @@ The test performs these checks:
 3. Start a shell in the image and require:
    - `/opt/mud-web-proxy/dist/wsproxy.js` exists
    - `/opt/mud-web-proxy/config/apple-app-attest-root-ca.pem` exists and is
-     readable by UID 10001
+     root-owned with mode `0444`
    - the three production packages resolve
    - source, tests, scripts, development dependencies, `cert.pem`, and
      `privkey.pem` are absent
@@ -207,7 +239,10 @@ The test performs these checks:
    reproduce the key store's `mkdtemp` → write → rename → cleanup sequence.
    This proves that the directory-level volume and ownership support the
    atomic persistence algorithm.
-5. Create a private Docker network and start a real TCP mock MUD on it.
+5. Create a private Docker network. Start the pinned-Bun mock helper with the
+   repository mounted read-only, and run `tests/e2e/mock-mud.ts` on that
+   network. Start a separate pinned-Bun client helper under the same mount and
+   network constraints.
 6. Start the proxy on that network with:
 
    ```text
@@ -217,22 +252,45 @@ The test performs these checks:
    BIND_HOST=0.0.0.0
    INBOUND_TLS_MODE=off
    ALLOW_INSECURE_INBOUND_NO_TLS=true
+   TARGET_MODE=fixed
    MUD_TLS_MODE=plain
-   TN_HOST=<mock-MUD service name>
-   TN_PORT=<mock-MUD port>
-   SHUTDOWN_GRACE_MS=<short test grace>
-   SHUTDOWN_DEADLINE_MS=<longer bounded deadline>
+   TN_HOST=mwp-test-mud
+   TN_PORT=6300
+   SHUTDOWN_GRACE_MS=3000
+   SHUTDOWN_DEADLINE_MS=10000
+   APPATTEST_BUNDLE_ID=com.example.mwp-container-test
+   APPATTEST_TEAM_ID=MWPTESTTEAM
    ```
 
-7. Wait for `GET /health` to return HTTP 200.
-8. Open a real WebSocket connection, send a typed `connect` request, establish
-   the Telnet connection to the mock MUD, exchange payload data in both
-   directions, and leave the session active.
-9. Send SIGTERM to the proxy container.
-10. During the configured grace window, require `GET /health` to return HTTP
-    503 while the real session still exists.
-11. Require the container to exit before the stop timeout and require logs to
-    contain `shutdown: completed`.
+   The explicit fixed target prevents a missing or mistyped override from
+   falling back to the repository's public default MUD. The shutdown deadline
+   is strictly greater than the grace period, as required by
+   `runtime-config.ts`; equal values are a startup error.
+
+7. Wait for `GET /health` to return HTTP 200. The acceptance script publishes
+   the container port with `-p`; this works without `EXPOSE` metadata.
+8. Exercise the actual App Attest CA loader:
+   - obtain a valid nonce from `/attest/challenge`
+   - have the client helper encode an otherwise well-shaped App Attest CBOR
+     object containing a deliberately invalid two-certificate chain
+   - submit it to `/attest/register`
+   - require HTTP 400 from certificate parsing or validation
+   - reject any response containing `Apple root CA not found`
+
+   `verifyAttestation` loads the configured CA after CBOR shape and chain-count
+   validation but before constructing the deliberately invalid certificates.
+   Reaching certificate parsing therefore proves that the runtime code loaded
+   the CA from its compiled path; a missing or misplaced file produces the
+   distinct rejected error.
+
+9. Through the separate client helper, open a real WebSocket connection, send
+   a typed `connect` request, establish the Telnet connection to the mock MUD,
+   exchange payload data in both directions, and leave the session active.
+10. Send SIGTERM to the proxy container.
+11. During the 3000 ms grace window, require `GET /health` to return HTTP 503
+    while the real session still exists.
+12. Require the container to exit within 10000 ms and require logs to contain
+    `shutdown: completed`.
 
 The real session is essential: merely starting the process under
 `--read-only` would not execute connection-path behavior and could miss a new
