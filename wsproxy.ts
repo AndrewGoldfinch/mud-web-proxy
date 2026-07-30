@@ -2961,7 +2961,10 @@ const srv: ServerConfig = {
             new Promise<void>((resolve) => {
               if (!httpServer) return resolve();
               const bail = setTimeout(resolve, LISTENER_CLOSE_WAIT_MS);
-              bail.unref?.();
+              // In Bun 1.3.14, unref caused the container to exit here before
+              // flushing state or logging shutdown completion. Keep the
+              // bounded fallback referenced; the container acceptance test
+              // asserts both later steps run.
               httpServer.close(() => {
                 clearTimeout(bail);
                 resolve();
@@ -2976,7 +2979,10 @@ const srv: ServerConfig = {
           // timer.
           name: 'flush attested keys',
           run: () => {
-            if (runtimeConfig.appAttest?.attestedKeysPath) {
+            if (
+              runtimeConfig.appAttest.enabled &&
+              runtimeConfig.appAttest.attestedKeysPath
+            ) {
               flushAttestedKeys(runtimeConfig.appAttest.attestedKeysPath);
             }
           },

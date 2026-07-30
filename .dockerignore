@@ -1,0 +1,9 @@
+**
+!package.json
+!bun.lock
+!tsconfig.json
+!wsproxy.ts
+!src/
+!src/**
+!config/
+!config/apple-app-attest-root-ca.pem
