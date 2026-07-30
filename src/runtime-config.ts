@@ -241,6 +241,18 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface ShutdownConfig {
+  /**
+   * How long to stay up, already unready, before closing anything.
+   *
+   * A load balancer needs to observe the 503 before capacity disappears.
+   * Skipping this window is the ordinary cause of errors during a deploy.
+   */
+  gracePeriodMs: number;
+  /** Absolute budget for the whole drain, after which the process exits anyway. */
+  deadlineMs: number;
+}
+
 export interface TelnetLimitsConfig {
   /** Cap on one subnegotiation payload before the sequence is discarded. */
   maxSubnegotiationBytes: number;
@@ -312,6 +324,9 @@ export interface RuntimeConfig {
 
   // Telnet-side byte caps (sibling MWP-93)
   telnet: TelnetLimitsConfig;
+
+  // Graceful shutdown (sibling MWP-96)
+  shutdown: ShutdownConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -831,6 +846,28 @@ export const parseRuntimeConfig = (
   );
   const outputBufferBytes = readPositive('OUTPUT_BUFFER_BYTES', 50 * 1024);
 
+  // ---- Graceful shutdown (MWP-96) ----
+  const shutdownGraceMs = readPositive('SHUTDOWN_GRACE_MS', 3_000);
+  const shutdownDeadlineMs = readPositive('SHUTDOWN_DEADLINE_MS', 15_000);
+
+  // The deadline has to leave room for the work that follows the grace period.
+  // Accepted independently, a 20s grace against the 15s default deadline let the
+  // deadline fire while still waiting — so the client close, session cleanup,
+  // key flush and listener close never ran at all. A configuration that
+  // silently defeats the ordered shutdown must not start.
+  if (shutdownDeadlineMs <= shutdownGraceMs) {
+    errors.push(
+      `SHUTDOWN_DEADLINE_MS (${shutdownDeadlineMs}) must be greater than ` +
+        `SHUTDOWN_GRACE_MS (${shutdownGraceMs}), or the deadline expires during ` +
+        'the grace period and no connections are closed cleanly.',
+    );
+  }
+
+  const shutdown: ShutdownConfig = {
+    gracePeriodMs: shutdownGraceMs,
+    deadlineMs: shutdownDeadlineMs,
+  };
+
   const telnet: TelnetLimitsConfig = {
     maxSubnegotiationBytes,
     outputBufferBytes,
@@ -871,6 +908,7 @@ export const parseRuntimeConfig = (
     sessions,
     heartbeat,
     telnet,
+    shutdown,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,

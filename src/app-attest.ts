@@ -1190,6 +1190,21 @@ export function debouncedSaveAttestedKeys(filePath: string): void {
   }, 2_000);
 }
 
+/**
+ * Write any pending debounced save immediately.
+ *
+ * `debouncedSaveAttestedKeys` coalesces writes over 2 seconds, so a key
+ * registered just before shutdown was lost: the timer is killed with the
+ * process and nothing flushed it. Called from the shutdown sequence (MWP-96).
+ */
+export function flushAttestedKeys(filePath: string): void {
+  if (saveTimer !== null) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+  }
+  saveAttestedKeys(filePath);
+}
+
 /** Test helper: clear the in-memory key store. */
 export function _resetKeysForTesting(): void {
   attestedKeys.clear();

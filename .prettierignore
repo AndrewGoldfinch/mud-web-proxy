@@ -10,3 +10,9 @@ bun.lock
 # there reaches into another working tree — prettier does not read
 # .git/info/exclude, so it must be told separately.
 .claude/
+
+# Runtime state the app writes, not source. The shutdown flush (MWP-96) creates
+# this on every clean exit, so without this entry anyone who starts and stops the
+# server locally fails `bun run format`. Gitignored, but prettier does not read
+# .gitignore.
+config/attested-keys.json

@@ -129,6 +129,34 @@ tolerates one lost push before the session is reclaimed. Shortening it below
 the push interval will reclaim sessions before the push that would have woken
 them, breaking resume for backgrounded clients.
 
+## Shutdown
+
+| Variable               | Description                                                         | Default |
+| ---------------------- | ------------------------------------------------------------------- | ------- |
+| `SHUTDOWN_GRACE_MS`    | Time spent unready, before anything is closed.                      | `3000`  |
+| `SHUTDOWN_DEADLINE_MS` | Absolute budget for the whole drain; the process then exits anyway. | `15000` |
+
+On `SIGINT`/`SIGTERM` the proxy drains in order: become unready so `/health`
+returns 503 and new upgrades are rejected, wait `SHUTDOWN_GRACE_MS`, stop the
+heartbeat sweep, close client connections with a WebSocket close frame, close
+telnet sockets and sessions, flush persisted App Attest state, then close the
+listener and release the port.
+
+`SHUTDOWN_GRACE_MS` is the step operators most often want to change, and the one
+most often omitted. Nothing is closed during it — the point is to stay up,
+already reporting unhealthy, long enough for a load balancer or orchestrator to
+stop routing new traffic. Set it to at least the interval between health checks,
+or clients will be sent to a process that has stopped accepting them.
+
+Repeated signals are ignored rather than restarting the drain, so a second
+`SIGTERM` cannot reset the deadline and keep the process alive.
+
+> **Sessions and resume state are memory-local and are lost on restart.** There
+> is no persistence: every connected player is disconnected and cannot resume,
+> and any unsent buffered output is gone. This is worth knowing when scheduling
+> restarts — prefer quiet hours, and expect players to reconnect rather than
+> resume.
+
 ## Telnet byte caps
 
 | Variable                   | Description                                           | Default |

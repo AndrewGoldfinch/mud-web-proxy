@@ -120,12 +120,12 @@ export class SessionIntegration {
     if (ip) parts.push(`[${ip}]`);
     if (sessionId) parts.push(`[sid:${sessionId}]`);
     parts.push(msg);
-    // eslint-disable-next-line no-console
     // Neutralized before writing (MWP-94). This logger does not go through
     // srv.log, so it never inherited its redaction — and it logs the
     // client-supplied target host. A host containing ANSI and a newline let a
     // client forge an entry indistinguishable from a genuine one, which is
     // worse than a leak: it makes the log actively misleading.
+    // eslint-disable-next-line no-console
     console.log(neutralizeControlSequences(parts.join(' ')));
   }
 
