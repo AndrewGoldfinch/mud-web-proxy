@@ -1,13 +1,14 @@
 # Open-Source and Self-Hosting Release Plan
 
-## Executive summary
+## Planning baseline
 
 `AndrewGoldfinch/mud-web-proxy` is already public. The work is therefore not a
 visibility change; it is a security, licensing, packaging, and operations
 release project.
 
-The repository currently builds, passes 495 unit tests, and passes the mock MUD
-E2E suite. It is not yet ready to recommend for third-party self-hosting:
+When this plan was written, the repository built, passed 495 unit tests, and
+passed the mock MUD E2E suite, but was not ready to recommend for third-party
+self-hosting:
 
 - `ws` is below the patched version and the dependency audit fails.
 - Production deploys automatically from an unprotected `develop` branch.
@@ -22,6 +23,10 @@ E2E suite. It is not yet ready to recommend for third-party self-hosting:
 The first supported release should be `v4.0.0`: preserve the typed and legacy
 client wire protocols, but make configuration and security defaults explicit
 and intentionally breaking.
+
+Phase completion is tracked in Linear. Phase 0 shipped as `v3.1.0`; the list
+above is the pre-remediation baseline, not a description of the current
+repository or production deployment.
 
 ## Phase 0: contain current exposure
 
@@ -51,6 +56,38 @@ Complete these before normal release work:
    Replace the 64-character token-shaped PRD example with an unmistakable
    placeholder. Treat it as synthetic only after checking it against deployed
    credentials; revoke anything matching it before release.
+
+### Closeout status — 2026-07-29
+
+The live exposure-containment outcome is complete and shipped as `v3.1.0`.
+The public repository no longer contains the deployment workflow or current
+topology, GitHub Actions defaults to read-only permissions, `/health` exposes
+only `{ status, version }`, `ws` is patched with a 64 KiB message limit, the
+live nginx configuration replaces forwarded-IP headers, and a fresh
+full-history Gitleaks run reproduced only the documented synthetic
+`sha256("test")` example.
+
+The closeout audit recorded these qualifications rather than hiding them:
+
+- Item 5 was not followed for the combined hardening commit. `cbaf349` has no
+  associated pull request and landed directly on `develop`. This is a
+  historical process exception; later fixes landed through pull requests.
+- The private ops repository has its secrets and a `production` environment,
+  but required-reviewer protection is unavailable on the current private-repo
+  plan. No approval gate is claimed.
+- Configuration inspection establishes that nginx replaces both forwarded-IP
+  headers, but production-log correlation of a deliberately forged request
+  remains unobserved.
+- The private deploy workflow is manual-only and rejects branch-shaped inputs,
+  but it has not completed a successful run. A tag name is not treated as
+  intrinsically immutable without a tag ruleset or resolution to a recorded
+  commit.
+
+The remaining production-only evidence is tracked by
+[MWP-126](https://linear.app/test-211111/issue/MWP-126/phase-0-closeout-prove-production-attribution-and-deploy-provenance).
+The Phase 2 Caddy example remains tracked by
+[MWP-100](https://linear.app/test-211111/issue/MWP-100/add-a-docker-compose-stack-with-caddy)
+and is not a Phase 0 blocker.
 
 ## Phase 1: runtime security contract
 
