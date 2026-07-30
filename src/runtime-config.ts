@@ -241,6 +241,13 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface MessageRateConfig {
+  /** Frames per second for one session. */
+  perSessionPerSecond: number;
+  /** Frames per second for one resolved client address, across its sessions. */
+  perAddressPerSecond: number;
+}
+
 export interface ShutdownConfig {
   /**
    * How long to stay up, already unready, before closing anything.
@@ -327,6 +334,9 @@ export interface RuntimeConfig {
 
   // Graceful shutdown (sibling MWP-96)
   shutdown: ShutdownConfig;
+
+  // Inbound message rate (sibling MWP-124)
+  messageRate: MessageRateConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -846,6 +856,34 @@ export const parseRuntimeConfig = (
   );
   const outputBufferBytes = readPositive('OUTPUT_BUFFER_BYTES', 50 * 1024);
 
+  // ---- Inbound message rate (MWP-124) ----
+  // Connection caps bound how many sessions a client may hold; these bound how
+  // fast it may talk through them. Each `input` frame becomes a telnet write, so
+  // the first casualty of an unthrottled client is the upstream MUD.
+  //
+  // Defaults are far above human typing and above what a well-behaved client
+  // sends — a MUD client batches a few frames per keystroke at most. The address
+  // budget is the larger, so a legitimate multi-session user is not throttled as
+  // though they were one noisy session.
+  const perSessionPerSecond = readPositive('MAX_MESSAGES_PER_SECOND', 60);
+  const perAddressPerSecond = readPositive(
+    'MAX_MESSAGES_PER_SECOND_PER_IP',
+    240,
+  );
+
+  if (perAddressPerSecond < perSessionPerSecond) {
+    errors.push(
+      `MAX_MESSAGES_PER_SECOND_PER_IP (${perAddressPerSecond}) must be at least ` +
+        `MAX_MESSAGES_PER_SECOND (${perSessionPerSecond}), or a single session ` +
+        'can never reach its own allowance and the per-session limit is dead.',
+    );
+  }
+
+  const messageRate: MessageRateConfig = {
+    perSessionPerSecond,
+    perAddressPerSecond,
+  };
+
   // ---- Graceful shutdown (MWP-96) ----
   const shutdownGraceMs = readPositive('SHUTDOWN_GRACE_MS', 3_000);
   const shutdownDeadlineMs = readPositive('SHUTDOWN_DEADLINE_MS', 15_000);
@@ -909,6 +947,7 @@ export const parseRuntimeConfig = (
     heartbeat,
     telnet,
     shutdown,
+    messageRate,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,

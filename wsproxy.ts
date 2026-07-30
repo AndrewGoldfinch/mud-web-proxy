@@ -81,6 +81,7 @@ import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 import { HeartbeatMonitor } from './src/heartbeat';
 import { ShutdownCoordinator } from './src/shutdown';
+import { MessageRateLimiter } from './src/message-rate-limit';
 import {
   redactLogMessage,
   tokenSummary as summarizeToken,
@@ -106,6 +107,7 @@ import {
   isOriginAllowed,
   isTrustedPeer,
   resolveClientAddress,
+  resolveSocketAddress,
   readLimitedRequestBody,
   resolveBackgroundPushEnvConfig,
   sendBase64IfOpen,
@@ -194,6 +196,12 @@ const sessionIntegration = new SessionIntegration({
   // APNS config from environment
   apns: runtimeConfig.apns,
 });
+
+/**
+ * Inbound message rate limiting (MWP-124). Constructed once: the sliding windows
+ * are the state, so a per-connection limiter would reset with every reconnect.
+ */
+const messageRateLimiter = new MessageRateLimiter(runtimeConfig.messageRate);
 
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
@@ -2016,6 +2024,44 @@ const srv: ServerConfig = {
           // Inbound traffic is evidence of life too, so an active client is
           // never reclaimed for having missed a ping.
           heartbeatMonitor?.markAlive(extendedSocket);
+
+          // Rate check first, before JSON.parse and before any telnet write
+          // (MWP-124). Parsing is the expensive step, and an `input` frame
+          // becomes an upstream write — so a limit applied after either has
+          // already paid the cost it exists to avoid. This is the single place
+          // every client frame arrives, on both wire protocols.
+          const address = resolveSocketAddress(
+            extendedSocket,
+            srv.trustedProxyCidrs,
+          );
+          const session =
+            sessionIntegration.sessionManager.findByWebSocket(extendedSocket);
+          const decision = messageRateLimiter.check(session?.id, address);
+
+          if (!decision.allowed) {
+            if (decision.notify) {
+              // Once per window, not per dropped frame: replying to every one
+              // would amplify outbound traffic during the flood being damped.
+              srv.logWarn(
+                `message rate limit exceeded dimension=${decision.dimension}`,
+                extendedSocket,
+                'ws',
+              );
+              try {
+                extendedSocket.sendUTF(
+                  JSON.stringify({
+                    type: 'error',
+                    code: 'rate_limited',
+                    message: `Message rate limit exceeded (${decision.dimension})`,
+                  }),
+                );
+              } catch {
+                // A socket already going away is not worth failing over.
+              }
+            }
+            return;
+          }
+
           if (!srv.parse(extendedSocket, msg)) {
             srv.forward(extendedSocket, msg);
           }

@@ -407,6 +407,34 @@ export interface FailedAuthLimiterOptions {
  * patience. Bounded so that tracking failures cannot itself become a
  * memory-growth vector.
  */
+/**
+ * Resolve the client address for a WebSocket-ish socket.
+ *
+ * `resolveClientAddress` is the shared policy; this is the shared *wrapper* for
+ * pulling the peer and headers off a socket. Two hand-rolled copies of that
+ * wrapper had already diverged once, leaving the rate limiter and the logger
+ * disagreeing about who the client was — so the message rate limiter uses this
+ * rather than adding a third (MWP-124).
+ *
+ * Returns 'unknown' rather than empty, so a caller keying a limiter on it cannot
+ * accidentally group every unidentifiable client under ''.
+ */
+export const resolveSocketAddress = (
+  socket: {
+    remoteAddress?: string;
+    req?: {
+      headers?: Record<string, string | string[] | undefined>;
+      connection?: { remoteAddress?: string };
+    };
+  },
+  trustList: boolean | string[] | undefined,
+): string =>
+  resolveClientAddress(
+    socket.remoteAddress || socket.req?.connection?.remoteAddress,
+    socket.req?.headers ?? {},
+    trustList,
+  ) || 'unknown';
+
 export class FailedAuthLimiter {
   private readonly failures = new Map<string, number[]>();
   private readonly maxFailures: number;
