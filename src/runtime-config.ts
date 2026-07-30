@@ -241,6 +241,18 @@ export interface AppAttestConfig {
   attestedKeysPath: string;
 }
 
+export interface ShutdownConfig {
+  /**
+   * How long to stay up, already unready, before closing anything.
+   *
+   * A load balancer needs to observe the 503 before capacity disappears.
+   * Skipping this window is the ordinary cause of errors during a deploy.
+   */
+  gracePeriodMs: number;
+  /** Absolute budget for the whole drain, after which the process exits anyway. */
+  deadlineMs: number;
+}
+
 export interface TelnetLimitsConfig {
   /** Cap on one subnegotiation payload before the sequence is discarded. */
   maxSubnegotiationBytes: number;
@@ -312,6 +324,9 @@ export interface RuntimeConfig {
 
   // Telnet-side byte caps (sibling MWP-93)
   telnet: TelnetLimitsConfig;
+
+  // Graceful shutdown (sibling MWP-96)
+  shutdown: ShutdownConfig;
 
   // Diagnostics
   diagnosticsEnabled: boolean;
@@ -831,6 +846,12 @@ export const parseRuntimeConfig = (
   );
   const outputBufferBytes = readPositive('OUTPUT_BUFFER_BYTES', 50 * 1024);
 
+  // ---- Graceful shutdown (MWP-96) ----
+  const shutdown: ShutdownConfig = {
+    gracePeriodMs: readPositive('SHUTDOWN_GRACE_MS', 3_000),
+    deadlineMs: readPositive('SHUTDOWN_DEADLINE_MS', 15_000),
+  };
+
   const telnet: TelnetLimitsConfig = {
     maxSubnegotiationBytes,
     outputBufferBytes,
@@ -871,6 +892,7 @@ export const parseRuntimeConfig = (
     sessions,
     heartbeat,
     telnet,
+    shutdown,
     diagnosticsEnabled,
     tlsCertPath,
     tlsKeyPath,

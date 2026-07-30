@@ -80,6 +80,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import os from 'os';
 import { SessionIntegration } from './src/session-integration';
 import { HeartbeatMonitor } from './src/heartbeat';
+import { ShutdownCoordinator } from './src/shutdown';
 import {
   redactLogMessage,
   tokenSummary as summarizeToken,
@@ -115,6 +116,7 @@ import {
   verifyAttestation,
   loadAttestedKeys,
   debouncedSaveAttestedKeys,
+  flushAttestedKeys,
   setAttestedKey,
   verifyAssertion,
   getAttestedKey,
@@ -333,6 +335,12 @@ let server: ServerState = { sockets: new Set() };
 // WebSocket liveness (MWP-92). Null when the heartbeat is disabled, which is
 // why every call site uses `?.` rather than assuming a monitor exists.
 let heartbeatMonitor: HeartbeatMonitor<SocketExtended> | null = null;
+// Module-scoped so the shutdown sequence can close the listener. It was a local
+// inside init(), which is why the port stayed bound until process exit (MWP-96).
+let httpServer: HttpServer | null = null;
+// Held so a repeated signal joins the running drain rather than restarting it
+// and resetting the deadline (MWP-96).
+let shutdownCoordinator: ShutdownCoordinator | null = null;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let nextSocketId = 1;
 
@@ -1212,6 +1220,8 @@ const srv: ServerConfig = {
         'init',
       );
     }
+
+    httpServer = webserver;
 
     webserver.listen(srv.ws_port, srv.bind_host, function () {
       srv.logInfo(
@@ -2777,34 +2787,109 @@ const srv: ServerConfig = {
   },
 
   die: function (core?: boolean): void {
-    srv.logWarn('Dying gracefully in 3 sec.', undefined, 'init');
-    srv.open = false;
+    // Ordered so a restart is safe behind a load balancer. What matters is not
+    // that everything closes but WHEN: become unready, wait long enough for the
+    // balancer to notice, and only then take capacity away. Skipping the wait is
+    // the ordinary cause of errors during a deploy (MWP-96).
+    const cfg = runtimeConfig.shutdown;
 
-    // Stop the liveness sweep before closing sockets, or it races the shutdown
-    // and terminates peers the drain is already notifying.
-    if (heartbeatTimer) {
-      clearInterval(heartbeatTimer);
-      heartbeatTimer = null;
-    }
-    heartbeatMonitor = null;
+    shutdownCoordinator ??= new ShutdownCoordinator({
+      deadlineMs: cfg.deadlineMs,
+      log: (m) => srv.logWarn(m, undefined, 'init'),
+      onComplete: () => {
+        // One event-loop turn before exiting, so the final log line reaches a
+        // redirected stdout. process.exit does not flush, and the "completed"
+        // line was being lost — leaving an operator unable to tell a clean
+        // drain from one that was cut short.
+        setImmediate(() => process.exit(core ? 3 : 0));
+      },
+      steps: [
+        {
+          // 1. Unready first. /health already returns 503 on !srv.open, and the
+          // upgrade handler already rejects with 503; this is what turns them on.
+          name: 'become unready',
+          run: () => {
+            srv.open = false;
+          },
+        },
+        {
+          // 2. The window that makes the rest safe. Nothing is closed yet.
+          name: `await ${cfg.gracePeriodMs}ms drain grace`,
+          run: () =>
+            new Promise<void>((resolve) => {
+              const t = setTimeout(resolve, cfg.gracePeriodMs);
+              t.unref?.();
+            }),
+        },
+        {
+          // 3. Stop the liveness sweep before closing sockets, or it races the
+          // drain and terminates peers this sequence is already notifying.
+          name: 'stop heartbeat',
+          run: () => {
+            if (heartbeatTimer) clearInterval(heartbeatTimer);
+            heartbeatTimer = null;
+            heartbeatMonitor = null;
+          },
+        },
+        {
+          name: 'close client connections',
+          run: () => {
+            for (const sock of server.sockets) {
+              // 1001 "going away" is the code for a server shutting down, so a
+              // client can tell a restart from a crash and back off accordingly.
+              // The previous code called sock.write(), which does not exist on a
+              // ws socket — the guard was always false, so WebSocket clients
+              // were told nothing at all. Only legacy raw sockets have .write.
+              const raw = sock as unknown as {
+                write?: (msg: string) => void;
+                close?: (code?: number, reason?: string) => void;
+              };
+              try {
+                if (typeof raw.close === 'function') {
+                  raw.close(1001, 'Server restarting');
+                } else if (typeof raw.write === 'function') {
+                  raw.write('Proxy server is going down...');
+                }
+              } catch {
+                // A socket already gone is not a reason to stop draining.
+              }
+            }
+          },
+        },
+        {
+          // 5. Telnet sockets, so the MUD sees a disconnect rather than a reset.
+          name: 'close telnet sockets and sessions',
+          run: () => {
+            for (const sock of [...server.sockets]) srv.closeSocket(sock);
+            sessionIntegration.shutdown();
+          },
+        },
+        {
+          // 6. Flush persisted state. debouncedSaveAttestedKeys coalesces over
+          // 2 seconds, so a key registered just before shutdown was lost when
+          // the timer died with the process.
+          name: 'flush attested keys',
+          run: () => {
+            if (runtimeConfig.appAttest?.attestedKeysPath) {
+              flushAttestedKeys(runtimeConfig.appAttest.attestedKeysPath);
+            }
+          },
+        },
+        {
+          // 7. Release the port. Previously the listener was a local inside
+          // init(), so it stayed bound until the process exited.
+          name: 'close listener',
+          run: () =>
+            new Promise<void>((resolve) => {
+              if (!httpServer) return resolve();
+              httpServer.close(() => resolve());
+              httpServer = null;
+            }),
+        },
+      ],
+    });
 
-    // Shut down session integration (clears intervals, sessions)
-    sessionIntegration.shutdown();
-
-    for (const sock of server.sockets) {
-      /* inform clients so they can hop to another instance faster */
-      if (sock && (sock as unknown as { write: (msg: string) => void }).write)
-        (sock as unknown as { write: (msg: string) => void }).write(
-          'Proxy server is going down...',
-        );
-      setTimeout(srv.closeSocket, 10, sock);
-    }
-
-    setTimeout(
-      process.exit,
-      3000,
-      core ? 3 : 0,
-    ); /* send SIGQUIT if core dump */
+    void shutdownCoordinator.start();
   },
 
   newSocket: function (s: SocketExtended): void {
