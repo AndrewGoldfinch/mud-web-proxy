@@ -1,23 +1,40 @@
 # Open-Source and Self-Hosting Release Plan
 
+> **This document is the original baseline, written 2026-07-28. It is not a
+> status report and is deliberately not updated as work lands.**
+>
+> The findings below describe the repository _as it was when the plan was
+> written_. Most are now fixed: Phase 0 and Phase 1 are complete, and of the
+> problems listed in the summary only the packaging one still stands. For the
+> current state, read the Linear project and the phase epics, not this file.
+>
+> It is kept in the present tense on purpose. Rewriting it to match today would
+> destroy the record of what was actually wrong, which is the only thing that
+> justifies the breaking changes in Phase 1 — but a reader who mistakes it for a
+> status report will conclude the proxy is unsafe in ways it no longer is. The
+> per-item notes below mark what has since changed.
+>
+> A Phase 0 audit found this staleness actively misleading; see MWP-125.
+
 ## Executive summary
 
 `AndrewGoldfinch/mud-web-proxy` is already public. The work is therefore not a
 visibility change; it is a security, licensing, packaging, and operations
 release project.
 
-The repository currently builds, passes 495 unit tests, and passes the mock MUD
-E2E suite. It is not yet ready to recommend for third-party self-hosting:
+At the time of writing the repository built, passed 495 unit tests, and passed
+the mock MUD E2E suite. It was not then ready to recommend for third-party
+self-hosting:
 
-- `ws` is below the patched version and the dependency audit fails.
-- Production deploys automatically from an unprotected `develop` branch.
-- The public health endpoint exposes operational and Apple/APNS metadata.
-- Forwarded client-IP headers are trusted without a trusted-proxy boundary.
-- Session and connection limits can be bypassed by omitting or rotating device
-  tokens.
-- Target policy can become an unrestricted TCP relay.
-- Licensing metadata is contradictory and GitHub reports `NOASSERTION`.
-- There is no supported Docker, Compose, Caddy, or systemd package.
+- ~~`ws` is below the patched version and the dependency audit fails.~~ **Fixed** — `ws@8.21.1`, audit unignored (MWP-74, MWP-121).
+- ~~Production deploys automatically from an unprotected `develop` branch.~~ **Fixed** — deploy moved to a private repo, manual trigger only, `develop` retired for a protected `main` (MWP-75, MWP-76, MWP-117).
+- ~~The public health endpoint exposes operational and Apple/APNS metadata.~~ **Fixed** — `/health` returns `status` and `version` only (MWP-78).
+- ~~Forwarded client-IP headers are trusted without a trusted-proxy boundary.~~ **Fixed** — `TRUSTED_PROXY_CIDRS`, trusting nothing by default (MWP-82, MWP-83).
+- ~~Session and connection limits can be bypassed by omitting or rotating device
+  tokens.~~ **Fixed** — limits keyed on the server-derived address, plus a global cap, heartbeats and message-rate limits (MWP-92, MWP-124).
+- ~~Target policy can become an unrestricted TCP relay.~~ **Fixed** — `TARGET_MODE`, no default-allow path, reserved-network rejection (MWP-86, MWP-87, MWP-88).
+- ~~Licensing metadata is contradictory and GitHub reports `NOASSERTION`.~~ **Fixed** — GPLv3 text, `NOTICE`, valid SPDX; GitHub reports `GPL-3.0` (MWP-107, MWP-108, MWP-109).
+- There is no supported Docker, Compose, Caddy, or systemd package. **Still open** — this is Phase 2.
 
 The first supported release should be `v4.0.0`: preserve the typed and legacy
 client wire protocols, but make configuration and security defaults explicit
@@ -46,6 +63,17 @@ Complete these before normal release work:
 
 5. Preserve the dirty worktree in a safety branch, fetch public `develop`, and
    rebase a release branch onto it. Do not push directly to `develop`.
+
+   > **This item was breached, and it is the only plan item that was never given
+   > a Linear issue.** The Phase 0 hardening landed as commit `cbaf349`, which has
+   > no associated pull request; PR #27 was opened for the same work and closed as
+   > a byte-identical duplicate. Whether the safety branch and rebase happened is
+   > unrecorded.
+   >
+   > The lesson is the connection between those two facts: an untracked item is an
+   > unenforced one. Sixteen items had tickets and were largely honoured; the
+   > seventeenth had none and was breached unnoticed until an audit looked. See
+   > MWP-125 and the reconciliation comment on MWP-69.
 
 6. Run Gitleaks across all refs, deleted blobs, workflow logs, and artifacts.
    Replace the 64-character token-shaped PRD example with an unmistakable
