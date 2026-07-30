@@ -235,20 +235,30 @@ The test performs these checks:
    - the three production packages resolve
    - source, tests, scripts, development dependencies, `cert.pem`, and
      `privkey.pem` are absent
-4. Mount a fresh named volume at `/var/lib/mud-web-proxy` and, as UID 10001,
-   reproduce the key store's `mkdtemp` → write → rename → cleanup sequence.
-   This proves that the directory-level volume and ownership support the
-   atomic persistence algorithm.
+4. Create the fresh named volume `mwp-test-state`, mount it at
+   `/var/lib/mud-web-proxy`, and, as UID 10001, reproduce the key store's
+   `mkdtemp` → write → rename → cleanup sequence. Preserve that volume for the
+   proxy run in step 6. This proves that the directory-level volume and
+   ownership support the atomic persistence algorithm.
 5. Create a private Docker network. Start the pinned-Bun mock helper with the
-   repository mounted read-only, and run `tests/e2e/mock-mud.ts` on that
-   network. Start a separate pinned-Bun client helper under the same mount and
-   network constraints.
+   repository mounted read-only, and run this exact positional CLI invocation
+   on that network:
+
+   ```text
+   bun tests/e2e/mock-mud.ts 6300 generic
+   ```
+
+   Port 6300 is passed through `argv[2]`; the mock does not read an environment
+   variable for its listening port. Start a separate pinned-Bun client helper
+   under the same mount and network constraints.
+
 6. Start the proxy on that network with:
 
    ```text
    --read-only
    --cap-drop=ALL
    --security-opt=no-new-privileges
+   --mount type=volume,source=mwp-test-state,target=/var/lib/mud-web-proxy
    BIND_HOST=0.0.0.0
    INBOUND_TLS_MODE=off
    ALLOW_INSECURE_INBOUND_NO_TLS=true
@@ -289,8 +299,16 @@ The test performs these checks:
 10. Send SIGTERM to the proxy container.
 11. During the 3000 ms grace window, require `GET /health` to return HTTP 503
     while the real session still exists.
-12. Require the container to exit within 10000 ms and require logs to contain
-    `shutdown: completed`.
+12. Require the container to exit within 10000 ms. Require logs to contain
+    `shutdown: completed`, and fail if they contain any of:
+    - `EROFS`
+    - `read-only file system`, matched case-insensitively
+    - a line matching `shutdown: .* failed:`
+
+    `ShutdownCoordinator` deliberately catches step errors and continues to
+    `shutdown: completed`, so the completion line alone is not evidence that
+    the read-only filesystem contract held. The negative log assertions turn
+    swallowed filesystem and shutdown-step errors into acceptance failures.
 
 The real session is essential: merely starting the process under
 `--read-only` would not execute connection-path behavior and could miss a new
@@ -325,5 +343,7 @@ The following remain out of scope and belong to later Phase 2 tickets:
   persistence sequence as UID 10001.
 - Readiness returns 200 normally and 503 during the SIGTERM drain window.
 - SIGTERM reaches Bun directly and the bounded graceful shutdown completes.
+- Container logs contain no read-only-filesystem error and no failed shutdown
+  step.
 - The image declares neither an application port nor a topology-dependent
   health check.
