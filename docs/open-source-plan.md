@@ -5,8 +5,22 @@
 >
 > The findings below describe the repository _as it was when the plan was
 > written_. Most are now fixed: Phase 0 and Phase 1 are complete, and of the
-> problems listed in the summary only the packaging one still stands. For the
-> current state, read the Linear project and the phase epics, not this file.
+> problems listed in the summary only the packaging one still stands.
+>
+> **Current status, for readers outside the project.** The `MWP-*` identifiers
+> throughout this document refer to a private issue tracker and are not
+> resolvable from here, so they are provenance rather than a status source. What
+> a reader can check in this repository, without access to anything:
+>
+> - each summary finding below is annotated **Fixed** or **Still open**;
+> - `docs/configuration.md` is the authoritative list of settings and defaults,
+>   and CI fails if it drifts from `src/runtime-config.ts`;
+> - `git log` and the merged pull requests carry the reasoning for every change,
+>   including the review findings that changed the approach;
+> - `CHANGELOG.md` will record released behaviour once Phase 3 adds it.
+>
+> If something here contradicts `docs/configuration.md` or the code, they are
+> right and this file is stale by design.
 >
 > It is kept in the present tense on purpose. Rewriting it to match today would
 > destroy the record of what was actually wrong, which is the only thing that
@@ -14,7 +28,9 @@
 > status report will conclude the proxy is unsafe in ways it no longer is. The
 > per-item notes below mark what has since changed.
 >
-> A Phase 0 audit found this staleness actively misleading; see MWP-125.
+> A Phase 0 audit found this staleness actively misleading, and a review of
+> that fix pointed out that telling a public reader to "read Linear" is not
+> usable advice when Linear is private. Both are addressed above.
 
 ## Executive summary
 
