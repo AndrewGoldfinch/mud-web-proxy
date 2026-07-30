@@ -13,7 +13,9 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
 import { ShutdownCoordinator } from '../src/shutdown.js';
+import { getRuntimeConfig } from '../src/runtime-config.js';
 
 /** Records step order and lets individual steps hang or throw. */
 const recorder = () => {
@@ -179,5 +181,68 @@ describe('progress is observable', () => {
       expect(logged.join(' ')).toContain('alpha');
       expect(logged.join(' ')).toContain('beta');
     });
+  });
+});
+
+describe('shutdown configuration is validated as a pair', () => {
+  // Raised by Codex review of #79. The two values were accepted independently,
+  // so a 20s grace against the 15s default deadline let the deadline fire while
+  // still waiting — demonstrated as a real process: the log stopped after
+  // "await 4000ms drain grace" and went straight to "deadline". No client close,
+  // no session cleanup, no key flush, no listener close. A configuration that
+  // silently defeats the entire ordered shutdown must not start.
+
+  test('a deadline at or below the grace period is a startup error', () => {
+    expect(() =>
+      getRuntimeConfig({
+        INBOUND_TLS_MODE: 'off',
+        SHUTDOWN_GRACE_MS: '20000',
+      }),
+    ).toThrow(/SHUTDOWN_DEADLINE_MS/);
+
+    expect(() =>
+      getRuntimeConfig({
+        INBOUND_TLS_MODE: 'off',
+        SHUTDOWN_GRACE_MS: '5000',
+        SHUTDOWN_DEADLINE_MS: '5000',
+      }),
+    ).toThrow(/SHUTDOWN_DEADLINE_MS/);
+  });
+
+  test('the error names both values, so the fix is obvious', () => {
+    expect(() =>
+      getRuntimeConfig({
+        INBOUND_TLS_MODE: 'off',
+        SHUTDOWN_GRACE_MS: '20000',
+      }),
+    ).toThrow(/SHUTDOWN_GRACE_MS/);
+  });
+
+  test('a valid pair is accepted', () => {
+    const { shutdown } = getRuntimeConfig({
+      INBOUND_TLS_MODE: 'off',
+      SHUTDOWN_GRACE_MS: '2000',
+      SHUTDOWN_DEADLINE_MS: '9000',
+    });
+    expect(shutdown).toEqual({ gracePeriodMs: 2000, deadlineMs: 9000 });
+  });
+});
+
+describe('state is flushed after the listener closes', () => {
+  // Also raised by Codex review of #79, and it contradicts the order MWP-96
+  // prescribes. Flushing before closing let an App Attest registration still
+  // being verified update the key store *after* the flush, then schedule a
+  // debounced save that never fired because the process exited. The issue's
+  // step order is wrong on the merits; nothing must be able to mutate the
+  // store once it has been written.
+
+  test('close listener precedes flush in the wired sequence', () => {
+    const proxy = readFileSync('wsproxy.ts', 'utf8');
+    const closeAt = proxy.indexOf("name: 'close listener'");
+    const flushAt = proxy.indexOf("name: 'flush attested keys'");
+
+    expect(closeAt).toBeGreaterThan(-1);
+    expect(flushAt).toBeGreaterThan(-1);
+    expect(closeAt).toBeLessThan(flushAt);
   });
 });

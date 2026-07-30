@@ -341,6 +341,13 @@ let httpServer: HttpServer | null = null;
 // Held so a repeated signal joins the running drain rather than restarting it
 // and resetting the deadline (MWP-96).
 let shutdownCoordinator: ShutdownCoordinator | null = null;
+
+/**
+ * How long to wait for the listener to drain before flushing state anyway.
+ * Bounded deliberately: a listener that will not close must not cost us the
+ * flush of acknowledged registrations.
+ */
+const LISTENER_CLOSE_WAIT_MS = 2_000;
 let heartbeatTimer: ReturnType<typeof setInterval> | null = null;
 let nextSocketId = 1;
 
@@ -2865,26 +2872,41 @@ const srv: ServerConfig = {
           },
         },
         {
-          // 6. Flush persisted state. debouncedSaveAttestedKeys coalesces over
-          // 2 seconds, so a key registered just before shutdown was lost when
-          // the timer died with the process.
+          // 6. Release the port, BEFORE flushing state.
+          //
+          // MWP-96 lists the flush first, and that order is wrong: an App
+          // Attest registration still being verified can update the in-memory
+          // key store after the flush has run, then schedule a debounced save
+          // that never fires because the process exits. Closing first means no
+          // handler is still able to mutate what is about to be written.
+          //
+          // The wait is bounded so a listener that will not drain cannot cost
+          // us the flush entirely — losing an acknowledged registration is the
+          // worse outcome, and the overall deadline still applies on top.
+          name: 'close listener',
+          run: () =>
+            new Promise<void>((resolve) => {
+              if (!httpServer) return resolve();
+              const bail = setTimeout(resolve, LISTENER_CLOSE_WAIT_MS);
+              bail.unref?.();
+              httpServer.close(() => {
+                clearTimeout(bail);
+                resolve();
+              });
+              httpServer = null;
+            }),
+        },
+        {
+          // 7. Flush persisted state last, once nothing can still change it.
+          // debouncedSaveAttestedKeys coalesces over 2 seconds and nothing
+          // flushed it, so a key registered just before shutdown died with the
+          // timer.
           name: 'flush attested keys',
           run: () => {
             if (runtimeConfig.appAttest?.attestedKeysPath) {
               flushAttestedKeys(runtimeConfig.appAttest.attestedKeysPath);
             }
           },
-        },
-        {
-          // 7. Release the port. Previously the listener was a local inside
-          // init(), so it stayed bound until the process exited.
-          name: 'close listener',
-          run: () =>
-            new Promise<void>((resolve) => {
-              if (!httpServer) return resolve();
-              httpServer.close(() => resolve());
-              httpServer = null;
-            }),
         },
       ],
     });

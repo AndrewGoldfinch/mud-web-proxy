@@ -847,9 +847,25 @@ export const parseRuntimeConfig = (
   const outputBufferBytes = readPositive('OUTPUT_BUFFER_BYTES', 50 * 1024);
 
   // ---- Graceful shutdown (MWP-96) ----
+  const shutdownGraceMs = readPositive('SHUTDOWN_GRACE_MS', 3_000);
+  const shutdownDeadlineMs = readPositive('SHUTDOWN_DEADLINE_MS', 15_000);
+
+  // The deadline has to leave room for the work that follows the grace period.
+  // Accepted independently, a 20s grace against the 15s default deadline let the
+  // deadline fire while still waiting — so the client close, session cleanup,
+  // key flush and listener close never ran at all. A configuration that
+  // silently defeats the ordered shutdown must not start.
+  if (shutdownDeadlineMs <= shutdownGraceMs) {
+    errors.push(
+      `SHUTDOWN_DEADLINE_MS (${shutdownDeadlineMs}) must be greater than ` +
+        `SHUTDOWN_GRACE_MS (${shutdownGraceMs}), or the deadline expires during ` +
+        'the grace period and no connections are closed cleanly.',
+    );
+  }
+
   const shutdown: ShutdownConfig = {
-    gracePeriodMs: readPositive('SHUTDOWN_GRACE_MS', 3_000),
-    deadlineMs: readPositive('SHUTDOWN_DEADLINE_MS', 15_000),
+    gracePeriodMs: shutdownGraceMs,
+    deadlineMs: shutdownDeadlineMs,
   };
 
   const telnet: TelnetLimitsConfig = {
