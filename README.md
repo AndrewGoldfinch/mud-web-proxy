@@ -47,11 +47,50 @@ bun run build
 bun start
 ```
 
+### Docker image
+
+Build the production image:
+
+```bash
+docker build --pull -t mud-web-proxy:local .
+```
+
+The supported Phase 2 deployment places Caddy in front of the proxy. Until the
+Compose topology lands in MWP-99, this loopback-only command exercises the same
+internal plaintext hop without exposing port 6200 beyond the host:
+
+```bash
+docker volume create mud-web-proxy-state
+docker run --rm --name mud-web-proxy \
+  --read-only \
+  --cap-drop=ALL \
+  --security-opt=no-new-privileges \
+  --mount type=volume,source=mud-web-proxy-state,target=/var/lib/mud-web-proxy \
+  --publish 127.0.0.1:6200:6200 \
+  --env BIND_HOST=0.0.0.0 \
+  --env INBOUND_TLS_MODE=off \
+  --env ALLOW_INSECURE_INBOUND_NO_TLS=true \
+  --env TARGET_MODE=fixed \
+  --env MUD_TLS_MODE=plain \
+  --env TN_HOST=mud.example.com \
+  --env TN_PORT=4000 \
+  mud-web-proxy:local
+```
+
+The image deliberately declares neither `EXPOSE` nor `HEALTHCHECK`: Caddy and
+Compose own port publication and the HTTP readiness probe because that layer
+selects the internal TLS mode. Docker port publication still works without
+`EXPOSE`.
+
+App Attest is disabled unless both `APPATTEST_BUNDLE_ID` and
+`APPATTEST_TEAM_ID` are set. When enabled, mount the writable directory
+`/var/lib/mud-web-proxy`, not the `attested-keys.json` file; atomic persistence
+creates and renames a sibling temporary directory.
+
 To upgrade Bun, change `.bun-version`, mirror that exact value in
-`package.json#engines.bun`, and regenerate `bun.lock` with the new runtime.
-CI reads `.bun-version` directly, and `bun run check:bun-version` enforces the
-metadata mirror. Once MWP-98 lands, update its Docker base-image version in
-the same change.
+`package.json#engines.bun` and the digest-pinned `BUN_IMAGE` in `Dockerfile`,
+then regenerate `bun.lock` with the new runtime. CI reads `.bun-version`
+directly, and `bun run check:bun-version` enforces the package metadata mirror.
 
 You need to have your certificates available to use wsproxy. Inbound TLS is required by default, so starting without usable certificates aborts at startup rather than quietly falling back to plaintext:
 

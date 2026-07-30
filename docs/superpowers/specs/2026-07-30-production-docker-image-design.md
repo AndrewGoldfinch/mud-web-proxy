@@ -1,7 +1,7 @@
 # Production Docker Image Design
 
-**Issue:** MWP-98  
-**Date:** 2026-07-30  
+**Issue:** MWP-98
+**Date:** 2026-07-30
 **Status:** Approved
 
 ## Goal

@@ -798,6 +798,7 @@ docker run --rm --name mud-web-proxy \
   --env INBOUND_TLS_MODE=off \
   --env ALLOW_INSECURE_INBOUND_NO_TLS=true \
   --env TARGET_MODE=fixed \
+  --env MUD_TLS_MODE=plain \
   --env TN_HOST=mud.example.com \
   --env TN_PORT=4000 \
   mud-web-proxy:local
@@ -835,37 +836,36 @@ Expected: all commands exit 0.
 
 - [ ] **Step 4: Run the complete project and container verification**
 
-Create isolated, user-owned directories for generated dependencies and output,
-run the project checks with the exact pinned runtime, then remove the temporary
-tree:
+Extract the exact pinned Bun binary and run the project checks in the host test
+environment, then remove generated output. The host supplies OpenSSL and its
+normal localhost resolver, both of which existing unit tests require; the
+minimal Bun image supplies neither the same resolver behavior nor OpenSSL.
 
 ```bash
 verify_root="$(mktemp -d)"
-mkdir -p \
-  "${verify_root}/node_modules" \
-  "${verify_root}/dist" \
-  "${verify_root}/coverage"
-trap 'rm -r "${verify_root}"' EXIT
-docker run --rm \
-  --user "$(id -u):$(id -g)" \
-  --mount "type=bind,source=$PWD,target=/workspace" \
-  --mount "type=bind,source=${verify_root}/node_modules,target=/workspace/node_modules" \
-  --mount "type=bind,source=${verify_root}/dist,target=/workspace/dist" \
-  --mount "type=bind,source=${verify_root}/coverage,target=/workspace/coverage" \
-  --workdir /workspace \
-  oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4 \
-  sh -ec '
-    bun install --frozen-lockfile
-    bun run check:bun-version
-    bun run format
-    bun run check:config-docs
-    bun run typecheck
-    bun run lint
-    bun run test:unit
-    bun run build
-  '
-rm -r "${verify_root}"
-trap - EXIT
+cleanup_verify() {
+  [[ ! -e "${PWD}/node_modules" ]] ||
+    /usr/bin/rm -r "${PWD}/node_modules"
+  [[ ! -e "${PWD}/dist" ]] || /usr/bin/rm -r "${PWD}/dist"
+  [[ ! -e "${PWD}/coverage" ]] || /usr/bin/rm -r "${PWD}/coverage"
+  [[ ! -e "${verify_root}" ]] || /usr/bin/rm -r "${verify_root}"
+}
+trap cleanup_verify EXIT
+container_id="$(
+  docker create \
+    oven/bun:1.3.14@sha256:e10577f0db68676a7024391c6e5cb4b879ebd17188ab750cf10024a6d700e5c4
+)"
+docker cp "${container_id}:/usr/local/bin/bun" "${verify_root}/bun"
+docker rm "${container_id}"
+export PATH="${verify_root}:${PATH}"
+bun install --frozen-lockfile
+bun run check:bun-version
+bun run format
+bun run check:config-docs
+bun run typecheck
+bun run lint
+bun run test:unit
+bun run build
 bun run test:container
 ```
 
@@ -879,7 +879,8 @@ Expected:
 - [ ] **Step 5: Commit CI and documentation**
 
 ```bash
-git add .github/workflows/test.yml README.md
+git add .github/workflows/test.yml README.md \
+  docs/superpowers/plans/2026-07-30-production-docker-image.md
 git commit -m "ci(container): gate the production image (MWP-98)"
 ```
 
