@@ -116,8 +116,13 @@ Before a declared low-traffic window, the production owner must:
 7. Resolve the legacy App Attest path, take the validated pre-stop safety
    copy, and record the required metadata. Defer the final copy until the old
    service is quiescent.
-8. Validate new-host loopback application health, systemd configuration, and
-   Caddy configuration. Do not send production traffic to the new host yet.
+8. Validate the systemd and Caddy configuration while keeping the production
+   systemd service stopped. Any pre-window application-health check must use
+   an isolated foreground verification process and configuration with a
+   disposable App Attest state path. It must not use or mutate production App
+   Attest state. The production systemd service must not start until the
+   validated post-stop final store is installed. Do not send production traffic
+   to the new host yet.
 
 Record the old and new Droplet IDs, routing mechanism, releases, artifact
 checksum, App Attest metadata, operator, and recorded rollback commands before
@@ -297,8 +302,8 @@ following before accepting the cutover:
 - forwarded client attribution is correct;
 - the App Attest store remains a JSON object with the unchanged final key
   count after service start; and
-- an assertion from an already-registered production client succeeds when one
-  is available. Do not use a new registration as the preservation test.
+- an assertion from an already-registered production client succeeds. This is
+  mandatory; a newly registered client does not satisfy the preservation test.
 
 Record acceptance evidence, the final checksum/count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
@@ -330,10 +335,12 @@ against the actual rollback release before the window.
 
 ## Old-Droplet retention and deletion
 
-The production owner retains the stopped old Droplet for seven calendar days
-after successful cutover. The private record assigns the deletion owner and
-retention deadline. Delete the old Droplet only when all of these conditions
-hold:
+The production owner retains the old Droplet for seven calendar days after
+successful cutover. Only the legacy proxy service remains stopped: keep the
+old Droplet powered on, with its configuration and state untouched, throughout
+the retention window for fast rollback. The private record assigns the deletion
+owner and retention deadline. Delete the old Droplet only when all of these
+conditions hold:
 
 1. The new deployment has remained healthy for seven days.
 2. Automated and file-level backups completed successfully.
