@@ -90,6 +90,11 @@ See [Native systemd deployment](docs/deployment/systemd.md). The systemd unit
 and native release bundle land in MWP-105 and MWP-103 respectively; the guide
 already defines the filesystem and operational contract they must implement.
 
+Migration from the legacy PM2/git-checkout host uses a new Ubuntu 26.04
+Droplet rather than an in-place conversion. Follow the
+[New-Droplet cutover runbook](docs/deployment/new-droplet-cutover.md); App
+Attest state preservation is mandatory for the current production deployment.
+
 App Attest is disabled unless both `APPATTEST_BUNDLE_ID` and
 `APPATTEST_TEAM_ID` are set. When enabled, mount the writable directory
 `/var/lib/mud-web-proxy`, not the `attested-keys.json` file; atomic persistence
