@@ -78,6 +78,7 @@ import type { Server as HttpServer } from 'http';
 import type { IncomingMessage, ServerResponse } from 'http';
 
 import os from 'os';
+import { version as packageVersion } from './package.json';
 import { SessionIntegration } from './src/session-integration';
 import { HeartbeatMonitor } from './src/heartbeat';
 import { ShutdownCoordinator } from './src/shutdown';
@@ -209,7 +210,24 @@ const messageRateLimiter = new MessageRateLimiter(runtimeConfig.messageRate);
 // if this is true, only allow connections to srv.tn_host, ignoring
 // the server sent as argument by the client
 const ONLY_ALLOW_DEFAULT_SERVER = runtimeConfig.onlyAllowDefaultServer;
-const PACKAGE_VERSION = '3.1.0';
+/**
+ * The single source of truth for the version, imported rather than restated.
+ *
+ * This was a second hardcoded string that had to be kept equal to
+ * package.json by hand, with a test to catch the drift. Two constants that
+ * must agree is the duplication pattern behind most of Phase 1's defects, and
+ * here it had a specific operational cost: a release could ship reporting the
+ * previous version on /health, which is the only thing an operator has to
+ * confirm a deploy took effect or that a rollback landed.
+ *
+ * Imported as a NAMED export, not the default. esbuild inlines a relative JSON
+ * import at build time — `--packages=external` marks package imports external,
+ * not relative ones — but a default import embeds the whole manifest, which put
+ * every devDependency into dist/wsproxy.js. The named form tree-shakes to just
+ * the string, so the bundle needs no package.json beside it and carries nothing
+ * else from it.
+ */
+const PACKAGE_VERSION: string = packageVersion;
 const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
