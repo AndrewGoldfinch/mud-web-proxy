@@ -69,6 +69,11 @@ describe('/health endpoint', () => {
       expect(keys).toEqual(['status', 'version']);
       expect(body.status).toBe('healthy');
       expect(typeof body.version).toBe('string');
+      // Since wsproxy.ts imports the version from package.json, this can no longer
+      // catch drift between two constants — drift is structurally impossible now.
+      // It still earns its place: it proves the running process exposes a real
+      // version rather than '' or undefined, which is the one signal an operator
+      // has that a deploy took effect or a rollback landed. Not tautological.
       expect(body.version).toBe(pkg.version);
 
       proxyProcess!.kill('SIGTERM');
