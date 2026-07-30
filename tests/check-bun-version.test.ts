@@ -1,7 +1,8 @@
 import { afterEach, expect, test } from 'bun:test';
-import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
+import { collectBunVersionErrors } from '../scripts/check-bun-version';
 
 const CHECKER = path.resolve(
   import.meta.dir,
@@ -12,8 +13,9 @@ const CHECKER = path.resolve(
 const fixtures: string[] = [];
 
 interface FixtureOptions {
+  canonicalContent?: string;
+  packageContent?: string;
   packageVersion?: string;
-  workflowVersion?: string;
 }
 
 const makeFixture = async (
@@ -23,27 +25,16 @@ const makeFixture = async (
   const root = await mkdtemp(path.join(tmpdir(), 'mwp-bun-version-'));
   fixtures.push(root);
 
-  await mkdir(path.join(root, '.github', 'workflows'), { recursive: true });
-  await writeFile(path.join(root, '.bun-version'), `${version}\n`);
   await writeFile(
-    path.join(root, 'package.json'),
-    JSON.stringify({
-      engines: { bun: options.packageVersion ?? version },
-    }),
+    path.join(root, '.bun-version'),
+    options.canonicalContent ?? `${version}\n`,
   );
   await writeFile(
-    path.join(root, '.github', 'workflows', 'test.yml'),
-    [
-      'env:',
-      `  BUN_VERSION: '${options.workflowVersion ?? version}'`,
-      'jobs:',
-      '  quality:',
-      '    steps:',
-      '      - uses: oven-sh/setup-bun@pinned-sha',
-      '        with:',
-      '          bun-version: ${{ env.BUN_VERSION }}',
-      '',
-    ].join('\n'),
+    path.join(root, 'package.json'),
+    options.packageContent ??
+      JSON.stringify({
+        engines: { bun: options.packageVersion ?? version },
+      }),
   );
 
   return root;
@@ -72,7 +63,91 @@ afterEach(async () => {
   );
 });
 
-test('accepts an exact pin shared by metadata, workflows, and runtime', async () => {
+test('accepts exact package and runtime mirrors', async () => {
+  const root = await makeFixture('1.2.3');
+
+  expect(await collectBunVersionErrors(root, '1.2.3')).toEqual({
+    version: '1.2.3',
+    errors: [],
+  });
+});
+
+test('collects independent package and runtime mismatches', async () => {
+  const root = await makeFixture('1.2.3', {
+    packageVersion: '1.2.2',
+  });
+
+  expect(await collectBunVersionErrors(root, '1.2.1')).toEqual({
+    version: '1.2.3',
+    errors: [
+      'package.json engines.bun must equal 1.2.3; found 1.2.2',
+      'running Bun must equal 1.2.3; found 1.2.1',
+    ],
+  });
+});
+
+test('a missing canonical file returns one source error', async () => {
+  const root = await makeFixture('1.2.3');
+  await rm(path.join(root, '.bun-version'));
+
+  const result = await collectBunVersionErrors(root, '9.9.9');
+
+  expect(result.version).toBe('');
+  expect(result.errors).toHaveLength(1);
+  expect(result.errors[0]).toContain('.bun-version could not be read');
+});
+
+test('an unreadable canonical path returns one source error', async () => {
+  const root = await makeFixture('1.2.3');
+  await rm(path.join(root, '.bun-version'));
+  await mkdir(path.join(root, '.bun-version'));
+
+  const result = await collectBunVersionErrors(root, '9.9.9');
+
+  expect(result.version).toBe('');
+  expect(result.errors).toHaveLength(1);
+  expect(result.errors[0]).toContain('.bun-version could not be read');
+});
+
+test.each([
+  ['', '(empty)'],
+  ['1.2', '1.2'],
+])(
+  'invalid canonical content %p returns one error',
+  async (canonicalContent, displayed) => {
+    const root = await makeFixture('ignored', { canonicalContent });
+
+    const result = await collectBunVersionErrors(root, '9.9.9');
+
+    expect(result.errors).toEqual([
+      `.bun-version must contain an exact x.y.z version; found ${displayed}`,
+    ]);
+  },
+);
+
+test('a missing package manifest returns one source error', async () => {
+  const root = await makeFixture('1.2.3');
+  await rm(path.join(root, 'package.json'));
+
+  const result = await collectBunVersionErrors(root, '9.9.9');
+
+  expect(result.version).toBe('1.2.3');
+  expect(result.errors).toHaveLength(1);
+  expect(result.errors[0]).toContain('package.json could not be read');
+});
+
+test('invalid package JSON returns one source error', async () => {
+  const root = await makeFixture('1.2.3', {
+    packageContent: '{not-json',
+  });
+
+  const result = await collectBunVersionErrors(root, '9.9.9');
+
+  expect(result.version).toBe('1.2.3');
+  expect(result.errors).toEqual(['package.json must contain valid JSON']);
+});
+
+test('CLI exits zero when every resolved source agrees', async () => {
   const root = await makeFixture(Bun.version);
   const result = await runCheck(root);
 
@@ -83,41 +158,15 @@ test('accepts an exact pin shared by metadata, workflows, and runtime', async ()
   expect(result.stderr).toBe('');
 });
 
-test('rejects every source that differs from the canonical file', async () => {
-  const root = await makeFixture('9.9.9', {
-    packageVersion: '>=9.9.9',
-    workflowVersion: '9.9.8',
+test('CLI exits one when a resolved source disagrees', async () => {
+  const root = await makeFixture(Bun.version, {
+    packageVersion: '9.9.9',
   });
   const result = await runCheck(root);
 
   expect(result.exitCode).toBe(1);
+  expect(result.stdout).toBe('');
   expect(result.stderr).toContain(
-    'package.json engines.bun must equal 9.9.9; found >=9.9.9',
-  );
-  expect(result.stderr).toContain(
-    '.github/workflows/test.yml BUN_VERSION must equal 9.9.9; found 9.9.8',
-  );
-  expect(result.stderr).toContain(
-    `running Bun must equal 9.9.9; found ${Bun.version}`,
-  );
-});
-
-test('rejects any setup-bun step without a bun-version input', async () => {
-  const root = await makeFixture(Bun.version);
-  await appendFile(
-    path.join(root, '.github', 'workflows', 'test.yml'),
-    [
-      '  unpinned:',
-      '    steps:',
-      '      - uses: oven-sh/setup-bun@pinned-sha',
-      '',
-    ].join('\n'),
-  );
-
-  const result = await runCheck(root);
-
-  expect(result.exitCode).toBe(1);
-  expect(result.stderr).toContain(
-    '.github/workflows/test.yml setup-bun step at line 11 must declare bun-version',
+    `package.json engines.bun must equal ${Bun.version}; found 9.9.9`,
   );
 });
