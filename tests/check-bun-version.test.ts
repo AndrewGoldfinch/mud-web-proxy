@@ -147,6 +147,17 @@ test('invalid package JSON returns one source error', async () => {
   expect(result.errors).toEqual(['package.json must contain valid JSON']);
 });
 
+test('a non-object package manifest returns one source error', async () => {
+  const root = await makeFixture('1.2.3', {
+    packageContent: 'null',
+  });
+
+  const result = await collectBunVersionErrors(root, '9.9.9');
+
+  expect(result.version).toBe('1.2.3');
+  expect(result.errors).toEqual(['package.json must contain valid JSON']);
+});
+
 test('CLI exits zero when every resolved source agrees', async () => {
   const root = await makeFixture(Bun.version);
   const result = await runCheck(root);

@@ -54,9 +54,9 @@ export const collectBunVersionErrors = async (
     };
   }
 
-  let manifest: PackageManifest;
+  let manifest: unknown;
   try {
-    manifest = JSON.parse(packageSource) as PackageManifest;
+    manifest = JSON.parse(packageSource);
   } catch {
     return {
       version,
@@ -64,8 +64,19 @@ export const collectBunVersionErrors = async (
     };
   }
 
+  if (
+    typeof manifest !== 'object' ||
+    manifest === null ||
+    Array.isArray(manifest)
+  ) {
+    return {
+      version,
+      errors: ['package.json must contain valid JSON'],
+    };
+  }
+
   const errors: string[] = [];
-  const packageVersion = manifest.engines?.bun;
+  const packageVersion = (manifest as PackageManifest).engines?.bun;
   if (packageVersion !== version) {
     errors.push(
       `package.json engines.bun must equal ${version}; found ${String(packageVersion)}`,
