@@ -162,7 +162,8 @@ WebSocket tunneling and trusted-proxy configuration; see the
 
 ### Docker Compose
 
-- Pin Bun `1.3.14` in package metadata, CI, and the image build.
+- Keep the canonical Bun pin in `.bun-version`; CI reads it directly, and
+  package metadata and the image build derive from or are checked against it.
 - Add a multi-stage Dockerfile with a non-root runtime, production
   dependencies, read-only root filesystem where practical, dropped
   capabilities, and no-new-privileges.

@@ -1,5 +1,10 @@
 # MWP-97 Bun Version Pin Implementation Plan
 
+> **Superseded:** The workflow/version-checking design in this plan was
+> replaced by
+> [`2026-07-30-bun-version-source-redesign.md`](2026-07-30-bun-version-source-redesign.md).
+> Keep this file only as the implementation history for the first PR revision.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use
 > superpowers:subagent-driven-development (recommended) or
 > superpowers:executing-plans to implement this plan task-by-task. Steps use
