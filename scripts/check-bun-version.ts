@@ -12,6 +12,11 @@ interface PackageManifest {
   };
 }
 
+interface SetupBunStep {
+  line: number;
+  input?: string;
+}
+
 const ENV_REFERENCE = '${{ env.BUN_VERSION }}';
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
@@ -24,6 +29,64 @@ const yamlScalar = (value: string): string => {
     return withoutComment.slice(1, -1);
   }
   return withoutComment;
+};
+
+const collectSetupBunSteps = (workflow: string): SetupBunStep[] => {
+  const lines = workflow.split('\n');
+  const steps: SetupBunStep[] = [];
+
+  for (let actionIndex = 0; actionIndex < lines.length; actionIndex += 1) {
+    const actionMatch = lines[actionIndex].match(
+      /^(\s*)(-\s*)?uses:\s*['"]?oven-sh\/setup-bun@[^'"\s#]+['"]?(?:\s+#.*)?\s*$/,
+    );
+    if (!actionMatch) {
+      continue;
+    }
+
+    let stepStart = actionIndex;
+    let stepIndent = actionMatch[1].length;
+
+    if (!actionMatch[2]) {
+      for (let index = actionIndex - 1; index >= 0; index -= 1) {
+        const stepMatch = lines[index].match(/^(\s*)-\s+\S/);
+        if (stepMatch && stepMatch[1].length < stepIndent) {
+          stepStart = index;
+          stepIndent = stepMatch[1].length;
+          break;
+        }
+      }
+    }
+
+    let stepEnd = lines.length;
+    for (let index = stepStart + 1; index < lines.length; index += 1) {
+      const line = lines[index];
+      if (line.trim() === '' || line.trimStart().startsWith('#')) {
+        continue;
+      }
+
+      const indent = line.match(/^\s*/)?.[0].length ?? 0;
+      if (
+        indent < stepIndent ||
+        (indent === stepIndent && /^\s*-\s+\S/.test(line))
+      ) {
+        stepEnd = index;
+        break;
+      }
+    }
+
+    let input: string | undefined;
+    for (let index = stepStart + 1; index < stepEnd; index += 1) {
+      const inputMatch = lines[index].match(/^\s*bun-version:\s*(.+)$/);
+      if (inputMatch) {
+        input = yamlScalar(inputMatch[1]);
+        break;
+      }
+    }
+
+    steps.push({ line: actionIndex + 1, input });
+  }
+
+  return steps;
 };
 
 export const collectBunVersionErrors = async (
@@ -55,7 +118,7 @@ export const collectBunVersionErrors = async (
   const workflowFiles = (await readdir(workflowsDir))
     .filter((file) => /\.ya?ml$/.test(file))
     .sort();
-  let setupInputs = 0;
+  let setupActions = 0;
 
   for (const file of workflowFiles) {
     const relativeFile = path.join('.github', 'workflows', file);
@@ -63,9 +126,7 @@ export const collectBunVersionErrors = async (
     const envVersions = [
       ...workflow.matchAll(/^\s*BUN_VERSION:\s*(.+)$/gm),
     ].map((match) => yamlScalar(match[1]));
-    const inputs = [...workflow.matchAll(/^\s*bun-version:\s*(.+)$/gm)].map(
-      (match) => yamlScalar(match[1]),
-    );
+    const setupSteps = collectSetupBunSteps(workflow);
 
     for (const envVersion of envVersions) {
       if (envVersion !== version) {
@@ -75,8 +136,16 @@ export const collectBunVersionErrors = async (
       }
     }
 
-    for (const input of inputs) {
-      setupInputs += 1;
+    for (const step of setupSteps) {
+      setupActions += 1;
+      if (step.input === undefined) {
+        errors.push(
+          `${relativeFile} setup-bun step at line ${step.line} must declare bun-version`,
+        );
+        continue;
+      }
+
+      const input = step.input;
       if (input === ENV_REFERENCE) {
         if (envVersions.length === 0) {
           errors.push(
@@ -91,8 +160,8 @@ export const collectBunVersionErrors = async (
     }
   }
 
-  if (setupInputs === 0) {
-    errors.push('no bun-version input exists in .github/workflows');
+  if (setupActions === 0) {
+    errors.push('no oven-sh/setup-bun action exists in .github/workflows');
   }
 
   if (runtimeVersion !== version) {

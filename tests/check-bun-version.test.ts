@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from 'bun:test';
-import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
+import { appendFile, mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
 
@@ -99,5 +99,25 @@ test('rejects every source that differs from the canonical file', async () => {
   );
   expect(result.stderr).toContain(
     `running Bun must equal 9.9.9; found ${Bun.version}`,
+  );
+});
+
+test('rejects any setup-bun step without a bun-version input', async () => {
+  const root = await makeFixture(Bun.version);
+  await appendFile(
+    path.join(root, '.github', 'workflows', 'test.yml'),
+    [
+      '  unpinned:',
+      '    steps:',
+      '      - uses: oven-sh/setup-bun@pinned-sha',
+      '',
+    ].join('\n'),
+  );
+
+  const result = await runCheck(root);
+
+  expect(result.exitCode).toBe(1);
+  expect(result.stderr).toContain(
+    '.github/workflows/test.yml setup-bun step at line 11 must declare bun-version',
   );
 });
