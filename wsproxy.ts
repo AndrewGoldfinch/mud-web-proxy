@@ -2034,9 +2034,15 @@ const srv: ServerConfig = {
             extendedSocket,
             srv.trustedProxyCidrs,
           );
-          const session =
-            sessionIntegration.sessionManager.findByWebSocket(extendedSocket);
-          const decision = messageRateLimiter.check(session?.id, address);
+          // Keyed on the connection, not the session. A legacy raw-telnet
+          // connection never has a Session, so keying on the session left
+          // legacy traffic bound only by the address allowance — 240/second
+          // against the 60/second the per-connection limit advertises. Both
+          // wire protocols get identical policy (MWP-90).
+          const decision = messageRateLimiter.check(
+            `ws#${extendedSocket.socketId ?? 0}`,
+            address,
+          );
 
           if (!decision.allowed) {
             if (decision.notify) {

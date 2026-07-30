@@ -18,10 +18,10 @@
  * server-derived one from the trusted-proxy work — never a client-supplied
  * value, or the limit is advisory.
  *
- * There is deliberately no explicit release-on-session-end hook. Wiring one
- * would mean plumbing a callback through SessionManager.removeSession, and it
- * buys nothing: the windows are bounded by eviction, and if an active session's
- * window is evicted early it simply gets a fresh allowance — at which point the
+ * There is deliberately no explicit release-on-disconnect hook. Wiring one
+ * would mean threading one through the socket close path, and it buys nothing:
+ * the windows are bounded by eviction, and if an active connection's window is
+ * evicted early it simply gets a fresh allowance — at which point the
  * per-address dimension is still binding, which is one of the reasons both
  * dimensions exist. A method that is exported but never called is worse than its
  * absence, because a reader assumes the release happens somewhere.
@@ -35,7 +35,19 @@
 import { SlidingWindowLimiter } from './wsproxy-utils';
 
 export interface MessageRateLimits {
-  perSessionPerSecond: number;
+  /**
+   * Frames per second for one connection.
+   *
+   * Keyed on the connection rather than the session deliberately. A legacy
+   * raw-telnet connection never has a Session, so keying on the session left
+   * legacy traffic bound only by the address allowance — 240/second against the
+   * 60/second this advertises. MWP-90 established that both wire protocols get
+   * identical policy. The connection is also the right granularity for a
+   * message rate: resume reuses one session across connections sequentially,
+   * never concurrently, and a connection-scoped key cannot change mid-stream
+   * the way a session id appearing partway through would.
+   */
+  perConnectionPerSecond: number;
   perAddressPerSecond: number;
 }
 
@@ -50,7 +62,7 @@ export type RateDecision =
   | {
       allowed: false;
       /** Which limit was hit — what an operator needs to know. */
-      dimension: 'session' | 'address';
+      dimension: 'connection' | 'address';
       /**
        * True only for the first refusal in a window. Replying to every dropped
        * frame would amplify outbound traffic during exactly the flood being
@@ -62,7 +74,7 @@ export type RateDecision =
 const WINDOW_MS = 1_000;
 
 export class MessageRateLimiter {
-  private readonly sessions: SlidingWindowLimiter;
+  private readonly connections: SlidingWindowLimiter;
   private readonly addresses: SlidingWindowLimiter;
   /** Keys already told they are throttled, cleared when their window rolls. */
   private readonly notified = new Map<string, number>();
@@ -75,8 +87,8 @@ export class MessageRateLimiter {
     this.now = options.now ?? Date.now;
     const maxTrackedSources = options.maxTrackedSources ?? 10_000;
 
-    this.sessions = new SlidingWindowLimiter({
-      maxRequests: limits.perSessionPerSecond,
+    this.connections = new SlidingWindowLimiter({
+      maxRequests: limits.perConnectionPerSecond,
       windowMs: WINDOW_MS,
       maxTrackedSources,
       now: this.now,
@@ -92,14 +104,31 @@ export class MessageRateLimiter {
   /**
    * Account for one inbound message.
    *
-   * `sessionKey` is undefined for legacy raw-telnet connections, which have no
-   * Session. They are still bounded by address — skipping the check for them
-   * would leave the older protocol as the unlimited one.
+   * `connectionKey` is always present, for both wire protocols. An earlier
+   * version keyed this on the session id, which legacy raw-telnet connections
+   * never have — so legacy traffic was bound only by the address allowance.
    *
-   * The address budget is consumed first and unconditionally, so N sessions
-   * cannot multiply one address's allowance.
+   * The narrower dimension is checked first; see the body for why.
    */
-  check(sessionKey: string | undefined, address: string): RateDecision {
+  check(connectionKey: string, address: string): RateDecision {
+    // Connection first, deliberately. Consuming address budget for a frame that
+    // is then refused on connection grounds lets one abusive connection burn the
+    // allowance its siblings share — and addresses are shared routinely, by NAT
+    // and CGNAT, so that would throttle innocent players because of someone
+    // else's client. Checking the narrower dimension first keeps the cost of
+    // misbehaviour with the connection that caused it.
+    //
+    // This does not weaken the bypass protection: N connections each staying
+    // inside their own allowance still meet the address limit below, which is
+    // the dimension that exists to stop reconnecting for more throughput.
+    if (!this.connections.tryConsume(connectionKey)) {
+      return {
+        allowed: false,
+        dimension: 'connection',
+        notify: this.shouldNotify(`conn:${connectionKey}`),
+      };
+    }
+
     if (!this.addresses.tryConsume(address)) {
       return {
         allowed: false,
@@ -108,20 +137,12 @@ export class MessageRateLimiter {
       };
     }
 
-    if (sessionKey !== undefined && !this.sessions.tryConsume(sessionKey)) {
-      return {
-        allowed: false,
-        dimension: 'session',
-        notify: this.shouldNotify(`sess:${sessionKey}`),
-      };
-    }
-
     return { allowed: true };
   }
 
-  /** Distinct sessions currently tracked. Exposed for tests. */
-  trackedSessions(): number {
-    return this.sessions.size();
+  /** Distinct connections currently tracked. Exposed for tests. */
+  trackedConnections(): number {
+    return this.connections.size();
   }
 
   /**

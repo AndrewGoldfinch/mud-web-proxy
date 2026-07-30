@@ -145,13 +145,21 @@ protection sees a single abusive address: this proxy's.
 Authentication does not substitute for this. `AUTH_MODE=shared-secret` proves a
 client is entitled to connect, not that it is behaving.
 
-Both dimensions apply, because either alone is trivially defeated: a per-session
-limit is bypassed by opening several sessions, and a per-address limit alone
-throttles a legitimate multi-session user as though they were one noisy client.
-`MAX_MESSAGES_PER_SECOND_PER_IP` must therefore be at least
-`MAX_MESSAGES_PER_SECOND`, and startup fails otherwise — below it, a single
-session could never reach its own allowance and the per-session limit would be
-dead configuration.
+Both dimensions apply, because either alone is trivially defeated: a
+per-connection limit is bypassed by opening several connections, and a
+per-address limit alone throttles a legitimate multi-session user as though they
+were one noisy client. `MAX_MESSAGES_PER_SECOND_PER_IP` must therefore be at
+least `MAX_MESSAGES_PER_SECOND`, and startup fails otherwise — below it, a single
+connection could never reach its own allowance and the per-connection limit would
+be dead configuration.
+
+The narrower limit is keyed on the **connection**, not the session, so both wire
+protocols get both dimensions: a legacy raw-telnet connection has no resumable
+session, and keying on one would have left legacy traffic bound only by the
+address allowance. It is also checked first, so a frame refused for exceeding a
+connection's own allowance does not consume the address budget its siblings
+share — addresses are shared routinely by NAT, and one abusive client should not
+throttle innocent players behind the same address.
 
 The address is the server-derived one, after `TRUSTED_PROXY_CIDRS` is applied.
 Keying on anything the client supplies would make the limit advisory.

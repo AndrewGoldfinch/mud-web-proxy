@@ -242,8 +242,8 @@ export interface AppAttestConfig {
 }
 
 export interface MessageRateConfig {
-  /** Frames per second for one session. */
-  perSessionPerSecond: number;
+  /** Frames per second for one connection — see MessageRateLimits for why. */
+  perConnectionPerSecond: number;
   /** Frames per second for one resolved client address, across its sessions. */
   perAddressPerSecond: number;
 }
@@ -865,22 +865,23 @@ export const parseRuntimeConfig = (
   // sends — a MUD client batches a few frames per keystroke at most. The address
   // budget is the larger, so a legitimate multi-session user is not throttled as
   // though they were one noisy session.
-  const perSessionPerSecond = readPositive('MAX_MESSAGES_PER_SECOND', 60);
+  const perConnectionPerSecond = readPositive('MAX_MESSAGES_PER_SECOND', 60);
   const perAddressPerSecond = readPositive(
     'MAX_MESSAGES_PER_SECOND_PER_IP',
     240,
   );
 
-  if (perAddressPerSecond < perSessionPerSecond) {
+  if (perAddressPerSecond < perConnectionPerSecond) {
     errors.push(
       `MAX_MESSAGES_PER_SECOND_PER_IP (${perAddressPerSecond}) must be at least ` +
-        `MAX_MESSAGES_PER_SECOND (${perSessionPerSecond}), or a single session ` +
-        'can never reach its own allowance and the per-session limit is dead.',
+        `MAX_MESSAGES_PER_SECOND (${perConnectionPerSecond}), or a single ` +
+        'connection can never reach its own allowance and the per-connection ' +
+        'limit is dead configuration.',
     );
   }
 
   const messageRate: MessageRateConfig = {
-    perSessionPerSecond,
+    perConnectionPerSecond,
     perAddressPerSecond,
   };
 
