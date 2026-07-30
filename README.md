@@ -26,10 +26,19 @@ In modern browsers, web-pages served through `https://` are not allowed to open 
 
 ## Installation
 
+Development and production use exactly the Bun release recorded in
+`.bun-version`. Clone the repository first, then install that release:
+
 ```bash
 git clone https://github.com/maldorne/mud-web-proxy
+cd mud-web-proxy
+curl -fsSL https://bun.com/install |
+  bash -s "bun-v$(cat .bun-version)"
 bun install
+bun run check:bun-version
+```
 
+```bash
 # Development (run TypeScript directly)
 bun dev
 
@@ -37,6 +46,12 @@ bun dev
 bun run build
 bun start
 ```
+
+To upgrade Bun, change `.bun-version`, mirror that exact value in
+`package.json#engines.bun`, and regenerate `bun.lock` with the new runtime.
+CI reads `.bun-version` directly, and `bun run check:bun-version` enforces the
+metadata mirror. Once MWP-98 lands, update its Docker base-image version in
+the same change.
 
 You need to have your certificates available to use wsproxy. Inbound TLS is required by default, so starting without usable certificates aborts at startup rather than quietly falling back to plaintext:
 

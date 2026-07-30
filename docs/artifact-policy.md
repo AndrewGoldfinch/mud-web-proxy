@@ -27,6 +27,7 @@ published as external release artifacts.
 
 CI runs the source checks without requiring private MUD credentials:
 
+- `bun run check:bun-version`
 - `bun run typecheck`
 - `bun run lint`
 - `bun run test:unit`
