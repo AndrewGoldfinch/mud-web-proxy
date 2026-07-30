@@ -17,7 +17,11 @@ import {
   type ResolvedTarget,
   type TargetPolicyConfig,
 } from './target-policy';
-import type { MudTlsMode, SessionLimitsConfig } from './runtime-config';
+import type {
+  MudTlsMode,
+  SessionLimitsConfig,
+  TelnetLimitsConfig,
+} from './runtime-config';
 import { resolveClientAddress } from './wsproxy-utils';
 import { neutralizeControlSequences } from './log-redaction';
 import {
@@ -98,6 +102,8 @@ export interface SessionIntegrationConfig {
   /** Upstream TLS policy. Defaults to `prefer`, matching prior behaviour. */
   mudTlsMode?: MudTlsMode;
   trustedProxyCidrs?: boolean | string[];
+  /** Telnet-side byte caps (MWP-93). Omitted keeps the built-in defaults. */
+  telnet?: TelnetLimitsConfig;
 }
 
 export class SessionIntegration {
@@ -510,9 +516,11 @@ export class SessionIntegration {
       target.host,
       target.port,
       ctx.deviceToken,
-      this.config.buffer.sizeKB * 1024,
+      this.config.telnet?.outputBufferBytes ??
+        this.config.buffer.sizeKB * 1024,
       dialAddress,
       this.config.mudTlsMode ?? 'prefer',
+      this.config.telnet?.maxSubnegotiationBytes,
     );
     // The reservation is deliberately NOT released here. Creating the Session
     // object does not consume capacity — connecting does, and the established

@@ -47,7 +47,19 @@ enum State {
   NEGOTIATION, // After WILL/WONT/DO/DONT, waiting for option byte
   SUBNEG, // Collecting subnegotiation data until IAC SE
   SUBNEG_IAC, // Saw IAC inside subneg, waiting for SE or escaped IAC
+  SUBNEG_DISCARD, // Over the cap: consume to the real IAC SE, keeping nothing
+  SUBNEG_DISCARD_IAC, // Saw IAC while discarding
 }
+
+/**
+ * Default cap on one subnegotiation payload.
+ *
+ * Chosen above what real MUDs send — Aardwolf, Achaea and Discworld all push
+ * large MSDP/GMCP blobs, and a cap that breaks a legitimate game is a worse
+ * outcome than the memory it saves. 64 KiB also matches the inbound WebSocket
+ * frame cap, so the two directions are bounded alike.
+ */
+export const DEFAULT_MAX_SUBNEGOTIATION_BYTES = 64 * 1024;
 
 export interface GmcpMessage {
   package: string;
@@ -85,6 +97,8 @@ export class TelnetParser {
   private negotiationCmd = 0; // WILL/WONT/DO/DONT that started current negotiation
   private subnegOption = 0; // Option code for current subnegotiation
   private subnegBuffer: number[] = [];
+  /** Set while discarding, so overflow is logged once per sequence, not per byte. */
+  private subnegOverflowLogged = false;
 
   // Negotiation state tracking
   private gmcpNegotiated = false;
@@ -106,7 +120,10 @@ export class TelnetParser {
   private readonly session: Session;
   private readonly sessionIdShort: string;
 
-  constructor(session: Session) {
+  constructor(
+    session: Session,
+    private readonly maxSubnegotiationBytes: number = DEFAULT_MAX_SUBNEGOTIATION_BYTES,
+  ) {
     this.session = session;
     this.sessionIdShort = session.id.substring(0, 8);
     // Set up terminal type queue like the old wsproxy
@@ -176,8 +193,35 @@ export class TelnetParser {
         case State.SUBNEG:
           if (byte === IAC) {
             this.state = State.SUBNEG_IAC;
+          } else if (this.subnegBuffer.length >= this.maxSubnegotiationBytes) {
+            // Over the cap. Drop what was collected and consume the rest of the
+            // sequence without keeping it, rather than truncating and carrying
+            // on: a truncated GMCP payload is invalid at best and misleading at
+            // worst, and treating the remaining payload as text would hand the
+            // player binary. Discarding to the real IAC SE resynchronizes.
+            this.logSubnegOverflow();
+            this.subnegBuffer = [];
+            this.state = State.SUBNEG_DISCARD;
           } else {
             this.subnegBuffer.push(byte);
+          }
+          break;
+
+        case State.SUBNEG_DISCARD:
+          // Everything here is thrown away; only IAC matters, to find the end.
+          if (byte === IAC) this.state = State.SUBNEG_DISCARD_IAC;
+          break;
+
+        case State.SUBNEG_DISCARD_IAC:
+          if (byte === SE) {
+            this.state = State.TEXT;
+            this.subnegOverflowLogged = false;
+          } else if (byte === IAC) {
+            // Escaped IAC in the discarded payload; keep discarding.
+            this.state = State.SUBNEG_DISCARD;
+          } else {
+            this.state = State.TEXT;
+            this.subnegOverflowLogged = false;
           }
           break;
 
@@ -220,6 +264,21 @@ export class TelnetParser {
       segments: output.segments,
       gmcpMessages: output.gmcpMessages,
     };
+  }
+
+  /**
+   * Report an over-long subnegotiation once per sequence.
+   *
+   * Per byte this would itself be the denial of service — a MUD streaming
+   * megabytes would produce a log line for each one.
+   */
+  private logSubnegOverflow(): void {
+    if (this.subnegOverflowLogged) return;
+    this.subnegOverflowLogged = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[telnet] [sid:${this.sessionIdShort}] subnegotiation option=${this.subnegOption} exceeded ${this.maxSubnegotiationBytes} bytes; sequence discarded`,
+    );
   }
 
   /** Record a clean text byte in both the running segment buffer and the full-call buffer. */

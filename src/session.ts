@@ -188,6 +188,7 @@ export class Session {
     bufferSizeBytes: number = 50 * 1024,
     dialAddress?: string,
     tlsMode: MudTlsMode = 'prefer',
+    maxSubnegotiationBytes?: number,
   ) {
     this.id = crypto.randomUUID();
     this.authToken = crypto.randomBytes(32).toString('hex');
@@ -202,7 +203,11 @@ export class Session {
     this.dialAddress = dialAddress || host;
     this.tlsMode = tlsMode;
     this.buffer = new CircularBuffer(bufferSizeBytes);
-    this.telnetParser = new TelnetParser(this);
+    // Threaded from configuration rather than left to the parser's default, so
+    // MAX_SUBNEGOTIATION_BYTES is a setting that is actually consulted. A value
+    // parsed by config while enforcement reads something else is the recurring
+    // defect on this project (MWP-80).
+    this.telnetParser = new TelnetParser(this, maxSubnegotiationBytes);
   }
 
   /**

@@ -1,0 +1,139 @@
+/**
+ * An unterminated subnegotiation must not grow memory without bound (MWP-93).
+ *
+ * `TelnetParser` is stateful per session: `subnegBuffer` and `state` persist
+ * across chunks, which is what lets it handle an IAC sequence split over a TCP
+ * boundary. It is also what makes it a memory sink — a MUD that sends
+ * `IAC SB <option>` and then streams bytes without ever sending `IAC SE` grows
+ * that buffer for as long as it keeps talking.
+ *
+ * Measured before the cap: 12.5 MiB streamed produced 435 MiB RSS. The
+ * amplification is roughly 35x, because `subnegBuffer` is a `number[]` — eight
+ * bytes of heap per byte on the wire, plus array growth — not a Buffer. Per
+ * session, multiplied by the session cap.
+ *
+ * In `arbitrary` target mode the MUD is chosen by the client, so this is memory
+ * a client can make the server allocate on demand.
+ *
+ * Note what is deliberately NOT asserted here: that a cap constant exists.
+ * These feed oversized input and assert the buffer stops growing, because a
+ * test that only checks for a named constant passes whether or not the cap is
+ * ever consulted.
+ */
+
+import { describe, expect, test } from 'bun:test';
+import { TelnetParser } from '../src/telnet-parser.js';
+import type { Session } from '../src/session.js';
+
+const IAC = 255;
+const SB = 250;
+const SE = 240;
+const GMCP = 201;
+
+const fakeSession = () =>
+  ({ id: 'test-session-id', echoOn: true }) as unknown as Session;
+
+/** Reach into the parser's private accumulator; that is the thing under test. */
+const bufferLength = (p: TelnetParser): number =>
+  (p as unknown as { subnegBuffer: number[] }).subnegBuffer.length;
+
+const parser = (maxSubnegBytes?: number) =>
+  new TelnetParser(fakeSession(), maxSubnegBytes);
+
+describe('a subnegotiation that never terminates is bounded', () => {
+  test('the accumulator stops growing at the cap', () => {
+    const p = parser(1024);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+
+    for (let i = 0; i < 50; i++) {
+      p.process(Buffer.alloc(4096, 0x41));
+    }
+
+    // 200 KiB streamed into a 1 KiB cap.
+    expect(bufferLength(p)).toBeLessThanOrEqual(1024);
+  });
+
+  test('growth is bounded no matter how long the stream continues', () => {
+    const p = parser(1024);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+
+    p.process(Buffer.alloc(8192, 0x41));
+    const afterFirst = bufferLength(p);
+    for (let i = 0; i < 100; i++) p.process(Buffer.alloc(8192, 0x41));
+
+    expect(bufferLength(p)).toBe(afterFirst);
+  });
+});
+
+describe('overflow does not desynchronize the stream', () => {
+  test('text after the real IAC SE is still parsed as text', () => {
+    // The failure mode worth guarding: truncate-and-continue leaves the parser
+    // treating subnegotiation payload as game text, so the player sees binary.
+    const p = parser(64);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.alloc(500, 0x41)); // overflows
+    p.process(Buffer.from([IAC, SE]));
+
+    const out = p.process(Buffer.from('hello world', 'utf8'));
+    expect(out.text.toString()).toBe('hello world');
+  });
+
+  test('the overflowed sequence is dropped, not emitted truncated', () => {
+    // A truncated GMCP payload is worse than none: it is invalid JSON at best,
+    // and misleading at worst.
+    const p = parser(64);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.from('Core.Hello ' + 'x'.repeat(500), 'utf8'));
+    const out = p.process(Buffer.from([IAC, SE]));
+
+    expect(out.gmcpMessages).toEqual([]);
+  });
+
+  test('a later, well-formed subnegotiation still works', () => {
+    // Overflow must not poison the parser for the rest of the session.
+    const p = parser(64);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.alloc(500, 0x41));
+    p.process(Buffer.from([IAC, SE]));
+
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    const out = p.process(
+      Buffer.concat([
+        Buffer.from('Core.Ping {}', 'utf8'),
+        Buffer.from([IAC, SE]),
+      ]),
+    );
+
+    expect(out.gmcpMessages.length).toBe(1);
+    expect(out.gmcpMessages[0].package).toBe('Core.Ping');
+  });
+});
+
+describe('legitimate payloads are unaffected', () => {
+  test('a large but in-bounds GMCP message is delivered intact', () => {
+    // Real MUDs send big MSDP/GMCP payloads. A cap that breaks Aardwolf is a
+    // worse outcome than the memory growth it prevents.
+    const p = parser(64 * 1024);
+    const payload = `Char.Status ${JSON.stringify({ blob: 'y'.repeat(20000) })}`;
+
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    const out = p.process(
+      Buffer.concat([Buffer.from(payload, 'utf8'), Buffer.from([IAC, SE])]),
+    );
+
+    expect(out.gmcpMessages.length).toBe(1);
+    expect(out.gmcpMessages[0].package).toBe('Char.Status');
+  });
+
+  test('a sequence split across chunks still assembles', () => {
+    // The reason the parser is stateful at all; the cap must not break it.
+    const p = parser(64 * 1024);
+    p.process(Buffer.from([IAC, SB, GMCP]));
+    p.process(Buffer.from('Core.Sup', 'utf8'));
+    p.process(Buffer.from('ports {}', 'utf8'));
+    const out = p.process(Buffer.from([IAC, SE]));
+
+    expect(out.gmcpMessages.length).toBe(1);
+    expect(out.gmcpMessages[0].package).toBe('Core.Supports');
+  });
+});

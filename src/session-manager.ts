@@ -89,6 +89,7 @@ export class SessionManager {
     bufferSizeBytes: number = 50 * 1024,
     dialAddress?: string,
     tlsMode?: MudTlsMode,
+    maxSubnegotiationBytes?: number,
   ): Session {
     const session = new Session(
       host,
@@ -96,6 +97,7 @@ export class SessionManager {
       bufferSizeBytes,
       dialAddress,
       tlsMode,
+      maxSubnegotiationBytes,
     );
 
     if (deviceToken) {

@@ -45,6 +45,15 @@ export class CircularBuffer {
 
     const chunkSize = data.length + CHUNK_OVERHEAD_ESTIMATE;
 
+    // A chunk larger than the whole buffer can never fit. Previously the
+    // eviction loop below emptied the buffer trying to make room and then
+    // stored it anyway, so a 10 KiB buffer held 64 KiB — over its limit by
+    // 6.4x, with the replay history discarded for nothing. Refuse it and keep
+    // what is already there (MWP-93).
+    if (chunkSize > this.maxSize) {
+      return chunk;
+    }
+
     // Remove oldest chunks until we have room
     while (this.currentSize + chunkSize > this.maxSize && this.count > 0) {
       const oldest = this.chunks[this.head];
