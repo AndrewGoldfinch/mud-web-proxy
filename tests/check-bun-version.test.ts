@@ -2,7 +2,10 @@ import { afterEach, expect, test } from 'bun:test';
 import { mkdir, mkdtemp, rm, writeFile } from 'fs/promises';
 import { tmpdir } from 'os';
 import path from 'path';
-import { collectBunVersionErrors } from '../scripts/check-bun-version';
+import {
+  collectBunVersionErrors,
+  collectWorkflowVersionErrors,
+} from '../scripts/check-bun-version';
 
 const CHECKER = path.resolve(
   import.meta.dir,
@@ -86,6 +89,49 @@ test('collects independent package and runtime mismatches', async () => {
   });
 });
 
+test('workflow actions all read the canonical file', () => {
+  const workflow = [
+    '- uses: oven-sh/setup-bun@sha-one',
+    '  with:',
+    '    bun-version-file: .bun-version',
+    '- uses: oven-sh/setup-bun@sha-two',
+    '  with:',
+    '    bun-version-file: .bun-version',
+  ].join('\n');
+
+  expect(collectWorkflowVersionErrors(workflow)).toEqual([]);
+});
+
+test('workflow rejects an explicit version override', () => {
+  const workflow = [
+    '- uses: oven-sh/setup-bun@sha',
+    '  with:',
+    '    bun-version: latest',
+  ].join('\n');
+
+  expect(collectWorkflowVersionErrors(workflow)).toEqual([
+    'workflow files must not declare bun-version; use bun-version-file: .bun-version',
+    'every setup-bun action must declare bun-version-file: .bun-version; found 1 action and 0 canonical inputs',
+  ]);
+});
+
+test.each([
+  [
+    '- uses: oven-sh/setup-bun@sha',
+    'every setup-bun action must declare bun-version-file: .bun-version; found 1 action and 0 canonical inputs',
+  ],
+  [
+    [
+      '- uses: oven-sh/setup-bun@sha',
+      '  with:',
+      '    bun-version-file: .bunversion',
+    ].join('\n'),
+    'every setup-bun action must declare bun-version-file: .bun-version; found 1 action and 0 canonical inputs',
+  ],
+])('%s violates the canonical workflow input count', (workflow, error) => {
+  expect(collectWorkflowVersionErrors(workflow)).toEqual([error]);
+});
+
 test('a missing canonical file returns one source error', async () => {
   const root = await makeFixture('1.2.3');
   await rm(path.join(root, '.bun-version'));
@@ -158,6 +204,17 @@ test('a non-object package manifest returns one source error', async () => {
   expect(result.errors).toEqual(['package.json must contain valid JSON']);
 });
 
+test('workflow read failures become source-specific errors', async () => {
+  const root = await makeFixture('1.2.3');
+  await mkdir(path.join(root, '.github'));
+  await writeFile(path.join(root, '.github', 'workflows'), 'not-a-directory');
+
+  const result = await collectBunVersionErrors(root, '1.2.3');
+
+  expect(result.errors).toHaveLength(1);
+  expect(result.errors[0]).toContain('.github/workflows could not be read');
+});
+
 test('CLI exits zero when every resolved source agrees', async () => {
   const root = await makeFixture(Bun.version);
   const result = await runCheck(root);
@@ -169,15 +226,24 @@ test('CLI exits zero when every resolved source agrees', async () => {
   expect(result.stderr).toBe('');
 });
 
-test('CLI exits one when a resolved source disagrees', async () => {
-  const root = await makeFixture(Bun.version, {
-    packageVersion: '9.9.9',
-  });
+test('CLI exits one when a workflow overrides the canonical file', async () => {
+  const root = await makeFixture(Bun.version);
+  const workflowsDir = path.join(root, '.github', 'workflows');
+  await mkdir(workflowsDir, { recursive: true });
+  await writeFile(
+    path.join(workflowsDir, 'test.yml'),
+    [
+      '- uses: oven-sh/setup-bun@sha',
+      '  with:',
+      '    bun-version: latest',
+      '',
+    ].join('\n'),
+  );
+
   const result = await runCheck(root);
 
   expect(result.exitCode).toBe(1);
-  expect(result.stdout).toBe('');
   expect(result.stderr).toContain(
-    `package.json engines.bun must equal ${Bun.version}; found 9.9.9`,
+    'workflow files must not declare bun-version',
   );
 });
