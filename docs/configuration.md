@@ -287,6 +287,19 @@ the `rpIdHash` and the team ID for the App ID the attestation nonce is bound
 to. Setting one without the other aborts startup. There is no separate enable
 flag, so the configuration and the state cannot disagree.
 
+**Startup also aborts when App Attest is enabled but the directory containing
+`ATTESTED_KEYS_PATH` is not writable.** Enabled-but-unwritable is the worst
+shape this misconfiguration can take: the proxy starts, passes its health
+check, and logs `App Attest ENABLED`, then loses the first registration it
+accepts. The container case is the concrete one — the image creates
+`/var/lib/mud-web-proxy`, so the directory exists, but with a read-only root
+and no volume mounted over it every write returns `EROFS`.
+
+The **directory** is checked, not the file: on a first run the file does not
+exist yet, and persistence stages a sibling file beside it before renaming it
+into place. That is also why the fix is always to mount the directory —
+mounting `attested-keys.json` itself breaks every write for the same reason.
+
 `ATTESTED_KEYS_PATH` holds a durable record of which devices have used this
 server and roughly when. Treat it as personal data. Entries are reclaimed after
 90 days of inactivity, which bounds retention rather than eliminating it.
