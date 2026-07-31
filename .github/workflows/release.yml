@@ -1,0 +1,133 @@
+name: Release
+
+# The only path that publishes images. Nothing pushes to GHCR by hand: a
+# manually pushed image has no provenance attestation, so it cannot be
+# verified, and its existence would undermine every image that can be.
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write # push to GHCR
+      id-token: write # OIDC token for attestation signing
+      attestations: write # record the provenance attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Classify the release
+        id: rel
+        # Tag policy lives here rather than in metadata-action's defaults so
+        # it is auditable: a reader can see exactly which tags a prerelease
+        # moves. A semver prerelease is anything with a hyphen after patch.
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          if [[ "$version" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          major="${version%%.*}"
+          rest="${version#*.}"
+          minor="${rest%%.*}"
+
+          {
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            echo "major=$major"
+            echo "major_minor=$major.$minor"
+            # GHCR rejects uppercase; the owner here is mixed case.
+            echo "image=ghcr.io/${GITHUB_REPOSITORY,,}"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Publishing $version (prerelease=$prerelease)"
+
+      - name: Refuse a tag that disagrees with package.json
+        # v4.0.0-rc.2 was once tagged at a commit whose package.json still
+        # said 4.0.0-rc.1, so /health reported a version that no longer
+        # matched the artefact. Tags are immutable by ruleset, so the only
+        # fix is to not create the mismatch.
+        run: |
+          set -euo pipefail
+          declared=$(node -p "require('./package.json').version")
+          if [[ "$declared" != "${{ steps.rel.outputs.version }}" ]]; then
+            echo "::error::tag ${{ github.ref_name }} does not match package.json version $declared"
+            exit 1
+          fi
+
+      - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
+      - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
+
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ steps.rel.outputs.image }}
+          # latest=false disables the implicit "latest" this action would
+          # otherwise add. Every moving tag below is opted into explicitly
+          # and only for a stable release: an RC that moved latest would be
+          # deployed by someone who never intended to run it.
+          flavor: latest=false
+          tags: |
+            type=raw,value=${{ steps.rel.outputs.version }}
+            type=raw,value=${{ steps.rel.outputs.major_minor }},enable=${{ steps.rel.outputs.prerelease == 'false' }}
+            type=raw,value=${{ steps.rel.outputs.major }},enable=${{ steps.rel.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ steps.rel.outputs.prerelease == 'false' }}
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          # arm64 is not decoration: this workload suits a Raspberry Pi or an
+          # Ampere VPS, which is exactly the self-hoster the release targets.
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # SBOM and in-toto provenance attached to the image itself. The
+          # GitHub attestation below is separate and complementary: this
+          # travels with the image to any registry, that is verifiable
+          # against the repository.
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@0f67c3f4856b2e3261c31976d6725780e5e4c373 # v4.1.1
+        with:
+          subject-name: ${{ steps.rel.outputs.image }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+
+      - name: Summary
+        run: |
+          {
+            echo "### Published \`${{ steps.rel.outputs.version }}\`"
+            echo
+            echo "Digest: \`${{ steps.build.outputs.digest }}\`"
+            echo
+            echo "Tags:"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+            if [[ "${{ steps.rel.outputs.prerelease }}" == "true" ]]; then
+              echo "Prerelease: moving tags (\`latest\`, \`${{ steps.rel.outputs.major }}\`, \`${{ steps.rel.outputs.major_minor }}\`) were **not** moved."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"

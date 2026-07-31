@@ -28,6 +28,13 @@ export type MockMUDType = 'ire' | 'aardwolf' | 'discworld' | 'rom' | 'chaos';
 export async function startMockMUDTest(
   type: MockMUDType = 'ire',
   proxyPort: number = 6299,
+  /**
+   * Overrides the factory's hardcoded MUD port. Every factory returns a
+   * fixed port, so two suites using the same type in one run bound the same
+   * port — the second either failed to bind or, worse, drove the first
+   * suite's server and asserted against the wrong instance's state.
+   */
+  mudPort?: number,
 ): Promise<MockMUDSetup> {
   // Create mock server
   let mockServer: MockMUDServer;
@@ -50,6 +57,11 @@ export async function startMockMUDTest(
       break;
     default:
       mockServer = createIREMUD();
+  }
+
+  if (mudPort !== undefined) {
+    (mockServer as unknown as { config: { port: number } }).config.port =
+      mudPort;
   }
 
   // Start mock server

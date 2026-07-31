@@ -100,6 +100,14 @@ export class E2EConnection {
               this.detectProtocols(msg);
             }
 
+            // A typed gmcp frame IS the evidence of GMCP negotiation. The
+            // proxy terminates telnet and never forwards raw IAC to the
+            // browser, so scanning data payloads for IAC bytes can only
+            // succeed when the proxy is failing to do its job.
+            if (msg.type === 'gmcp') {
+              this.negotiatedProtocols.gmcp = true;
+            }
+
             // Track errors
             if (msg.type === 'error') {
               clearTimeout(timeout);
@@ -249,10 +257,13 @@ export class E2EConnection {
    */
   sendCommand(command: string): void {
     if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      // The proxy writes input verbatim (session.sendToMud), so the line
+      // terminator is the client's responsibility, exactly as it is for a
+      // real client. Without it the MUD never sees a complete command.
       this.ws.send(
         JSON.stringify({
           type: 'input',
-          text: command,
+          text: command.endsWith('\n') ? command : command + '\n',
         }),
       );
     }

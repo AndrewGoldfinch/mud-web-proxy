@@ -1,0 +1,39 @@
+# Caddy terminates HTTPS/WSS in front of the proxy.
+#
+# Certificates are obtained and renewed automatically from Let's Encrypt.
+# That requires MWP_DOMAIN to resolve to this host and ports 80 and 443 to
+# be reachable from the internet; the HTTP-01 challenge uses port 80, so
+# closing it breaks renewal, not just issuance.
+
+{
+	email {$MWP_ACME_EMAIL}
+}
+
+{$MWP_DOMAIN} {
+	encode zstd gzip
+
+	reverse_proxy proxy:6200 {
+		# Replace, never append. Caddy's default is to append the peer
+		# address to any X-Forwarded-For the client already sent, so a
+		# client could prepend a forged address and the proxy — which
+		# trusts this hop via TRUSTED_PROXY_CIDRS — would read the forged
+		# value as the client IP. Per-IP limits and every log line keyed on
+		# client address depend on this being the real peer.
+		header_up X-Forwarded-For {remote_host}
+		header_up X-Real-IP {remote_host}
+
+		# Same reasoning for host attribution: pass what Caddy actually
+		# served, not what the client claimed.
+		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Proto {scheme}
+	}
+
+	# WebSocket upgrades need no special handling: reverse_proxy passes
+	# Connection and Upgrade through natively. Any `@websocket` matcher
+	# block found in older guides is a v1 artefact.
+
+	log {
+		output stderr
+		format console
+	}
+}

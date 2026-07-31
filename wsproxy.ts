@@ -399,9 +399,11 @@ const formatWsSocketContext = (s: SocketExtended): string => {
     getHeaderValue(s.req?.headers?.['x-forwarded-host']) || '-';
   const forwardedFor =
     getHeaderValue(s.req?.headers?.['x-forwarded-for']) || '-';
-  let targetSource: 'session' | 'requested' | 'default' = 'default';
-  let targetHost = srv.tn_host;
-  let targetPort = srv.tn_port;
+  const isFixedTarget = runtimeConfig.targetMode === 'fixed';
+  let targetSource: 'session' | 'requested' | 'default' | 'pending' =
+    isFixedTarget ? 'default' : 'pending';
+  let targetHost = isFixedTarget ? srv.tn_host : '-';
+  let targetPort: number | string = isFixedTarget ? srv.tn_port : '-';
 
   try {
     const session = sessionIntegration.sessionManager.findByWebSocket(s);

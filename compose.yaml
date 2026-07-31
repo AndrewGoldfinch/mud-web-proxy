@@ -1,0 +1,134 @@
+name: mud-web-proxy
+
+# Portable, container-first deployment. Caddy terminates HTTPS/WSS and one
+# Bun process runs behind it on an internal network.
+#
+# For a single Linux VM, the native Caddy + systemd path in
+# docs/deployment/systemd.md is the recommended default. Both paths share
+# this architecture; only the packaging differs.
+
+services:
+  caddy:
+    # Pinned to a specific minor. `caddy:alpine` would silently move across
+    # majors on the next pull.
+    image: caddy:2.11.4-alpine
+    restart: unless-stopped
+    # The only ports reachable from the host. The proxy is deliberately
+    # absent from every `ports:` block: it is reachable only over the
+    # internal network, by service name.
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp' # HTTP/3
+    environment:
+      # Empty in the example file, so the stack refuses to start until an
+      # operator supplies real values rather than serving a placeholder host.
+      MWP_DOMAIN: ${MWP_DOMAIN:?set MWP_DOMAIN in .env (copy .env.compose.example)}
+      MWP_ACME_EMAIL: ${MWP_ACME_EMAIL:?set MWP_ACME_EMAIL in .env (copy .env.compose.example)}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Issued certificates and ACME account keys. Losing this volume means
+      # re-issuing on next start, which counts against Let's Encrypt rate
+      # limits, so it is a named volume rather than a bind or tmpfs.
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - edge
+    read_only: true
+    # Everything Caddy persists lives in the volumes above; /tmp covers the
+    # scratch space a read-only rootfs would otherwise deny it.
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    # Binding 80/443 is the one privilege Caddy genuinely needs.
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - proxy
+
+  proxy:
+    # Builds locally by default. Once MWP-102 publishes to GHCR, set
+    # MWP_IMAGE to a digest-pinned reference and the build is skipped.
+    image: ${MWP_IMAGE:-mud-web-proxy:local}
+    build:
+      context: .
+    restart: unless-stopped
+    # Every proxy setting in .env reaches the container under its real,
+    # documented name — see docs/configuration.md. Enumerating them here
+    # instead would mean this file silently gates which of the ~58
+    # documented variables are usable, and drifting out of step with the
+    # reference the moment either changes. In particular the mode-specific
+    # requirements (ALLOWED_TARGETS for allowlist; ARBITRARY_ALLOWED_PORTS
+    # plus an authentication mode for arbitrary) arrive without compose
+    # needing to know they exist.
+    #
+    # `environment:` below takes precedence over anything here, so the
+    # topology values that must not be overridden cannot be.
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      # --- Internal plaintext hop (MWP-98 contract) ------------------------
+      # The image leaves deployment topology unset, so all three of these are
+      # mandatory here. The proxy listens on a non-loopback container
+      # interface, and runtime-config.ts refuses INBOUND_TLS_MODE=off on a
+      # non-loopback bind unless the risk is acknowledged explicitly.
+      #
+      # 'off' MUST stay quoted: YAML 1.1 parses a bare off as boolean false,
+      # which reaches the proxy as "false" and fails validation.
+      BIND_HOST: 0.0.0.0
+      INBOUND_TLS_MODE: 'off'
+      ALLOW_INSECURE_INBOUND_NO_TLS: 'true'
+      # Scoped to this stack's subnet, not the whole 172.16.0.0/12 private
+      # range. Forwarded headers are honoured only from Caddy, so a client
+      # cannot present its own X-Forwarded-For and be believed.
+      TRUSTED_PROXY_CIDRS: 172.28.0.0/24
+
+      # --- Target policy ---------------------------------------------------
+      # TARGET_MODE and its mode-specific companions arrive via env_file.
+      # TN_HOST is repeated here only for the :? guard: it defaults to a
+      # real third-party MUD (muds.maldorne.org), so an operator who never
+      # sets it would otherwise start a proxy quietly fronting someone
+      # else's server rather than failing.
+      TN_HOST: ${TN_HOST:?set TN_HOST in .env (copy .env.compose.example)}
+    networks:
+      - edge
+    read_only: true
+    # Bun writes nothing persistent, but a read-only rootfs still needs a
+    # scratch directory for anything that expects /tmp to exist.
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+    # App Attest state, when enabled, mounts HERE:
+    #
+    #   volumes:
+    #     - attested_keys:/var/lib/mud-web-proxy
+    #
+    # The target is the DIRECTORY, never the attested-keys.json file inside
+    # it. Persistence writes a sibling staging file and renames it into
+    # place, so a file-only mount makes every write fail. A volume mounted
+    # over this path stays writable despite read_only above.
+    #
+    # The volume itself, and making it writable by 10001:10001, belong to
+    # MWP-101. Nothing here should be uncommented without that work.
+
+networks:
+  edge:
+    driver: bridge
+    ipam:
+      config:
+        # Pinned so TRUSTED_PROXY_CIDRS above can name it exactly. Docker
+        # would otherwise allocate from a pool and the trusted range would
+        # have to be widened to cover whatever it picked.
+        - subnet: 172.28.0.0/24
+
+volumes:
+  caddy_data:
+  caddy_config:

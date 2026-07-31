@@ -12,7 +12,7 @@ import {
 } from './mock-mud';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
-const STRESS_PROXY_PORT = 6450;
+const STRESS_PROXY_PORT = 6470;
 const STRESS_MUD_PORT = 6451;
 
 function makeConfig(port: number, timeoutMs = 20000) {
@@ -93,6 +93,13 @@ describe('Stress Tests', () => {
     const proxy = await startTestProxy(STRESS_PROXY_PORT + 1, {
       TN_HOST: 'localhost',
       TN_PORT: (STRESS_MUD_PORT + 1).toString(),
+      // This measures command throughput, not rate limiting. At the default
+      // 60/s a 100-command burst has ~40 frames silently dropped and they
+      // are never resent, so the test could only ever observe ~60 — close
+      // enough to its own >50 threshold to pass or fail on scheduling luck.
+      // Rate limiting has dedicated coverage in tests/message-rate-limit.ts.
+      MAX_MESSAGES_PER_SECOND: '1000',
+      MAX_MESSAGES_PER_SECOND_PER_IP: '4000',
     });
 
     const conn = new E2EConnection(makeConfig(STRESS_MUD_PORT + 1, 30000));
@@ -100,6 +107,13 @@ describe('Stress Tests', () => {
     try {
       const result = await conn.connect(proxy.url);
       expect(result.success).toBe(true);
+
+      // Wait for the login prompt before typing. The session frame is sent
+      // before the telnet socket is established, so 'user' was written with
+      // nowhere to go and dropped. That shifted the whole exchange by one:
+      // 'pass' became the username and cmd_0 was consumed as the password,
+      // which is why cmd_0 alone never produced an echo.
+      await conn.waitForMessage('data', 5000);
 
       // Login
       conn.sendCommand('user');
@@ -114,17 +128,41 @@ describe('Stress Tests', () => {
         conn.sendCommand(`cmd_${i}`);
       }
 
-      // Wait for commands to arrive
-      await new Promise((r) => setTimeout(r, 5000));
+      // Poll until all 100 land rather than betting they fit in a fixed 5s.
+      const deadline = Date.now() + 20000;
+      while (
+        Date.now() < deadline &&
+        mock.getReceivedCommands().filter((c) => c.startsWith('cmd_')).length <
+          100
+      ) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
 
       const received = mock.getReceivedCommands();
-      // Should have received most commands (some may be batched)
+      // Every command must arrive, in order and unmerged. The previous >50
+      // bar was set around the rate limiter silently dropping ~40 of them,
+      // so it passed while nearly half the input was lost.
       const matchingCmds = received.filter((c) => c.startsWith('cmd_'));
-      expect(matchingCmds.length).toBeGreaterThan(50);
+      expect(matchingCmds.length).toBe(100);
+      expect(matchingCmds[0]).toBe('cmd_0');
+      expect(matchingCmds[99]).toBe('cmd_99');
 
-      // Should have received echo responses
-      const dataMessages = conn.getMessages().filter((m) => m.type === 'data');
-      expect(dataMessages.length).toBeGreaterThan(10);
+      // The echoes must come back. Assert on content, not on how many
+      // WebSocket frames they were split across: the proxy coalesces a
+      // burst of MUD output, so the frame count reflects scheduling rather
+      // than delivery. A >10 bar on frame count read as 5 on CI and 20+
+      // locally for identical, correct behaviour.
+      const echoDeadline = Date.now() + 10000;
+      while (
+        Date.now() < echoDeadline &&
+        !conn.getDataPayloads().join('').includes('cmd_99')
+      ) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+
+      const echoed = conn.getDataPayloads().join('');
+      expect(echoed).toContain('cmd_0');
+      expect(echoed).toContain('cmd_99');
     } finally {
       conn.close();
       await proxy.stop();
