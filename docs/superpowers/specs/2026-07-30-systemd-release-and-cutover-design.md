@@ -76,23 +76,27 @@ The native installation uses this layout:
 └── apns-auth-key.p8              # only when APNS is enabled
 /var/lib/mud-web-proxy/
 └── attested-keys.json            # only when App Attest is enabled
+/var/lib/mud-web-proxy-deploy/
+└── previous-release              # root-only persistent rollback target
 ```
 
 ### Ownership and modes
 
-| Path                      | Owner                         | Mode                              | Contract                                                        |
-| ------------------------- | ----------------------------- | --------------------------------- | --------------------------------------------------------------- |
-| `/opt/mud-web-proxy`      | `root:root`                   | `0755`                            | Service user can traverse but not modify.                       |
-| `releases/`               | `root:root`                   | `0755`                            | Contains immutable verified releases.                           |
-| `releases/<version>/`     | `root:root`                   | `0755`                            | No file is modified after activation.                           |
-| Release files             | `root:root`                   | `0644` unless executable          | Bundle and installed dependencies are read-only to the service. |
-| `current`                 | `root:root`                   | symlink                           | Replaced atomically; never edited in place.                     |
-| `runtimes/bun/<version>/` | `root:root`                   | directories `0755`, binary `0755` | Versioned and immutable.                                        |
-| `/etc/mud-web-proxy.env`  | `root:mud-web-proxy`          | `0640`                            | Contains configuration and secrets; not world-readable.         |
-| `/etc/mud-web-proxy/`     | `root:mud-web-proxy`          | `0750`                            | Holds read-only secret files referenced by the environment.     |
-| APNS private key          | `root:mud-web-proxy`          | `0640`                            | Present only when APNS is enabled.                              |
-| `/var/lib/mud-web-proxy/` | `mud-web-proxy:mud-web-proxy` | `0700`                            | Created by systemd `StateDirectory`.                            |
-| `attested-keys.json`      | `mud-web-proxy:mud-web-proxy` | `0600`                            | Durable App Attest registrations and counters.                  |
+| Path                             | Owner                         | Mode                              | Contract                                                        |
+| -------------------------------- | ----------------------------- | --------------------------------- | --------------------------------------------------------------- |
+| `/opt/mud-web-proxy`             | `root:root`                   | `0755`                            | Service user can traverse but not modify.                       |
+| `releases/`                      | `root:root`                   | `0755`                            | Contains immutable verified releases.                           |
+| `releases/<version>/`            | `root:root`                   | `0755`                            | No file is modified after activation.                           |
+| Release files                    | `root:root`                   | `0644` unless executable          | Bundle and installed dependencies are read-only to the service. |
+| `current`                        | `root:root`                   | symlink                           | Replaced atomically; never edited in place.                     |
+| `runtimes/bun/<version>/`        | `root:root`                   | directories `0755`, binary `0755` | Versioned and immutable.                                        |
+| `/etc/mud-web-proxy.env`         | `root:mud-web-proxy`          | `0640`                            | Contains configuration and secrets; not world-readable.         |
+| `/etc/mud-web-proxy/`            | `root:mud-web-proxy`          | `0750`                            | Holds read-only secret files referenced by the environment.     |
+| APNS private key                 | `root:mud-web-proxy`          | `0640`                            | Present only when APNS is enabled.                              |
+| `/var/lib/mud-web-proxy/`        | `mud-web-proxy:mud-web-proxy` | `0700`                            | Created by systemd `StateDirectory`.                            |
+| `attested-keys.json`             | `mud-web-proxy:mud-web-proxy` | `0600`                            | Durable App Attest registrations and counters.                  |
+| `/var/lib/mud-web-proxy-deploy/` | `root:root`                   | `0700`                            | Root-only deployment metadata outside service-writable state.   |
+| `previous-release`               | `root:root`                   | `0600`                            | Persistent rollback target written before activation.           |
 
 ### MWP-105 systemd handoff
 
@@ -107,14 +111,17 @@ through a symlink, and assigns a transient UID/GID. That conflicts with the
 pre-seeded `mud-web-proxy:mud-web-proxy` file and can make the mandatory App
 Attest store inaccessible at first start. The ownership, mode-correction, and
 dynamic-user behavior are defined in
-[systemd.exec](https://manpages.ubuntu.com/manpages/noble/man5/systemd.exec.5.html#runtime-directory-state-directory-cache-directory-logs-directory-configuration-directory).
+[Ubuntu 26.04's `systemd.exec`](https://manpages.ubuntu.com/manpages/resolute/man5/systemd.exec.5.html#runtime-directory-state-directory-cache-directory-logs-directory-configuration-directory).
 
-systemd creates the state directory when absent and reapplies its configured
-owner and `StateDirectoryMode` on every service start. The installer must
-still create the pre-start directory as `0700`; otherwise first start would
-silently correct the installation and make a later mode check prove
-systemd's repair rather than prove that the state transfer was installed
-correctly.
+systemd creates the state directory when absent, sets the innermost
+directory's owner and `StateDirectoryMode`, and recursively changes ownership
+only if that directory initially has the wrong owner or group. If the
+directory already has the configured owner and group, child ownership is left
+unchanged as an optimization. The configured mode applies to the innermost
+directory, not to the pre-seeded JSON file. systemd therefore does not
+reliably infer or repair that file's `mud-web-proxy:mud-web-proxy` owner or
+`0600` mode. The installer must verify both the directory and file before
+first start.
 
 The state directory, rather than the JSON file alone, must be writable
 because App Attest stages an atomic write with `mkdtemp`, writes a sibling
@@ -228,8 +235,9 @@ The following data must be backed up independently of a Droplet image:
 
 - `/etc/mud-web-proxy.env`;
 - any secret file referenced by it, currently the APNS signing key when APNS
-  is enabled; and
-- `/var/lib/mud-web-proxy/attested-keys.json` when App Attest is enabled.
+  is enabled;
+- `/var/lib/mud-web-proxy/attested-keys.json` when App Attest is enabled; and
+- `/var/lib/mud-web-proxy-deploy/previous-release`.
 
 Backups of configuration and state are encrypted, stored off-Droplet, and
 restored only with their original restrictive ownership and modes. Take a
@@ -243,9 +251,10 @@ retention in its [backup guidance](https://docs.digitalocean.com/support/how-do-
 
 ### Retained for offline rollback
 
-Retain the active release and the two most recent verified previous releases.
-Retain every Bun runtime referenced by those releases. A failed release does
-not count as a verified rollback target.
+Retain the active release, the release named by the non-empty root-only
+rollback record, and the two most recent verified previous releases. Retain
+every Bun runtime referenced by those releases. A failed release does not
+count as a verified rollback target.
 
 Installed production dependencies are reproducible from `bun.lock`, but each
 retained release keeps its existing `node_modules` because rebuilding it
@@ -313,9 +322,13 @@ file owner and mode
 
 If the post-stop store does not parse as a JSON object or contains fewer keys
 than the pre-stop floor, do not copy it to the new host. Restore the validated
-pre-stop copy to the old path with its original owner and mode, restart the
-old service, restore old-host public ingress, and abort the cutover window.
-Public routing has not changed at this point.
+pre-stop copy through a same-directory mode-`0600` unique temporary file.
+Validate the temporary JSON object, numeric count, and checksum, apply the
+recorded numeric owner and mode, atomically rename it over the old configured
+path, and verify the final path's JSON, count, checksum, owner, and mode.
+Only then restart the old service, restore old-host public ingress, and abort
+the cutover window. A partial transfer never writes the live path. Public
+routing has not changed at this point.
 
 The copy is installed as:
 
@@ -324,12 +337,16 @@ The copy is installed as:
 ```
 
 Before first service start, create the containing directory with the same
-owner and mode required from systemd `StateDirectory`. Install the file with
-owner `mud-web-proxy:mud-web-proxy` and mode `0600`. Before and after the new
-service starts, the file must parse as a JSON object and have the same key
-count recorded from the quiesced old host. A checksum comparison before first
-start proves the transfer itself was exact; the count comparison after start
-proves the new deployment did not silently begin with an empty store.
+owner and mode required from systemd `StateDirectory`. Install the file
+through a same-directory mode-`0600` unique temporary file, validate its JSON,
+numeric count, and checksum, assign owner `mud-web-proxy:mud-web-proxy`, and
+atomically rename it over the configured destination. Verify the final
+destination's JSON, count, checksum, owner, and mode. The final quiesced count
+is persisted and both it and the pre-stop floor must match `^[0-9]+$`.
+Checksum and count comparisons form one aggregate pre-start gate: the first
+production service start is in the same strict procedure after every gate.
+After start, require a JSON object and the unchanged final count again.
+Routing remains conditional on that aggregate result and loopback health.
 
 If production later disables App Attest, the private cutover record must say
 so explicitly and show that both App Attest identifiers are absent. Silence
@@ -352,10 +369,21 @@ An upgrade performs:
    point;
 8. create the release-local `runtime` symlink;
 9. run the release's pre-activation checks;
-10. atomically replace `current` with a temporary symlink plus `rename(2)`;
-11. restart `mud-web-proxy.service`; and
-12. require application health, WSS, and a complete mock-MUD session before
+10. persist the validated prior `current` target in the root-only
+    `/var/lib/mud-web-proxy-deploy/previous-release` record;
+11. create a unique temporary symlink under `/opt/mud-web-proxy`, clean it
+    through a trap, and atomically rename it over `current`;
+12. restart `mud-web-proxy.service`; and
+13. require application health, WSS, and a complete mock-MUD session before
     accepting the release.
+
+The activation shell uses `set -euo pipefail`, accepts only a safe basename
+release identifier, proves the resolved release is a direct child of
+`releases/`, and validates `VERSION`, `node_modules`, `dist/wsproxy.js`,
+`.bun-version`, `package.json#engines.bun`, the relative runtime symlink, and
+the runtime's reported version before writing the record or changing
+`current`. A stale fixed temporary name is never reused, and restart cannot
+run after a failed prerequisite or rename.
 
 The service becomes unready before closing connections. A restart closes
 WebSocket clients with code `1001` and reason `Server restarting`, closes
@@ -364,13 +392,16 @@ shutdown deadline.
 
 ### Offline rollback
 
-Before activation, the previous `current` target is recorded. Rollback:
+Before activation, the previous `current` target is recorded persistently.
+Rollback:
 
-1. verifies that target's directory, `node_modules`, and versioned runtime are
-   still present;
-2. atomically replaces `current` with a symlink to that target;
-3. restarts `mud-web-proxy.service`; and
-4. repeats health, WSS, and mock-MUD validation.
+1. reads the root-only record and rejects an empty or malformed target;
+2. repeats the full release, entry-point, dependency, package/runtime pin, and
+   direct-child path validation;
+3. creates a unique same-filesystem temporary symlink with trap cleanup and
+   atomically renames it over `current`;
+4. restarts `mud-web-proxy.service`; and
+5. repeats health, WSS, and mock-MUD validation.
 
 No download, dependency installation, package-manager resolution, or DNS
 lookup for artifacts occurs during rollback.
@@ -381,9 +412,9 @@ must either remain readable by every retained rollback release or declare a
 state-backup and restore procedure before activation. A destructive,
 backward-incompatible state migration cannot use this rollback model.
 
-Pruning occurs only after the new release is accepted. Never prune the last
-known-good target, either of the two retained previous releases, or a Bun
-runtime referenced by a retained release.
+Pruning occurs only after the new release is accepted. Never prune the
+recorded rollback target, either of the two retained previous releases, or a
+Bun runtime referenced by a retained release.
 
 ## New-Droplet cutover
 
@@ -404,8 +435,11 @@ window:
 6. Resolve the old App Attest path and take the validated pre-stop safety
    copy, checksum, and key-count floor. Defer only the final copy until the
    old service is quiescent.
-7. Validate the application on loopback and validate both systemd and Caddy
-   configuration without sending production traffic to the new host.
+7. Validate the systemd and Caddy configuration while keeping the production
+   systemd service stopped. Any pre-window application-health check uses an
+   isolated foreground process, disposable App Attest state, and
+   non-production configuration. Do not send production traffic to the new
+   host.
 8. Record the old and new Droplet IDs, current public-routing mechanism,
    previous DNS values and TTL, active and rollback release identifiers,
    artifact checksum, App Attest key count, cutover operator, and rollback
@@ -454,20 +488,24 @@ The cutover runs during a declared low-traffic window:
 4. Stop the old proxy through its existing supervisor and wait for it to
    exit. Leave its configuration, release checkout, runtime, and state in
    place.
-5. Validate the final App Attest JSON and require its key count to be at least
-   the pre-stop floor. If either check fails, restore the safety copy, restart
-   the old service, restore old-host ingress, and abort the window.
-6. Record the valid final store's checksum and key count.
-7. Copy the exact final store to the new state directory and verify checksum,
+5. Validate the final App Attest JSON before calculating its count, require
+   both the pre-stop floor and final count to be decimal integers, and require
+   the final count to be at least the floor. If any check fails, atomically
+   restore and verify the safety copy, restart the old service, restore
+   old-host ingress, and abort before routing.
+6. Persist the valid final store's checksum and numeric count.
+7. Copy the exact final store through a unique same-directory temporary file,
+   atomically replace the new destination, and verify final JSON, checksum,
    ownership, mode, and count.
-8. Start the new proxy and Caddy; require loopback health before changing
-   public routing.
+8. Start the production systemd service for the first time only after the
+   aggregate transfer gate; start Caddy and require loopback health.
 9. Reassign the existing Reserved IP, or update DNS to the new Droplet.
 10. Require public HTTPS health, WSS upgrade, a complete MUD session, correct
     forwarded client attribution, and the unchanged final App Attest key
     count.
-11. Exercise an assertion from an already-registered production client when
-    one is available. Do not use a new registration as the preservation test.
+11. Exercise a mandatory assertion from an already-registered production
+    client after routing but before acceptance. A new registration does not
+    satisfy the preservation test.
 12. Record acceptance evidence and start the old-Droplet retention clock.
 
 Active sessions do not survive this sequence. There is no cross-host session
@@ -498,19 +536,25 @@ If the new host has received public traffic, its App Attest store may contain
 new registrations or higher counters. Before restarting the old service:
 
 1. stop the new proxy and wait for its state flush;
-2. validate and record the new store's checksum and key count;
-3. copy that exact store back to the old host's configured path;
-4. restore the old path's original ownership and mode; and
-5. only then reverse public routing and start the old service.
+2. validate its JSON object, require a numeric count, and record its checksum,
+   count, numeric owner, and numeric mode;
+3. transfer it into a same-directory mode-`0600` unique temporary file on the
+   old filesystem, leaving the live store untouched on partial transfer;
+4. validate the temporary JSON, count, and checksum, apply the old path's
+   recorded numeric owner and mode, and atomically rename it over the old
+   configured path;
+5. verify the final old path's JSON, count, checksum, owner, and mode; and
+6. only then reverse public routing and start the old service.
 
 The deployed v3.1.0 loader accepts the v4 store's additive `lastUsedAt` field,
 so this reverse copy preserves registrations and assertion counters without
 a format conversion. The private cutover record must still verify this claim
 against the actual rollback release before the window.
 
-The production owner retains the stopped old Droplet for seven calendar days
-after successful cutover. The owner deletes it after all of these conditions
-hold:
+The production owner retains the powered-on old Droplet for seven calendar
+days after successful cutover, with only its legacy proxy service stopped and
+its configuration and state intact. The owner deletes it after all of these
+conditions hold:
 
 - the new deployment has remained healthy for seven days;
 - automated and file-level backups have completed successfully;
@@ -547,12 +591,22 @@ process information to a sufficiently privileged caller. The verification
 records:
 
 ```bash
+set -euo pipefail
+
 readlink -f /opt/mud-web-proxy/current
 find /opt/mud-web-proxy/releases -maxdepth 1 -mindepth 1 -type d -print
 find /opt/mud-web-proxy/runtimes/bun -maxdepth 1 -mindepth 1 -type d -print
 stat -c '%a %U:%G %n' /etc/mud-web-proxy.env
 stat -c '%a %U:%G %n' /var/lib/mud-web-proxy
-stat -c '%a %U:%G %n' /var/lib/mud-web-proxy/attested-keys.json
+stat -c '%a %U:%G %n' /var/lib/mud-web-proxy-deploy
+stat -c '%a %U:%G %n' /var/lib/mud-web-proxy-deploy/previous-release
+NONEMPTY_ENV_VALUE_RE="(\"[^\"]+\"|'[^']+'|[^[:space:]#'\"][^#]*)"
+if grep -Eq "^APPATTEST_BUNDLE_ID=${NONEMPTY_ENV_VALUE_RE}$" \
+  /etc/mud-web-proxy.env &&
+  grep -Eq "^APPATTEST_TEAM_ID=${NONEMPTY_ENV_VALUE_RE}$" \
+    /etc/mud-web-proxy.env; then
+  stat -c '%a %U:%G %n' /var/lib/mud-web-proxy/attested-keys.json
+fi
 /opt/mud-web-proxy/current/runtime/bin/bun --version
 ss -ltnp | grep ':6200'
 systemctl is-active mud-web-proxy caddy do-agent
@@ -563,7 +617,10 @@ Expected results:
 - environment mode `640`, owner `root:mud-web-proxy`;
 - state directory mode `700`, owner
   `mud-web-proxy:mud-web-proxy`;
-- App Attest store mode `600` with the same owner;
+- deployment-record directory mode `700`, owner `root:root`;
+- rollback-record mode `600`, owner `root:root`;
+- when both identifiers are configured, App Attest store mode `600` with owner
+  `mud-web-proxy:mud-web-proxy`;
 - active Bun version equal to the active release's `.bun-version`;
 - port 6200 bound only to `127.0.0.1`;
 - no public Cloud Firewall rule for 6200;

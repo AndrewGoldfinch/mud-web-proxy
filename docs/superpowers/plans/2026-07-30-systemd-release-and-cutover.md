@@ -10,12 +10,13 @@ upgrade, rollback, backup, and new-Droplet cutover contracts defined by
 MWP-104.
 
 **Architecture:** Two public operator documents separate the stable native
-deployment model from the one-time legacy-host cutover. A focused Bun test
-asserts the safety-critical documentation invariants without attempting to
-implement the systemd unit owned by MWP-105 or the release artifact owned by
-MWP-103.
+deployment model from the one-time legacy-host cutover. The approved
+documentation-only exception omits Markdown exact-string tests; formatter,
+rendered-link, configuration-documentation, exact-runtime repository, and
+tracked-diff gates verify the change without attempting to implement the
+systemd unit owned by MWP-105 or release artifact owned by MWP-103.
 
-**Tech Stack:** Markdown, Bun 1.3.14, `bun:test`, Ubuntu 26.04 LTS, systemd,
+**Tech Stack:** Markdown, Bun 1.3.14, Ubuntu 26.04 LTS, systemd,
 DigitalOcean Droplets, Caddy.
 
 ## Global Constraints
@@ -32,13 +33,16 @@ DigitalOcean Droplets, Caddy.
 - The initial runtime is exactly Bun `1.3.14`.
 - Every release contains `.bun-version` and a relative
   `runtime -> ../../runtimes/bun/$BUN_VERSION` symlink.
-- Retain the active release plus two verified previous releases and every Bun
-  runtime they reference.
+- Retain the active release, the release named by the non-empty root-only
+  rollback record, two verified previous releases, and every Bun runtime they
+  reference.
 - `/etc/mud-web-proxy.env` is `0640 root:mud-web-proxy`.
 - `/var/lib/mud-web-proxy` is `0700
 mud-web-proxy:mud-web-proxy`.
 - `/var/lib/mud-web-proxy/attested-keys.json` is `0600
 mud-web-proxy:mud-web-proxy`.
+- `/var/lib/mud-web-proxy-deploy` is `0700 root:root`, and its persistent
+  `previous-release` record is `0600 root:root`.
 - MWP-105 must use a static `mud-web-proxy` account,
   `StateDirectory=mud-web-proxy`, `StateDirectoryMode=0700`, `UMask=0077`,
   and must not use `DynamicUser=yes`.
@@ -52,12 +56,16 @@ mud-web-proxy:mud-web-proxy`.
   floor.
 - A corrupt or smaller final store restores the safety copy and aborts before
   public routing changes.
+- Safety restore and post-traffic reverse transfer use verified
+  same-directory temporary files plus atomic rename; partial transfer never
+  overwrites the old live path.
 - Active WebSocket, Telnet, and resumable sessions do not survive cutover.
 - Prefer an existing DigitalOcean Reserved IP; otherwise lower DNS TTL to
   `300` before cutover.
-- The production owner retains the stopped old Droplet for seven calendar
-  days after acceptance, then deletes it only after the documented exit
-  criteria pass.
+- The production owner retains the powered-on old Droplet for seven calendar
+  days after acceptance with only its legacy proxy service stopped and its
+  configuration and state intact, then deletes it only after the documented
+  exit criteria pass.
 - MWP-104 documents and statically verifies the contract. MWP-105 owns the
   real systemd/Caddy clean-host test, and MWP-103 owns two-release install and
   offline rollback testing with published artifacts.
@@ -69,7 +77,6 @@ mud-web-proxy:mud-web-proxy`.
 **Files:**
 
 - Create: `docs/deployment/systemd.md`
-- Create: `tests/systemd-deployment-contract.test.ts`
 - Modify: `README.md`
 
 **Interfaces:**
@@ -78,107 +85,20 @@ mud-web-proxy:mud-web-proxy`.
   `docs/configuration.md`, and the approved MWP-104 design.
 - Produces: public native deployment contract at
   `docs/deployment/systemd.md`.
-- Produces: `native systemd deployment documentation` contract tests.
 - Produces: README link `docs/deployment/systemd.md`.
 
-- [ ] **Step 1: Write the failing native-guide contract tests**
+- [ ] **Step 1: Confirm the documentation-only verification boundary**
 
-Create `tests/systemd-deployment-contract.test.ts`:
+Do not add a Markdown exact-string test. Record the approved exception and
+use the existing exact-runtime unit suite, tracked-file Prettier check,
+rendered-link audit, configuration-documentation check, and diff checks as
+the verification boundary.
 
-````typescript
-import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'fs';
-import path from 'path';
+- [ ] **Step 2: Run the clean exact-runtime baseline**
 
-const repoRoot = path.resolve(import.meta.dir, '..');
-const readRoot = (name: string): string =>
-  readFileSync(path.join(repoRoot, name), 'utf8');
-
-const fencedBlockAfter = (source: string, marker: string): string => {
-  const markerAt = source.indexOf(marker);
-  if (markerAt === -1) return '';
-  const fenceAt = source.indexOf('```', markerAt);
-  if (fenceAt === -1) return '';
-  const bodyAt = source.indexOf('\n', fenceAt) + 1;
-  const endAt = source.indexOf('```', bodyAt);
-  return endAt === -1 ? '' : source.slice(bodyAt, endAt);
-};
-
-describe('native systemd deployment documentation', () => {
-  test('fixes the filesystem, runtime, and static-user contracts', () => {
-    const guide = readRoot('docs/deployment/systemd.md');
-
-    for (const required of [
-      '/opt/mud-web-proxy/releases/$RELEASE_VERSION',
-      '/opt/mud-web-proxy/current',
-      '/opt/mud-web-proxy/runtimes/bun/$BUN_VERSION',
-      'runtime -> ../../runtimes/bun/$BUN_VERSION',
-      '/etc/mud-web-proxy.env',
-      '/var/lib/mud-web-proxy/attested-keys.json',
-      'StateDirectory=mud-web-proxy',
-      'StateDirectoryMode=0700',
-      'UMask=0077',
-      'DynamicUser=yes is forbidden',
-    ]) {
-      expect(guide).toContain(required);
-    }
-
-    expect(guide).toContain('0640 root:mud-web-proxy');
-    expect(guide).toContain('0700 mud-web-proxy:mud-web-proxy');
-    expect(guide).toContain('0600 mud-web-proxy:mud-web-proxy');
-  });
-
-  test('keeps the native listener loopback-only without the Compose acknowledgement', () => {
-    const guide = readRoot('docs/deployment/systemd.md');
-    const environment = fencedBlockAfter(
-      guide,
-      'The native environment must begin with this boundary:',
-    );
-
-    expect(environment).toContain('BIND_HOST=127.0.0.1');
-    expect(environment).toContain('WS_PORT=6200');
-    expect(environment).toContain('INBOUND_TLS_MODE=off');
-    expect(environment).toContain('TARGET_MODE=fixed');
-    expect(environment).toContain(
-      'ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json',
-    );
-    expect(environment).not.toContain('ALLOW_INSECURE_INBOUND_NO_TLS=');
-    expect(environment).not.toContain('TLS_CERT_PATH=');
-    expect(environment).not.toContain('TLS_KEY_PATH=');
-  });
-
-  test('makes upgrade and rollback deterministic and offline', () => {
-    const guide = readRoot('docs/deployment/systemd.md');
-
-    expect(guide).toContain(
-      'active release and the two most recent verified previous releases',
-    );
-    expect(guide).toContain('bun install --frozen-lockfile --production');
-    expect(guide).toContain('ln -s "releases/$RELEASE_VERSION"');
-    expect(guide).toContain('mv -Tf');
-    expect(guide).toContain('Rollback performs no download');
-    expect(guide).toContain("ss -ltnp | grep ':6200'");
-    expect(guide).toContain('640 root:mud-web-proxy');
-  });
-
-  test('README links to the native deployment guide', () => {
-    expect(readRoot('README.md')).toContain(
-      '[Native systemd deployment](docs/deployment/systemd.md)',
-    );
-  });
-});
-````
-
-- [ ] **Step 2: Run the focused test and confirm the red state**
-
-Run:
-
-```bash
-bun test tests/systemd-deployment-contract.test.ts
-```
-
-Expected: FAIL because `docs/deployment/systemd.md` does not exist and the
-README has no native-deployment link.
+Put the exact Bun 1.3.14 toolchain directory first in `PATH`, then run the
+existing unit suite before changing the documents. Record the test count and
+zero-failure result.
 
 - [ ] **Step 3: Write the platform and layout sections**
 
@@ -245,6 +165,8 @@ Copy this layout literally:
 /etc/mud-web-proxy.env
 /etc/mud-web-proxy/
 /var/lib/mud-web-proxy/attested-keys.json
+/var/lib/mud-web-proxy-deploy/
+└── previous-release
 ```
 
 Add the complete ownership table from the approved spec. Follow it with these
@@ -255,6 +177,8 @@ without translating the table:
 /etc/mud-web-proxy.env: 0640 root:mud-web-proxy
 /var/lib/mud-web-proxy: 0700 mud-web-proxy:mud-web-proxy
 /var/lib/mud-web-proxy/attested-keys.json: 0600 mud-web-proxy:mud-web-proxy
+/var/lib/mud-web-proxy-deploy: 0700 root:root
+/var/lib/mud-web-proxy-deploy/previous-release: 0600 root:root
 ```
 
 Then add these literal requirements:
@@ -267,10 +191,13 @@ DynamicUser=no
 ```
 
 State `DynamicUser=yes is forbidden`. Explain `/var/lib/private` relocation,
-transient UID ownership, pre-seeded-state incompatibility, and systemd's
-recursive owner/mode correction at service start. Require the installer to
-create the directory correctly before first start so verification does not
-merely observe systemd repairing it.
+transient UID ownership, and pre-seeded-state incompatibility. Cite only the
+official Ubuntu 26.04/Resolute `systemd.exec` page. State precisely that
+systemd sets the innermost state directory's owner and configured mode,
+recursively changes ownership only when that directory initially has the
+wrong owner/group, leaves child ownership untouched when the directory owner
+already matches, and does not infer or repair the JSON file's `0600` mode.
+Require independent pre-start directory and file verification.
 
 - [ ] **Step 4: Write the Bun and native-environment sections**
 
@@ -313,6 +240,8 @@ only off loopback and that Caddy, not the application, owns inbound TLS.
 The install procedure must use:
 
 ```bash
+set -euo pipefail
+
 RELEASE_VERSION="$(cat VERSION)"
 BUN_VERSION="$(cat .bun-version)"
 BUN="/opt/mud-web-proxy/runtimes/bun/$BUN_VERSION/bin/bun"
@@ -326,26 +255,24 @@ extraction; bundle, dependency, runtime, ownership, and mode validation
 precede activation. Health, WSS, and mock-MUD validation follow activation
 and gate acceptance.
 
-The activation procedure must record the previous target and use one
-same-filesystem symlink rename:
+The guide's activation block must be a complete root-run Bash procedure with
+`set -euo pipefail`. It must:
 
-```bash
-INSTALL_ROOT=/opt/mud-web-proxy
-: "${RELEASE_VERSION:?set RELEASE_VERSION to the verified release identifier}"
-RELEASE_DIR="$INSTALL_ROOT/releases/$RELEASE_VERSION"
-test "$(cat "$RELEASE_DIR/VERSION")" = "$RELEASE_VERSION"
-PREVIOUS_TARGET=
-if [[ -L "$INSTALL_ROOT/current" ]]; then
-  PREVIOUS_TARGET="$(readlink "$INSTALL_ROOT/current")"
-fi
-sudo ln -s "releases/$RELEASE_VERSION" "$INSTALL_ROOT/.current.new"
-sudo mv -Tf "$INSTALL_ROOT/.current.new" "$INSTALL_ROOT/current"
-sudo systemctl restart mud-web-proxy
-```
+1. accept only a safe basename `RELEASE_VERSION`;
+2. prove the resolved release is a direct child of `releases/`;
+3. validate `VERSION`, `node_modules`, `dist/wsproxy.js`, `.bun-version`,
+   `package.json#engines.bun`, the relative runtime symlink, and the runtime's
+   reported version;
+4. validate the existing `current` target when present;
+5. atomically persist that target in the root-only mode-`0600`
+   `/var/lib/mud-web-proxy-deploy/previous-release` record before activation;
+6. create a unique temporary directory under `/opt/mud-web-proxy`, create the
+   temporary symlink inside it, and clean it through an `EXIT` trap;
+7. atomically rename that unique same-filesystem symlink over `current`; and
+8. restart only after every prerequisite, record write, and rename succeeds.
 
-The operator sets `RELEASE_VERSION` from the already verified extracted
-directory. The equality check against its `VERSION` file must succeed before
-the symlink is changed.
+An initial activation may persist an empty record to mean that no prior
+release exists. It does not satisfy production's tested-rollback requirement.
 
 The rollback section must start with the literal sentence:
 
@@ -353,16 +280,21 @@ The rollback section must start with the literal sentence:
 Rollback performs no download, dependency installation, or package-manager resolution.
 ```
 
-Then show an atomic symlink reversal, service restart, `/health`, WSS, and
-mock-MUD validation. Retain the active release and the two most recent
-verified previous releases plus every referenced Bun runtime and installed
-`node_modules`.
+Then show a complete strict rollback procedure that reads and validates the
+persistent record, repeats the direct-child and full release/runtime
+validation, uses a trap-cleaned unique same-filesystem temporary symlink,
+atomically reverses `current`, and restarts only after the rename. It performs
+no download or installation. Follow with `/health`, WSS, and mock-MUD
+validation. Retain the active release, the recorded rollback release, the two
+most recent verified previous releases, every referenced Bun runtime, and
+installed `node_modules`.
 
 The backup section must exhaustively divide:
 
 - encrypted, off-host `/etc/mud-web-proxy.env`;
 - referenced APNS key material;
 - App Attest state;
+- `/var/lib/mud-web-proxy-deploy/previous-release`;
 - DigitalOcean machine-level backup;
 - immutable retained releases needed only for rollback; and
 - disposable Git checkout, PM2 state, old Bun, Bun cache, private TLS
@@ -386,12 +318,22 @@ Document:
 Prefix the verification block with `Run these commands as root:` and include:
 
 ```bash
+set -euo pipefail
+
 readlink -f /opt/mud-web-proxy/current
 find /opt/mud-web-proxy/releases -maxdepth 1 -mindepth 1 -type d -print
 find /opt/mud-web-proxy/runtimes/bun -maxdepth 1 -mindepth 1 -type d -print
 stat -c '%a %U:%G %n' /etc/mud-web-proxy.env
 stat -c '%a %U:%G %n' /var/lib/mud-web-proxy
-stat -c '%a %U:%G %n' /var/lib/mud-web-proxy/attested-keys.json
+stat -c '%a %U:%G %n' /var/lib/mud-web-proxy-deploy
+stat -c '%a %U:%G %n' /var/lib/mud-web-proxy-deploy/previous-release
+NONEMPTY_ENV_VALUE_RE="(\"[^\"]+\"|'[^']+'|[^[:space:]#'\"][^#]*)"
+if grep -Eq "^APPATTEST_BUNDLE_ID=${NONEMPTY_ENV_VALUE_RE}$" \
+  /etc/mud-web-proxy.env &&
+  grep -Eq "^APPATTEST_TEAM_ID=${NONEMPTY_ENV_VALUE_RE}$" \
+    /etc/mud-web-proxy.env; then
+  stat -c '%a %U:%G %n' /var/lib/mud-web-proxy/attested-keys.json
+fi
 /opt/mud-web-proxy/current/runtime/bin/bun --version
 ss -ltnp | grep ':6200'
 systemctl is-active mud-web-proxy caddy do-agent
@@ -413,31 +355,35 @@ and native release bundle land in MWP-105 and MWP-103 respectively; the guide
 already defines the filesystem and operational contract they must implement.
 ```
 
-- [ ] **Step 8: Run the focused test and document checks**
+Scope the existing certificate instructions to direct application-managed
+TLS. State that native host Caddy and the Compose edge path set
+`INBOUND_TLS_MODE=off` and omit `TLS_CERT_PATH` and `TLS_KEY_PATH`.
+
+- [ ] **Step 8: Run the document checks**
 
 Run:
 
 ```bash
-bun test tests/systemd-deployment-contract.test.ts \
-  -t "native systemd deployment documentation"
-bun run format
+git ls-files -z | xargs -0 prettier --check --ignore-unknown
 bun run check:bun-version
 git diff --check
 ```
 
+Also run the fence-aware rendered-local-link audit over all tracked Markdown
+files and require zero missing targets.
+
 Expected:
 
 ```text
-4 pass
 All matched files use Prettier code style!
 check-bun-version: all sources pin Bun 1.3.14.
+0 missing rendered local links
 ```
 
 - [ ] **Step 9: Commit the native deployment guide**
 
 ```bash
-git add README.md docs/deployment/systemd.md \
-  tests/systemd-deployment-contract.test.ts
+git add README.md docs/deployment/systemd.md
 git commit -m "docs: add native systemd deployment guide (MWP-104)"
 ```
 
@@ -448,7 +394,6 @@ git commit -m "docs: add native systemd deployment guide (MWP-104)"
 **Files:**
 
 - Create: `docs/deployment/new-droplet-cutover.md`
-- Modify: `tests/systemd-deployment-contract.test.ts`
 - Modify: `README.md`
 
 **Interfaces:**
@@ -457,76 +402,19 @@ git commit -m "docs: add native systemd deployment guide (MWP-104)"
   `docs/deployment/systemd.md`.
 - Produces: public cutover runbook at
   `docs/deployment/new-droplet-cutover.md`.
-- Produces: App Attest preservation, routing, session-loss, and retention
-  contract tests.
 - Produces: README link `docs/deployment/new-droplet-cutover.md`.
 
-- [ ] **Step 1: Add the failing cutover contract tests**
+- [ ] **Step 1: Preserve the documentation-only verification boundary**
 
-Append to `tests/systemd-deployment-contract.test.ts`:
+Do not add a Markdown exact-string test. Verify the runbook through operator
+procedure review, tracked-file formatting, rendered links, the existing
+exact-runtime suite, and the final diff/ambiguity audits.
 
-```typescript
-describe('new-Droplet cutover documentation', () => {
-  test('protects the legacy non-atomic App Attest store', () => {
-    const runbook = readRoot('docs/deployment/new-droplet-cutover.md');
+- [ ] **Step 2: Audit the approved cutover inputs**
 
-    for (const required of [
-      'App Attest is enabled in the current production deployment',
-      'validated pre-stop safety copy',
-      'key-count floor',
-      'wait at least five seconds',
-      'two-second debounced save',
-      'post-stop store',
-      'restore the safety copy',
-      'abort the cutover window',
-      'Public routing has not changed',
-    ]) {
-      expect(runbook).toContain(required);
-    }
-  });
-
-  test('preserves App Attest state in both cutover directions', () => {
-    const runbook = readRoot('docs/deployment/new-droplet-cutover.md');
-
-    expect(runbook).toContain('/var/lib/mud-web-proxy/attested-keys.json');
-    expect(runbook).toContain('jq -e \'type == "object"\'');
-    expect(runbook).toContain("jq 'length'");
-    expect(runbook).toContain('sha256sum');
-    expect(runbook).toContain('already-registered production client');
-    expect(runbook).toContain('copy the new host store back to the old host');
-    expect(runbook).toContain('lastUsedAt');
-  });
-
-  test('pre-stages routing, disruption, and old-host deletion', () => {
-    const runbook = readRoot('docs/deployment/new-droplet-cutover.md');
-
-    expect(runbook).toContain('existing Reserved IP');
-    expect(runbook).toContain('same datacenter');
-    expect(runbook).toContain('TTL to `300`');
-    expect(runbook).toContain('preferably 24 hours before');
-    expect(runbook).toContain('Active sessions do not survive cutover');
-    expect(runbook).toContain('seven calendar days');
-    expect(runbook).toContain('production owner');
-  });
-
-  test('README links to the cutover runbook', () => {
-    expect(readRoot('README.md')).toContain(
-      '[New-Droplet cutover runbook](docs/deployment/new-droplet-cutover.md)',
-    );
-  });
-});
-```
-
-- [ ] **Step 2: Run the cutover tests and confirm the red state**
-
-Run:
-
-```bash
-bun test tests/systemd-deployment-contract.test.ts \
-  -t "new-Droplet cutover documentation"
-```
-
-Expected: FAIL because the cutover runbook and README link do not exist.
+Re-read the approved design, native guide, current App Attest persistence
+behavior, and live MWP-106 handoff before writing the runbook. Keep production
+values and observed private commands out of the repository.
 
 - [ ] **Step 3: Create the runbook structure and transfer inventory**
 
@@ -595,32 +483,18 @@ old TLS material and `chat.json`.
 
 - [ ] **Step 4: Document the recoverable pre-stop snapshot**
 
-Use shell variables rather than example production identifiers:
-
-```bash
-OLD_HOST=production-old
-OLD_KEYS_PATH=/resolved/on-old-host/attested-keys.json
-STAGING_DIR="$PWD/cutover-private"
-
-umask 077
-mkdir -p "$STAGING_DIR"
-ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" \
-  >"$STAGING_DIR/attested-keys.pre-stop.json"
-jq -e 'type == "object"' \
-  "$STAGING_DIR/attested-keys.pre-stop.json" >/dev/null
-jq 'length' "$STAGING_DIR/attested-keys.pre-stop.json" \
-  >"$STAGING_DIR/attested-keys.pre-stop.count"
-sha256sum "$STAGING_DIR/attested-keys.pre-stop.json" \
-  >"$STAGING_DIR/attested-keys.pre-stop.sha256"
-ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'" \
-  >"$STAGING_DIR/attested-keys.pre-stop.stat"
-```
+Use shell variables rather than real production identifiers. The public block
+must use `set -euo pipefail`, mode-`0700` encrypted staging, `umask 077`, a
+mode-`0600` unique local temporary file, and trap cleanup. An SSH or JSON
+failure must leave any previously validated safety copy untouched.
 
 Call this the `validated pre-stop safety copy` and its count the
 `key-count floor`. If JSON validation fails because the copy intersected
-v3.1.0's truncate-and-write window, wait and repeat; never retain an invalid
-safety copy. The numeric UID, GID, and mode record is the authority used if
-the safety copy must be restored.
+v3.1.0's truncate-and-write window, wait and repeat the full procedure; never
+accept an invalid safety copy. Validate the JSON object before accepting its
+count, checksum, path, or numeric owner/mode metadata. Require the floor to
+match `^[0-9]+$`. The numeric UID, GID, and mode record is the authority used
+if the safety copy must be restored.
 
 Require encrypted administrative staging, mode `0700` for the directory, and
 mode `0600` for the files.
@@ -635,47 +509,29 @@ The cutover sequence before public routing changes is:
 4. copy the post-stop store to private staging;
 5. require `jq -e 'type == "object"'`;
 6. calculate the post-stop `jq 'length'`;
-7. require post-stop count greater than or equal to the pre-stop floor; and
-8. calculate and record SHA-256; and
-9. record the resolved source path plus numeric owner and mode.
+7. require the floor and post-stop count to match `^[0-9]+$`;
+8. require post-stop count greater than or equal to the pre-stop floor;
+9. calculate and record SHA-256 and persist the final count; and
+10. record the resolved source path plus numeric owner and mode.
 
-Validate and compare in two phases so an invalid final file is never passed
-to `jq 'length'`:
+The final-state block must use `set -euo pipefail`, a unique mode-`0600`
+staging temporary file, and trap cleanup. Validate the JSON object before
+calculating its count. A failed SSH, parse, numeric-count, floor, checksum, or
+metadata gate must exit nonzero before accepting the final store.
 
-```bash
-FINAL_STORE="$STAGING_DIR/attested-keys.post-stop.json"
-FINAL_STORE_VALID=true
+If final validation fails, the safety-restore procedure must validate the
+local safety JSON, count, and checksum, create a same-directory mode-`0600`
+unique temporary file on the old filesystem, transfer into that file, and
+validate its JSON/count/checksum before replacement. Apply the recorded
+numeric owner and mode, atomically rename it over the configured path, and
+verify the final destination's JSON, count, checksum, owner, and mode. A
+partial SSH transfer must leave the live file untouched.
 
-if ! jq -e 'type == "object"' "$FINAL_STORE" >/dev/null; then
-  FINAL_STORE_VALID=false
-else
-  PRE_STOP_FLOOR="$(
-    cat "$STAGING_DIR/attested-keys.pre-stop.count"
-  )"
-  POST_STOP_COUNT="$(jq 'length' "$FINAL_STORE")"
-  if (( POST_STOP_COUNT < PRE_STOP_FLOOR )); then
-    FINAL_STORE_VALID=false
-  fi
-fi
-```
-
-If `FINAL_STORE_VALID` is not `true`, restore the recorded file exactly:
-
-```bash
-read -r OLD_KEYS_UID OLD_KEYS_GID OLD_KEYS_MODE \
-  <"$STAGING_DIR/attested-keys.pre-stop.stat"
-ssh "$OLD_HOST" \
-  "sudo tee '$OLD_KEYS_PATH' >/dev/null &&
-   sudo chown '$OLD_KEYS_UID:$OLD_KEYS_GID' '$OLD_KEYS_PATH' &&
-   sudo chmod '$OLD_KEYS_MODE' '$OLD_KEYS_PATH'" \
-  <"$STAGING_DIR/attested-keys.pre-stop.json"
-```
-
-Then run the exact old-supervisor restart and old-ingress restoration
-commands recorded during pre-stage, verify old-host health, and abort the
-window. The runbook must not guess whether the legacy supervisor is PM2,
-systemd, or another wrapper; the private record supplies the observed
-production commands.
+Only after final-destination verification, run the exact old-supervisor
+restart and old-ingress restoration commands recorded during pre-stage,
+verify old-host health, and abort the window. The runbook must not guess
+whether the legacy supervisor is PM2, systemd, or another wrapper; the private
+record supplies the observed production commands.
 
 State immediately after the branch: `Public routing has not changed at this
 point.`
@@ -686,29 +542,27 @@ Under `Pre-stage the new host`, require Ubuntu 26.04 LTS x64, automated
 backups, the monitoring agent and alerts, the production Cloud Firewall, the
 exact versioned Bun runtime, verified MWP-103 release, MWP-105 systemd/Caddy
 files, semantically migrated configuration, and referenced non-TLS secrets.
-Require loopback application health plus systemd and Caddy validation before
-the cutover window; do not send production traffic to the new host yet.
+Require systemd and Caddy configuration validation before the cutover window.
+Any pre-window application-health check must use an isolated foreground
+process, a disposable App Attest state path, and non-production
+configuration. Keep the production systemd service stopped until the
+post-stop final store passes the aggregate pre-start gate; do not send
+production traffic to the new host yet.
 
 Create the state directory and install the final store before first service
-start:
+start through a unique same-directory mode-`0600` temporary file. Validate
+local recorded JSON/count/checksum and the floor, validate the remote
+temporary JSON/count/checksum, atomically rename it over the configured
+destination, and verify the final destination's JSON/count/checksum/owner/mode.
 
-```bash
-NEW_HOST=production-new
-FINAL_STORE="$STAGING_DIR/attested-keys.post-stop.json"
-
-ssh "$NEW_HOST" \
-  'sudo install -d -o mud-web-proxy -g mud-web-proxy -m 0700 /var/lib/mud-web-proxy'
-ssh "$NEW_HOST" \
-  'sudo tee /var/lib/mud-web-proxy/attested-keys.json >/dev/null &&
-   sudo chown mud-web-proxy:mud-web-proxy /var/lib/mud-web-proxy/attested-keys.json &&
-   sudo chmod 0600 /var/lib/mud-web-proxy/attested-keys.json' \
-  <"$FINAL_STORE"
-```
-
-Verify local and remote checksums and key counts before start. After start,
-require the final key count again, public `/health`, WSS, a complete MUD
-session, correct forwarded client attribution, and an assertion from an
-already-registered production client.
+Put all checksum and count comparisons in one strict aggregate pre-start
+block. Start the production systemd service and Caddy in that same block only
+after every gate passes, require loopback health, and require the unchanged
+JSON-object count after start. Execute the private routing-forward command
+only after the aggregate block exits zero. Perform public `/health`, WSS, a
+complete MUD session, correct forwarded client attribution, and the mandatory
+assertion from an already-registered production client after public routing
+but before acceptance.
 
 Use the literal sentence `Active sessions do not survive cutover.` Explain
 that all players disconnect and resume buffers are lost. Select a low-traffic
@@ -732,12 +586,18 @@ For DNS:
 - state rollback is bounded by resolver caches rather than instant.
 
 If rollback occurs after the new host served traffic, stop and flush the new
-proxy, then copy the new host store back to the old host before restarting
-it. Explain why this preserves new registrations and assertion counters and
-why v3.1.0 round-trips `lastUsedAt`.
+proxy, validate and persist the new store's JSON object, numeric count,
+checksum, numeric owner, and numeric mode, then copy it to a mode-`0600`
+same-directory unique temporary file on the old filesystem. Validate the
+temporary file, apply the original recorded old-path owner/mode, atomically
+rename it over the old configured path, and verify the final destination's
+JSON/count/checksum/owner/mode. Reverse routing or restart the old service
+only after that block exits zero. Explain why this preserves new registrations
+and assertion counters and why v3.1.0 round-trips `lastUsedAt`.
 
-Retain the stopped old host for seven calendar days. Assign deletion to the
-production owner. Require all five exit criteria before deletion:
+Retain the powered-on old host for seven calendar days with only its legacy
+proxy service stopped and its configuration and state intact. Assign deletion
+to the production owner. Require all five exit criteria before deletion:
 
 1. the new deployment has remained healthy for seven days;
 2. automated and file-level backups completed successfully;
@@ -760,34 +620,34 @@ App Attest state preservation is mandatory for the current production
 deployment.
 ```
 
-- [ ] **Step 9: Run the focused and full repository checks**
+- [ ] **Step 9: Run the full repository and document checks**
 
 Run:
 
 ```bash
-bun test tests/systemd-deployment-contract.test.ts
 bun run test
 bun run lint
 bun run typecheck
 bun run build
-bun run format
 bun run check:bun-version
 bun run check:config-docs
+git ls-files -z | xargs -0 prettier --check --ignore-unknown
 git diff --check
 ```
 
+Also run the fence-aware rendered-local-link audit and require zero missing
+targets.
+
 Expected:
 
-- `8 pass` in the focused contract file;
 - full unit suite exits `0`;
 - lint, typecheck, build, formatting, Bun pin, configuration documentation,
-  and diff checks all exit `0`.
+  rendered-link, and diff checks all exit `0`.
 
 - [ ] **Step 10: Commit the cutover runbook**
 
 ```bash
-git add README.md docs/deployment/new-droplet-cutover.md \
-  tests/systemd-deployment-contract.test.ts
+git add README.md docs/deployment/new-droplet-cutover.md
 git commit -m "docs: add new-Droplet cutover runbook (MWP-104)"
 ```
 
@@ -804,7 +664,8 @@ git commit -m "docs: add new-Droplet cutover runbook (MWP-104)"
 
 **Interfaces:**
 
-- Consumes: both public deployment documents and their passing contract test.
+- Consumes: both public deployment documents and their passing document and
+  repository gates.
 - Produces: downstream ticket requirements that cannot decay into a closed
   design ticket.
 
@@ -853,17 +714,23 @@ Also preserve the loopback environment and the absence of
 
 - [ ] **Step 4: Add the production cutover obligations to MWP-106**
 
-Add:
+Add this exact production order:
 
-- validated pre-stop App Attest safety copy and key-count floor;
-- five-second quiescence;
-- post-stop parse and count validation;
-- restore-and-abort branch before routing changes;
-- mandatory final state transfer and existing-client assertion;
-- Reserved-IP-first or pre-lowered DNS routing;
-- explicit session loss;
-- reverse state copy before rollback after public traffic; and
-- seven-day old-host retention with production-owner deletion.
+1. block new public ingress to the old application;
+2. wait at least five seconds while the old proxy still runs;
+3. stop the legacy proxy and wait for process exit;
+4. validate post-stop JSON and require its count not below the pre-stop floor;
+5. restore and abort before routing on failure;
+6. transfer and verify final state before the first production systemd-service
+   start;
+7. change public routing only after new-host loopback health; and
+8. perform the established-client assertion after public routing but before
+   acceptance.
+
+Also preserve the validated pre-stop safety copy, Reserved-IP-first or
+pre-lowered-DNS routing, explicit session loss, verified reverse state copy
+before rollback after public traffic, and service-only seven-day old-host
+retention with production-owner deletion.
 
 - [ ] **Step 5: Correct MWP-104's verification ownership**
 
@@ -912,12 +779,16 @@ bun run test
 bun run lint
 bun run typecheck
 bun run build
-bun run format
 bun run check:config-docs
+git ls-files -z | xargs -0 prettier --check --ignore-unknown
 git diff --check
 ```
 
-Expected Bun version: `1.3.14`. Every command exits `0`.
+Run the fence-aware rendered-local-link audit as part of this gate. Expected
+Bun version: `1.3.14`; every command exits `0` and no rendered local link is
+missing. While SDD scratch exists, format all tracked files with Prettier
+rather than changing `.prettierignore`; the controller runs package-wide
+formatting after scratch deletion.
 
 - [ ] **Step 2: Review the changed-file boundary**
 
@@ -929,8 +800,7 @@ git diff origin/main...HEAD --stat
 git diff origin/main...HEAD -- \
   README.md \
   docs/deployment/systemd.md \
-  docs/deployment/new-droplet-cutover.md \
-  tests/systemd-deployment-contract.test.ts
+  docs/deployment/new-droplet-cutover.md
 ```
 
 Expected: no source, runtime, Docker, workflow, dependency, or lockfile
@@ -942,7 +812,7 @@ Run:
 
 ```bash
 rg -n 'TBD|TODO|FIXME|DynamicUser=yes|ALLOW_INSECURE_INBOUND_NO_TLS' \
-  README.md docs/deployment tests/systemd-deployment-contract.test.ts
+  README.md docs/deployment
 rg -n 'MWP-103|MWP-104|MWP-105|MWP-106' \
   README.md docs/deployment
 ```
@@ -952,7 +822,7 @@ Expected:
 - no placeholders;
 - `DynamicUser=yes` appears only in explicit prohibition;
 - `ALLOW_INSECURE_INBOUND_NO_TLS` appears only in native-path omission
-  guidance and tests, never as an assignment;
+  guidance, never as a native-path assignment;
 - downstream ownership matches the approved design.
 
 - [ ] **Step 4: Request code review**

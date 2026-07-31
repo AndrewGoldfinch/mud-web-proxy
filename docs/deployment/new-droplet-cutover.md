@@ -84,6 +84,8 @@ contain no placeholders at window start:
 - active and rollback release identifiers and artifact checksum;
 - pre-stop and final App Attest source path, SHA-256, JSON object key count,
   numeric owner, and numeric mode;
+- any post-traffic reverse-copy source path, SHA-256, JSON object key count,
+  numeric owner, and numeric mode;
 - cutover operator and cutover timestamps;
 - exact old-supervisor restart command;
 - exact ingress block and restore commands;
@@ -136,29 +138,67 @@ the latter for newly created files. This is the **validated pre-stop safety
 copy**. Its JSON object key count is the **key-count floor**.
 
 ```bash
+set -euo pipefail
+umask 077
+
 OLD_HOST=production-old
 OLD_KEYS_PATH=/resolved/on-old-host/attested-keys.json
 STAGING_DIR="$PWD/cutover-private"
+PRE_STOP_STORE="$STAGING_DIR/attested-keys.pre-stop.json"
 
-umask 077
+: "${OLD_HOST:?}"
+: "${OLD_KEYS_PATH:?}"
 mkdir -p "$STAGING_DIR"
 chmod 0700 "$STAGING_DIR"
-ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" \
-  >"$STAGING_DIR/attested-keys.pre-stop.json"
-jq -e 'type == "object"' \
-  "$STAGING_DIR/attested-keys.pre-stop.json" >/dev/null
-jq 'length' "$STAGING_DIR/attested-keys.pre-stop.json" \
+[[ ! -L "$STAGING_DIR" ]]
+[[ "$(stat -c '%a' "$STAGING_DIR")" == "700" ]]
+
+PRE_STOP_TEMP=
+cleanup() {
+  if [[ -n "$PRE_STOP_TEMP" ]]; then
+    rm -f -- "$PRE_STOP_TEMP" || true
+  fi
+}
+trap cleanup EXIT
+
+PRE_STOP_TEMP="$(mktemp "$STAGING_DIR/.attested-keys.pre-stop.XXXXXX")"
+chmod 0600 "$PRE_STOP_TEMP"
+ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" >"$PRE_STOP_TEMP"
+
+jq -e 'type == "object"' "$PRE_STOP_TEMP" >/dev/null
+PRE_STOP_FLOOR="$(jq -er 'length' "$PRE_STOP_TEMP")"
+[[ "$PRE_STOP_FLOOR" =~ ^[0-9]+$ ]]
+PRE_STOP_SHA256="$(sha256sum "$PRE_STOP_TEMP" | awk '{print $1}')"
+[[ "$PRE_STOP_SHA256" =~ ^[0-9a-f]{64}$ ]]
+PRE_STOP_STAT="$(
+  ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'"
+)"
+read -r PRE_STOP_UID PRE_STOP_GID PRE_STOP_MODE PRE_STOP_EXTRA \
+  <<<"$PRE_STOP_STAT"
+[[ "$PRE_STOP_UID" =~ ^[0-9]+$ ]]
+[[ "$PRE_STOP_GID" =~ ^[0-9]+$ ]]
+[[ "$PRE_STOP_MODE" =~ ^[0-7]{3,4}$ ]]
+[[ -z "${PRE_STOP_EXTRA:-}" ]]
+
+mv -Tf -- "$PRE_STOP_TEMP" "$PRE_STOP_STORE"
+PRE_STOP_TEMP=
+printf '%s\n' "$PRE_STOP_FLOOR" \
   >"$STAGING_DIR/attested-keys.pre-stop.count"
-sha256sum "$STAGING_DIR/attested-keys.pre-stop.json" \
+printf '%s\n' "$PRE_STOP_SHA256" \
   >"$STAGING_DIR/attested-keys.pre-stop.sha256"
-ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'" \
+printf '%s %s %s\n' \
+  "$PRE_STOP_UID" "$PRE_STOP_GID" "$PRE_STOP_MODE" \
   >"$STAGING_DIR/attested-keys.pre-stop.stat"
+printf '%s\n' "$OLD_KEYS_PATH" \
+  >"$STAGING_DIR/attested-keys.pre-stop.path"
+chmod 0600 "$PRE_STOP_STORE" "$STAGING_DIR"/attested-keys.pre-stop.*
 ```
 
 If JSON validation fails, the copy may have intersected v3.1.0's
-truncate-and-write window. Wait and repeat the complete copy. Never retain an
-invalid safety copy. The numeric UID, GID, and mode record is the authority if
-the safety copy must be restored.
+truncate-and-write window. The strict block exits without replacing an
+existing validated safety copy. Wait and repeat the complete block. Never
+accept an invalid copy. The numeric UID, GID, and mode record is the authority
+if the safety copy must be restored. The floor must match `^[0-9]+$`.
 
 ## Prepare public routing
 
@@ -186,107 +226,293 @@ Before changing public routing:
 
 1. Block new public requests at the old edge or Cloud Firewall using the
    exact pre-recorded ingress command.
-2. Wait at least five seconds, longer than the two-second debounced save.
+2. While the old proxy continues running, wait at least five seconds, longer
+   than the two-second debounced save.
 3. Stop the old supervisor using the exact pre-recorded command and wait for
    process exit.
 4. Copy the post-stop store to private staging:
 
    ```bash
+   set -euo pipefail
+   umask 077
+
+   : "${OLD_HOST:?}"
+   : "${OLD_KEYS_PATH:?}"
+   : "${STAGING_DIR:?}"
    FINAL_STORE="$STAGING_DIR/attested-keys.post-stop.json"
-   ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" >"$FINAL_STORE"
-   ```
-
-5. Validate and compare in two phases. An invalid final file must never be
-   passed to `jq 'length'`:
-
-   ```bash
-   FINAL_STORE_VALID=true
-
-   if ! jq -e 'type == "object"' "$FINAL_STORE" >/dev/null; then
-     FINAL_STORE_VALID=false
-   else
-     PRE_STOP_FLOOR="$(
-       cat "$STAGING_DIR/attested-keys.pre-stop.count"
-     )"
-     POST_STOP_COUNT="$(jq 'length' "$FINAL_STORE")"
-     if (( POST_STOP_COUNT < PRE_STOP_FLOOR )); then
-       FINAL_STORE_VALID=false
+   FINAL_TEMP=
+   cleanup() {
+     if [[ -n "$FINAL_TEMP" ]]; then
+       rm -f -- "$FINAL_TEMP" || true
      fi
-   fi
-   ```
+   }
+   trap cleanup EXIT
 
-6. If valid, calculate and record SHA-256, the resolved source path, numeric
-   owner and mode, and the post-stop count:
+   PRE_STOP_FLOOR="$(
+     <"$STAGING_DIR/attested-keys.pre-stop.count"
+   )"
+   [[ "$PRE_STOP_FLOOR" =~ ^[0-9]+$ ]]
 
-   ```bash
-   sha256sum "$FINAL_STORE" >"$STAGING_DIR/attested-keys.post-stop.sha256"
-   ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'" \
+   FINAL_TEMP="$(mktemp "$STAGING_DIR/.attested-keys.post-stop.XXXXXX")"
+   chmod 0600 "$FINAL_TEMP"
+   ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" >"$FINAL_TEMP"
+
+   jq -e 'type == "object"' "$FINAL_TEMP" >/dev/null
+   POST_STOP_COUNT="$(jq -er 'length' "$FINAL_TEMP")"
+   [[ "$POST_STOP_COUNT" =~ ^[0-9]+$ ]]
+   ((POST_STOP_COUNT >= PRE_STOP_FLOOR))
+   POST_STOP_SHA256="$(sha256sum "$FINAL_TEMP" | awk '{print $1}')"
+   [[ "$POST_STOP_SHA256" =~ ^[0-9a-f]{64}$ ]]
+   POST_STOP_STAT="$(
+     ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'"
+   )"
+   read -r POST_STOP_UID POST_STOP_GID POST_STOP_MODE POST_STOP_EXTRA \
+     <<<"$POST_STOP_STAT"
+   [[ "$POST_STOP_UID" =~ ^[0-9]+$ ]]
+   [[ "$POST_STOP_GID" =~ ^[0-9]+$ ]]
+   [[ "$POST_STOP_MODE" =~ ^[0-7]{3,4}$ ]]
+   [[ -z "${POST_STOP_EXTRA:-}" ]]
+
+   mv -Tf -- "$FINAL_TEMP" "$FINAL_STORE"
+   FINAL_TEMP=
+   printf '%s\n' "$POST_STOP_COUNT" \
+     >"$STAGING_DIR/attested-keys.post-stop.count"
+   printf '%s\n' "$POST_STOP_SHA256" \
+     >"$STAGING_DIR/attested-keys.post-stop.sha256"
+   printf '%s %s %s\n' \
+     "$POST_STOP_UID" "$POST_STOP_GID" "$POST_STOP_MODE" \
      >"$STAGING_DIR/attested-keys.post-stop.stat"
+   printf '%s\n' "$OLD_KEYS_PATH" \
+     >"$STAGING_DIR/attested-keys.post-stop.path"
+   chmod 0600 "$FINAL_STORE" "$STAGING_DIR"/attested-keys.post-stop.*
    ```
 
-If final validation fails, follow **Failure before routing changes**. Do not
-install an invalid or smaller final store on the new host.
+This block validates JSON before calculating its count, requires both counts
+to be decimal integers, persists the final count, and accepts the final file
+only after every gate passes. If it exits nonzero, run **Failure before routing
+changes** immediately and abort the window. Do not run any new-host install,
+service-start, or routing command with an invalid or smaller final store.
 
-Install the valid final store before the first service start:
+Install and verify the valid final store before the first service start. This
+single strict block is the aggregate checksum/count pre-start gate. It writes
+through a mode-`0600` unique temporary file in the state directory, validates
+the temporary copy, atomically renames it over the configured destination,
+verifies the final destination, and starts services only after every
+comparison succeeds:
 
 ```bash
+set -euo pipefail
+umask 077
+
 NEW_HOST=production-new
+STATE_DIR=/var/lib/mud-web-proxy
+REMOTE_FINAL_STORE="$STATE_DIR/attested-keys.json"
 FINAL_STORE="$STAGING_DIR/attested-keys.post-stop.json"
 
+: "${NEW_HOST:?}"
+: "${STAGING_DIR:?}"
+[[ -f "$FINAL_STORE" && ! -L "$FINAL_STORE" ]]
+jq -e 'type == "object"' "$FINAL_STORE" >/dev/null
+LOCAL_FINAL_COUNT="$(jq -er 'length' "$FINAL_STORE")"
+RECORDED_FINAL_COUNT="$(
+  <"$STAGING_DIR/attested-keys.post-stop.count"
+)"
+PRE_STOP_FLOOR="$(
+  <"$STAGING_DIR/attested-keys.pre-stop.count"
+)"
+[[ "$LOCAL_FINAL_COUNT" =~ ^[0-9]+$ ]]
+[[ "$RECORDED_FINAL_COUNT" =~ ^[0-9]+$ ]]
+[[ "$PRE_STOP_FLOOR" =~ ^[0-9]+$ ]]
+[[ "$LOCAL_FINAL_COUNT" == "$RECORDED_FINAL_COUNT" ]]
+((LOCAL_FINAL_COUNT >= PRE_STOP_FLOOR))
+
+LOCAL_FINAL_SHA256="$(sha256sum "$FINAL_STORE" | awk '{print $1}')"
+RECORDED_FINAL_SHA256="$(
+  <"$STAGING_DIR/attested-keys.post-stop.sha256"
+)"
+[[ "$LOCAL_FINAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$RECORDED_FINAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$LOCAL_FINAL_SHA256" == "$RECORDED_FINAL_SHA256" ]]
+
 ssh "$NEW_HOST" \
-  'sudo install -d -o mud-web-proxy -g mud-web-proxy -m 0700 /var/lib/mud-web-proxy'
+  "sudo install -d -o mud-web-proxy -g mud-web-proxy -m 0700 '$STATE_DIR'"
+[[ "$(ssh "$NEW_HOST" \
+  "sudo stat -c '%a %U:%G' '$STATE_DIR'")" \
+  == "700 mud-web-proxy:mud-web-proxy" ]]
+
+REMOTE_INSTALL_TEMP=
+cleanup() {
+  if [[ -n "$REMOTE_INSTALL_TEMP" ]]; then
+    ssh "$NEW_HOST" "sudo rm -f -- '$REMOTE_INSTALL_TEMP'" || true
+  fi
+}
+trap cleanup EXIT
+
+REMOTE_INSTALL_TEMP="$(
+  ssh "$NEW_HOST" \
+    "sudo mktemp -p '$STATE_DIR' '.attested-keys.install.XXXXXX'"
+)"
+[[ "$(dirname -- "$REMOTE_INSTALL_TEMP")" == "$STATE_DIR" ]]
 ssh "$NEW_HOST" \
-  'sudo tee /var/lib/mud-web-proxy/attested-keys.json >/dev/null &&
-   sudo chown mud-web-proxy:mud-web-proxy /var/lib/mud-web-proxy/attested-keys.json &&
-   sudo chmod 0600 /var/lib/mud-web-proxy/attested-keys.json' \
+  "sudo chmod 0600 '$REMOTE_INSTALL_TEMP' &&
+   sudo tee '$REMOTE_INSTALL_TEMP' >/dev/null" \
   <"$FINAL_STORE"
-```
 
-Before start, verify the local and remote checksums and key counts match the
-valid final store, and verify the remote ownership and modes:
-
-```bash
-LOCAL_FINAL_SHA256="$(cut -d ' ' -f1 "$STAGING_DIR/attested-keys.post-stop.sha256")"
-REMOTE_FINAL_SHA256="$(
-  ssh "$NEW_HOST" \
-    "sudo sha256sum /var/lib/mud-web-proxy/attested-keys.json | cut -d ' ' -f1"
+REMOTE_TEMP_COUNT="$(
+  ssh "$NEW_HOST" "sudo cat '$REMOTE_INSTALL_TEMP'" |
+    jq -er 'if type == "object" then length else error("not object") end'
 )"
-LOCAL_FINAL_COUNT="$(jq 'length' "$FINAL_STORE")"
+REMOTE_TEMP_SHA256="$(
+  ssh "$NEW_HOST" "sudo cat '$REMOTE_INSTALL_TEMP'" |
+    sha256sum | awk '{print $1}'
+)"
+[[ "$REMOTE_TEMP_COUNT" =~ ^[0-9]+$ ]]
+[[ "$REMOTE_TEMP_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$REMOTE_TEMP_COUNT" == "$LOCAL_FINAL_COUNT" ]]
+[[ "$REMOTE_TEMP_SHA256" == "$LOCAL_FINAL_SHA256" ]]
+
+ssh "$NEW_HOST" \
+  "sudo chown mud-web-proxy:mud-web-proxy '$REMOTE_INSTALL_TEMP' &&
+   sudo chmod 0600 '$REMOTE_INSTALL_TEMP' &&
+   sudo mv -Tf -- '$REMOTE_INSTALL_TEMP' '$REMOTE_FINAL_STORE'"
+REMOTE_INSTALL_TEMP=
+
 REMOTE_FINAL_COUNT="$(
-  ssh "$NEW_HOST" \
-    "sudo jq 'length' /var/lib/mud-web-proxy/attested-keys.json"
+  ssh "$NEW_HOST" "sudo cat '$REMOTE_FINAL_STORE'" |
+    jq -er 'if type == "object" then length else error("not object") end'
 )"
+REMOTE_FINAL_SHA256="$(
+  ssh "$NEW_HOST" "sudo cat '$REMOTE_FINAL_STORE'" |
+    sha256sum | awk '{print $1}'
+)"
+REMOTE_FINAL_STAT="$(
+  ssh "$NEW_HOST" \
+    "sudo stat -c '%a %U:%G' '$REMOTE_FINAL_STORE'"
+)"
+[[ "$REMOTE_FINAL_COUNT" =~ ^[0-9]+$ ]]
+[[ "$REMOTE_FINAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$REMOTE_FINAL_COUNT" == "$LOCAL_FINAL_COUNT" ]]
+[[ "$REMOTE_FINAL_SHA256" == "$LOCAL_FINAL_SHA256" ]]
+[[ "$REMOTE_FINAL_STAT" == "600 mud-web-proxy:mud-web-proxy" ]]
 
-test "$LOCAL_FINAL_SHA256" = "$REMOTE_FINAL_SHA256"
-test "$LOCAL_FINAL_COUNT" = "$REMOTE_FINAL_COUNT"
-test "$(ssh "$NEW_HOST" \
-  "sudo stat -c '%a %U:%G' /var/lib/mud-web-proxy/attested-keys.json")" \
-  = '600 mud-web-proxy:mud-web-proxy'
+ssh "$NEW_HOST" 'sudo systemctl start mud-web-proxy caddy'
+ssh "$NEW_HOST" \
+  'curl --fail --silent --show-error http://127.0.0.1:6200/health >/dev/null'
+POST_START_COUNT="$(
+  ssh "$NEW_HOST" "sudo cat '$REMOTE_FINAL_STORE'" |
+    jq -er 'if type == "object" then length else error("not object") end'
+)"
+[[ "$POST_START_COUNT" =~ ^[0-9]+$ ]]
+[[ "$POST_START_COUNT" == "$LOCAL_FINAL_COUNT" ]]
 ```
 
-Start the new proxy and Caddy, then require loopback health before executing
-the recorded routing-forward command. After start, again require a JSON object
-and the same final key count before accepting public traffic.
+Do not execute the recorded routing-forward command unless this entire block
+exits zero. Thus a failed JSON, numeric-count, checksum, ownership, mode,
+service-start, loopback-health, or post-start count gate cannot be masked by a
+later command.
 
 ## Failure before routing changes
 
-If `FINAL_STORE_VALID` is not `true`, restore the safety copy using its
-recorded numeric owner and mode:
+If final validation fails, restore the safety copy with this strict procedure.
+It validates the local copy and its records, transfers into a unique
+same-directory mode-`0600` temporary file on the old filesystem, validates the
+temporary file, applies the recorded numeric owner and mode, atomically
+renames it over the configured path, and verifies the final destination.
+An interrupted SSH transfer leaves the live old-host store untouched:
 
 ```bash
-read -r OLD_KEYS_UID OLD_KEYS_GID OLD_KEYS_MODE \
-  <"$STAGING_DIR/attested-keys.pre-stop.stat"
+set -euo pipefail
+umask 077
+
+: "${OLD_HOST:?}"
+: "${OLD_KEYS_PATH:?}"
+: "${STAGING_DIR:?}"
+SAFETY_STORE="$STAGING_DIR/attested-keys.pre-stop.json"
+SAFETY_COUNT_RECORD="$STAGING_DIR/attested-keys.pre-stop.count"
+SAFETY_SHA_RECORD="$STAGING_DIR/attested-keys.pre-stop.sha256"
+SAFETY_STAT_RECORD="$STAGING_DIR/attested-keys.pre-stop.stat"
+OLD_KEYS_DIR="$(dirname -- "$OLD_KEYS_PATH")"
+
+[[ -f "$SAFETY_STORE" && ! -L "$SAFETY_STORE" ]]
+jq -e 'type == "object"' "$SAFETY_STORE" >/dev/null
+SAFETY_COUNT="$(jq -er 'length' "$SAFETY_STORE")"
+RECORDED_SAFETY_COUNT="$(<"$SAFETY_COUNT_RECORD")"
+[[ "$SAFETY_COUNT" =~ ^[0-9]+$ ]]
+[[ "$RECORDED_SAFETY_COUNT" =~ ^[0-9]+$ ]]
+[[ "$SAFETY_COUNT" == "$RECORDED_SAFETY_COUNT" ]]
+SAFETY_SHA256="$(sha256sum "$SAFETY_STORE" | awk '{print $1}')"
+RECORDED_SAFETY_SHA256="$(<"$SAFETY_SHA_RECORD")"
+[[ "$SAFETY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$RECORDED_SAFETY_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$SAFETY_SHA256" == "$RECORDED_SAFETY_SHA256" ]]
+read -r OLD_KEYS_UID OLD_KEYS_GID OLD_KEYS_MODE OLD_KEYS_EXTRA \
+  <"$SAFETY_STAT_RECORD"
+[[ "$OLD_KEYS_UID" =~ ^[0-9]+$ ]]
+[[ "$OLD_KEYS_GID" =~ ^[0-9]+$ ]]
+[[ "$OLD_KEYS_MODE" =~ ^[0-7]{3,4}$ ]]
+[[ -z "${OLD_KEYS_EXTRA:-}" ]]
+
+REMOTE_RESTORE_TEMP=
+cleanup() {
+  if [[ -n "$REMOTE_RESTORE_TEMP" ]]; then
+    ssh "$OLD_HOST" "sudo rm -f -- '$REMOTE_RESTORE_TEMP'" || true
+  fi
+}
+trap cleanup EXIT
+
+REMOTE_RESTORE_TEMP="$(
+  ssh "$OLD_HOST" \
+    "sudo mktemp -p '$OLD_KEYS_DIR' '.attested-keys.restore.XXXXXX'"
+)"
+[[ "$(dirname -- "$REMOTE_RESTORE_TEMP")" == "$OLD_KEYS_DIR" ]]
 ssh "$OLD_HOST" \
-  "sudo tee '$OLD_KEYS_PATH' >/dev/null &&
-   sudo chown '$OLD_KEYS_UID:$OLD_KEYS_GID' '$OLD_KEYS_PATH' &&
-   sudo chmod '$OLD_KEYS_MODE' '$OLD_KEYS_PATH'" \
-  <"$STAGING_DIR/attested-keys.pre-stop.json"
+  "sudo chmod 0600 '$REMOTE_RESTORE_TEMP' &&
+   sudo tee '$REMOTE_RESTORE_TEMP' >/dev/null" \
+  <"$SAFETY_STORE"
+
+REMOTE_RESTORE_COUNT="$(
+  ssh "$OLD_HOST" "sudo cat '$REMOTE_RESTORE_TEMP'" |
+    jq -er 'if type == "object" then length else error("not object") end'
+)"
+REMOTE_RESTORE_SHA256="$(
+  ssh "$OLD_HOST" "sudo cat '$REMOTE_RESTORE_TEMP'" |
+    sha256sum | awk '{print $1}'
+)"
+[[ "$REMOTE_RESTORE_COUNT" =~ ^[0-9]+$ ]]
+[[ "$REMOTE_RESTORE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$REMOTE_RESTORE_COUNT" == "$SAFETY_COUNT" ]]
+[[ "$REMOTE_RESTORE_SHA256" == "$SAFETY_SHA256" ]]
+
+ssh "$OLD_HOST" \
+  "sudo chown '$OLD_KEYS_UID:$OLD_KEYS_GID' '$REMOTE_RESTORE_TEMP' &&
+   sudo chmod '$OLD_KEYS_MODE' '$REMOTE_RESTORE_TEMP' &&
+   sudo mv -Tf -- '$REMOTE_RESTORE_TEMP' '$OLD_KEYS_PATH'"
+REMOTE_RESTORE_TEMP=
+
+RESTORED_COUNT="$(
+  ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" |
+    jq -er 'if type == "object" then length else error("not object") end'
+)"
+RESTORED_SHA256="$(
+  ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" |
+    sha256sum | awk '{print $1}'
+)"
+RESTORED_STAT="$(
+  ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'"
+)"
+[[ "$RESTORED_COUNT" =~ ^[0-9]+$ ]]
+[[ "$RESTORED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$RESTORED_COUNT" == "$SAFETY_COUNT" ]]
+[[ "$RESTORED_SHA256" == "$SAFETY_SHA256" ]]
+[[ "$RESTORED_STAT" == \
+  "$OLD_KEYS_UID $OLD_KEYS_GID $OLD_KEYS_MODE" ]]
 ```
 
-Then run the exact old-supervisor restart command and exact old-ingress
-restoration command recorded during pre-stage, verify old-host health, and
-abort the cutover window. Do this before any routing change. Do not infer
-whether the legacy supervisor is PM2, systemd, or another wrapper.
+Only after the restore block exits zero, run the exact old-supervisor restart
+command and exact old-ingress restoration command recorded during pre-stage,
+verify old-host health, and abort the cutover window. Do this before any
+routing change. Do not infer whether the legacy supervisor is PM2, systemd, or
+another wrapper.
 
 Public routing has not changed at this point.
 
@@ -318,15 +544,138 @@ recorded command, restore old ingress, and verify old-host health and a
 complete client session.
 
 If the new host has served public traffic, its App Attest store may contain
-new registrations or higher assertion counters. Before restarting the old
-service:
+new registrations or higher assertion counters. Use this complete reverse
+transfer before restarting the old service or reversing routing. It stops the
+new proxy and waits for exit, records and validates the new store, then uses a
+mode-`0600` unique temporary file in the old path's directory and the original
+recorded numeric destination owner and mode. A partial transfer cannot replace
+the old live file:
 
-1. Stop the new proxy and wait for its state flush.
-2. Validate and record the new store's SHA-256 and JSON object key count.
-3. Copy the new host store back to the old host's configured path.
-4. Restore the old path's original numeric ownership and mode.
-5. Only then reverse public routing, restart the old service, restore old
-   ingress, and verify health and a complete client session.
+```bash
+set -euo pipefail
+umask 077
+
+: "${NEW_HOST:?}"
+: "${OLD_HOST:?}"
+: "${OLD_KEYS_PATH:?}"
+: "${STAGING_DIR:?}"
+NEW_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
+REVERSE_STORE="$STAGING_DIR/attested-keys.reverse.json"
+OLD_KEYS_DIR="$(dirname -- "$OLD_KEYS_PATH")"
+OLD_STAT_RECORD="$STAGING_DIR/attested-keys.pre-stop.stat"
+
+ssh "$NEW_HOST" \
+  'sudo systemctl stop mud-web-proxy &&
+   if sudo systemctl is-active --quiet mud-web-proxy; then exit 1; fi'
+
+REVERSE_LOCAL_TEMP=
+REMOTE_REVERSE_TEMP=
+cleanup() {
+  if [[ -n "$REVERSE_LOCAL_TEMP" ]]; then
+    rm -f -- "$REVERSE_LOCAL_TEMP" || true
+  fi
+  if [[ -n "$REMOTE_REVERSE_TEMP" ]]; then
+    ssh "$OLD_HOST" "sudo rm -f -- '$REMOTE_REVERSE_TEMP'" || true
+  fi
+}
+trap cleanup EXIT
+
+REVERSE_LOCAL_TEMP="$(
+  mktemp "$STAGING_DIR/.attested-keys.reverse.XXXXXX"
+)"
+chmod 0600 "$REVERSE_LOCAL_TEMP"
+ssh "$NEW_HOST" "sudo cat '$NEW_KEYS_PATH'" >"$REVERSE_LOCAL_TEMP"
+jq -e 'type == "object"' "$REVERSE_LOCAL_TEMP" >/dev/null
+REVERSE_COUNT="$(jq -er 'length' "$REVERSE_LOCAL_TEMP")"
+[[ "$REVERSE_COUNT" =~ ^[0-9]+$ ]]
+REVERSE_SHA256="$(
+  sha256sum "$REVERSE_LOCAL_TEMP" | awk '{print $1}'
+)"
+[[ "$REVERSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+REVERSE_SOURCE_STAT="$(
+  ssh "$NEW_HOST" "sudo stat -c '%u %g %a' '$NEW_KEYS_PATH'"
+)"
+read -r REVERSE_UID REVERSE_GID REVERSE_MODE REVERSE_EXTRA \
+  <<<"$REVERSE_SOURCE_STAT"
+[[ "$REVERSE_UID" =~ ^[0-9]+$ ]]
+[[ "$REVERSE_GID" =~ ^[0-9]+$ ]]
+[[ "$REVERSE_MODE" == "600" ]]
+[[ -z "${REVERSE_EXTRA:-}" ]]
+[[ "$(ssh "$NEW_HOST" \
+  "sudo stat -c '%U:%G' '$NEW_KEYS_PATH'")" \
+  == "mud-web-proxy:mud-web-proxy" ]]
+
+mv -Tf -- "$REVERSE_LOCAL_TEMP" "$REVERSE_STORE"
+REVERSE_LOCAL_TEMP=
+printf '%s\n' "$REVERSE_COUNT" \
+  >"$STAGING_DIR/attested-keys.reverse.count"
+printf '%s\n' "$REVERSE_SHA256" \
+  >"$STAGING_DIR/attested-keys.reverse.sha256"
+printf '%s %s %s\n' "$REVERSE_UID" "$REVERSE_GID" "$REVERSE_MODE" \
+  >"$STAGING_DIR/attested-keys.reverse.stat"
+printf '%s\n' "$NEW_KEYS_PATH" \
+  >"$STAGING_DIR/attested-keys.reverse.path"
+chmod 0600 "$REVERSE_STORE" "$STAGING_DIR"/attested-keys.reverse.*
+
+read -r OLD_KEYS_UID OLD_KEYS_GID OLD_KEYS_MODE OLD_KEYS_EXTRA \
+  <"$OLD_STAT_RECORD"
+[[ "$OLD_KEYS_UID" =~ ^[0-9]+$ ]]
+[[ "$OLD_KEYS_GID" =~ ^[0-9]+$ ]]
+[[ "$OLD_KEYS_MODE" =~ ^[0-7]{3,4}$ ]]
+[[ -z "${OLD_KEYS_EXTRA:-}" ]]
+
+REMOTE_REVERSE_TEMP="$(
+  ssh "$OLD_HOST" \
+    "sudo mktemp -p '$OLD_KEYS_DIR' '.attested-keys.reverse.XXXXXX'"
+)"
+[[ "$(dirname -- "$REMOTE_REVERSE_TEMP")" == "$OLD_KEYS_DIR" ]]
+ssh "$OLD_HOST" \
+  "sudo chmod 0600 '$REMOTE_REVERSE_TEMP' &&
+   sudo tee '$REMOTE_REVERSE_TEMP' >/dev/null" \
+  <"$REVERSE_STORE"
+
+REMOTE_REVERSE_COUNT="$(
+  ssh "$OLD_HOST" "sudo cat '$REMOTE_REVERSE_TEMP'" |
+    jq -er 'if type == "object" then length else error("not object") end'
+)"
+REMOTE_REVERSE_SHA256="$(
+  ssh "$OLD_HOST" "sudo cat '$REMOTE_REVERSE_TEMP'" |
+    sha256sum | awk '{print $1}'
+)"
+[[ "$REMOTE_REVERSE_COUNT" =~ ^[0-9]+$ ]]
+[[ "$REMOTE_REVERSE_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$REMOTE_REVERSE_COUNT" == "$REVERSE_COUNT" ]]
+[[ "$REMOTE_REVERSE_SHA256" == "$REVERSE_SHA256" ]]
+
+ssh "$OLD_HOST" \
+  "sudo chown '$OLD_KEYS_UID:$OLD_KEYS_GID' '$REMOTE_REVERSE_TEMP' &&
+   sudo chmod '$OLD_KEYS_MODE' '$REMOTE_REVERSE_TEMP' &&
+   sudo mv -Tf -- '$REMOTE_REVERSE_TEMP' '$OLD_KEYS_PATH'"
+REMOTE_REVERSE_TEMP=
+
+REVERSED_FINAL_COUNT="$(
+  ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" |
+    jq -er 'if type == "object" then length else error("not object") end'
+)"
+REVERSED_FINAL_SHA256="$(
+  ssh "$OLD_HOST" "sudo cat '$OLD_KEYS_PATH'" |
+    sha256sum | awk '{print $1}'
+)"
+REVERSED_FINAL_STAT="$(
+  ssh "$OLD_HOST" "sudo stat -c '%u %g %a' '$OLD_KEYS_PATH'"
+)"
+[[ "$REVERSED_FINAL_COUNT" =~ ^[0-9]+$ ]]
+[[ "$REVERSED_FINAL_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$REVERSED_FINAL_COUNT" == "$REVERSE_COUNT" ]]
+[[ "$REVERSED_FINAL_SHA256" == "$REVERSE_SHA256" ]]
+[[ "$REVERSED_FINAL_STAT" == \
+  "$OLD_KEYS_UID $OLD_KEYS_GID $OLD_KEYS_MODE" ]]
+```
+
+Only after this block exits zero, execute the private record's exact routing
+reverse command, old-supervisor restart command, and old-ingress restoration
+command, then verify old-host health and a complete client session. Do not
+infer or publish those production commands.
 
 The v3.1.0 loader accepts and re-serializes the additive `lastUsedAt` field,
 so this reverse copy preserves new registrations and assertion counters

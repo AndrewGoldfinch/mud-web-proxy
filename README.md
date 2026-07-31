@@ -109,7 +109,16 @@ runtime. CI reads `.bun-version` directly, and
 `rg 'oven/bun:' Dockerfile tests/container tests/docker-image-contract.test.ts`
 to find every container pin.
 
-You need to have your certificates available to use wsproxy. Inbound TLS is required by default, so starting without usable certificates aborts at startup rather than quietly falling back to plaintext:
+### Direct application-managed TLS
+
+The certificate instructions below apply only when the application itself
+terminates inbound TLS. The native host-Caddy path and the Compose edge path
+terminate TLS at the edge, set `INBOUND_TLS_MODE=off`, and omit
+`TLS_CERT_PATH` and `TLS_KEY_PATH` from the application environment.
+
+For direct application-managed TLS, you need to have certificates available
+to use wsproxy. Inbound TLS is required by default, so starting without usable
+certificates aborts at startup rather than quietly falling back to plaintext:
 
 ```bash
 $ bun dev
@@ -122,7 +131,8 @@ The check is more than a file-existence test: an unreadable file, a malformed ce
 
 To run without TLS during local development — behind a reverse proxy that terminates it, or against a loopback-only listener — set `INBOUND_TLS_MODE=off`. On any non-loopback `BIND_HOST` that additionally requires `ALLOW_INSECURE_INBOUND_NO_TLS=true`, so an exposed plaintext listener is always something you asked for explicitly.
 
-You need to have available both files in the same directory as the proxy, like this:
+For this direct-TLS mode, make both files available in the same directory as
+the proxy, like this:
 
 ```bash
 $ ls
