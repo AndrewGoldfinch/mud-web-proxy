@@ -135,17 +135,20 @@ ln -s "../../runtimes/bun/$BUN_VERSION" runtime
 ```
 
 Validate bundle, dependencies, runtime, ownership, and modes before
-activation. Health, WSS, and mock-MUD validation follow activation and gate
-acceptance.
+current-link activation. During a normal upgrade, activation means both the
+current-link phase and the subsequent process-application phase. Health, WSS,
+and mock-MUD validation follow both phases and gate acceptance.
 
-## Atomic activation
+## Atomic current-link activation
 
-Run this complete procedure as root. Set `RELEASE_VERSION` from the already
-verified extracted directory. The procedure rejects non-basename identifiers,
-proves the resolved release and runtime remain in their direct versioned
-directories, validates the release, writes the prior target to the root-only
-deployment record, and then performs one same-filesystem symlink rename.
-Every failed check exits before the restart:
+Run this complete procedure as root. It validates the release, writes the
+rollback record, and swaps `current`, but never starts, stops, or restarts a
+service. Set `RELEASE_VERSION` from the already verified extracted directory.
+The procedure rejects non-basename identifiers, proves the resolved release
+and runtime remain in their direct versioned directories, validates the
+release, writes the prior target to the root-only deployment record, and then
+performs one same-filesystem symlink rename. Every failed check exits before
+the link swap:
 
 ```bash
 set -euo pipefail
@@ -249,13 +252,26 @@ ln -s "releases/$RELEASE_VERSION" "$LINK_TEMP_DIR/current"
 mv -Tf -- "$LINK_TEMP_DIR/current" "$CURRENT"
 rmdir -- "$LINK_TEMP_DIR"
 LINK_TEMP_DIR=
-
-systemctl restart mud-web-proxy
 ```
 
 An empty `previous-release` record denotes an initial activation with no prior
 release. Production acceptance still requires a tested retained rollback
 release.
+
+### Apply an activated release
+
+Normal upgrades run this phase only after the current-link phase exits zero:
+
+```bash
+set -euo pipefail
+
+systemctl restart mud-web-proxy
+curl --fail --silent --show-error \
+  http://127.0.0.1:6200/health >/dev/null
+```
+
+Production acceptance still requires WSS and a complete mock-MUD session.
+A new-Droplet pre-stage does not run this phase.
 
 ## Offline rollback
 
@@ -264,7 +280,7 @@ Rollback performs no download, dependency installation, or package-manager resol
 Run this procedure as root. It reads the persistent record, rejects an empty or
 malformed target, repeats the complete release/runtime validation, creates a
 unique temporary symlink under the installation root, atomically reverses
-`current`, and restarts only after the rename succeeds:
+`current`, and ends after the rename succeeds:
 
 ```bash
 set -euo pipefail
@@ -345,11 +361,11 @@ ln -s "$PREVIOUS_TARGET" "$LINK_TEMP_DIR/current"
 mv -Tf -- "$LINK_TEMP_DIR/current" "$CURRENT"
 rmdir -- "$LINK_TEMP_DIR"
 LINK_TEMP_DIR=
-
-systemctl restart mud-web-proxy
 ```
 
-Validate `/health`, WSS, and a mock-MUD session after rollback.
+After the current-link procedure exits zero, run the separate
+`Apply an activated release` phase, then validate `/health`, WSS, and a
+mock-MUD session.
 
 ## Retention and pruning
 

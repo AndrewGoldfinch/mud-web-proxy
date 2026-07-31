@@ -121,7 +121,9 @@ Create `docs/deployment/systemd.md` with this exact heading order:
 
 ## Installing a release
 
-## Atomic activation
+## Atomic current-link activation
+
+## Apply an activated release
 
 ## Offline rollback
 
@@ -255,8 +257,9 @@ extraction; bundle, dependency, runtime, ownership, and mode validation
 precede activation. Health, WSS, and mock-MUD validation follow activation
 and gate acceptance.
 
-The guide's activation block must be a complete root-run Bash procedure with
-`set -euo pipefail`. It must:
+The guide's `Atomic current-link activation` block must be a complete root-run
+Bash procedure with `set -euo pipefail`. It is service-neutral and must never
+start, stop, or restart a service. It must:
 
 1. accept only a safe basename `RELEASE_VERSION`;
 2. prove the resolved release is a direct child of `releases/`;
@@ -268,8 +271,11 @@ The guide's activation block must be a complete root-run Bash procedure with
    `/var/lib/mud-web-proxy-deploy/previous-release` record before activation;
 6. create a unique temporary directory under `/opt/mud-web-proxy`, create the
    temporary symlink inside it, and clean it through an `EXIT` trap;
-7. atomically rename that unique same-filesystem symlink over `current`; and
-8. restart only after every prerequisite, record write, and rename succeeds.
+7. atomically rename that unique same-filesystem symlink over `current`.
+
+The separate `Apply an activated release` block must restart the service and
+run health, WSS, and mock-MUD acceptance only after the complete current-link
+activation block exits zero.
 
 An initial activation may persist an empty record to mean that no prior
 release exists. It does not satisfy production's tested-rollback requirement.
@@ -283,11 +289,11 @@ Rollback performs no download, dependency installation, or package-manager resol
 Then show a complete strict rollback procedure that reads and validates the
 persistent record, repeats the direct-child and full release/runtime
 validation, uses a trap-cleaned unique same-filesystem temporary symlink,
-atomically reverses `current`, and restarts only after the rename. It performs
-no download or installation. Follow with `/health`, WSS, and mock-MUD
-validation. Retain the active release, the recorded rollback release, the two
-most recent verified previous releases, every referenced Bun runtime, and
-installed `node_modules`.
+atomically reverses `current`. The separate `Apply an activated release` phase
+restarts only after the rename and follows with `/health`, WSS, and mock-MUD
+validation. It performs no download or installation. Retain the active
+release, the recorded rollback release, the two most recent verified previous
+releases, every referenced Bun runtime, and installed `node_modules`.
 
 The backup section must exhaustively divide:
 
@@ -515,23 +521,30 @@ The cutover sequence before public routing changes is:
 10. record the resolved source path plus numeric owner and mode.
 
 The final-state block must use `set -euo pipefail`, a unique mode-`0600`
-staging temporary file, and trap cleanup. Validate the JSON object before
-calculating its count. A failed SSH, parse, numeric-count, floor, checksum, or
-metadata gate must exit nonzero before accepting the final store.
+staging temporary file, and trap cleanup. Before the first new-service start
+attempt, install an `EXIT` trap that preserves the original nonzero status and
+stops both `mud-web-proxy.service` and Caddy after any new-service start,
+loopback-health, or post-start App Attest-count failure. Validate the JSON
+object before calculating its count. A failed SSH, parse, numeric-count,
+floor, checksum, or metadata gate must exit nonzero before accepting the
+final store.
 
-If final validation fails, the safety-restore procedure must validate the
-local safety JSON, count, and checksum, create a same-directory mode-`0600`
-unique temporary file on the old filesystem, transfer into that file, and
-validate its JSON/count/checksum before replacement. Apply the recorded
-numeric owner and mode, atomically rename it over the configured path, and
-verify the final destination's JSON, count, checksum, owner, and mode. A
-partial SSH transfer must leave the live file untouched.
+If final validation fails, stop both new services and verify that both are
+inactive before any old-host state restoration, old-supervisor restart,
+old-ingress restoration, or routing reversal. Then the safety-restore
+procedure must validate the local safety JSON, count, and checksum, create a
+same-directory mode-`0600` unique temporary file on the old filesystem,
+transfer into that file, and validate its JSON/count/checksum before
+replacement. Apply the recorded numeric owner and mode, atomically rename it
+over the configured path, and verify the final destination's JSON, count,
+checksum, owner, and mode. A partial SSH transfer must leave the live file
+untouched.
 
-Only after final-destination verification, run the exact old-supervisor
-restart and old-ingress restoration commands recorded during pre-stage,
-verify old-host health, and abort the window. The runbook must not guess
-whether the legacy supervisor is PM2, systemd, or another wrapper; the private
-record supplies the observed production commands.
+Only after final-destination verification and that new-service containment,
+run the exact old-supervisor restart and old-ingress restoration commands
+recorded during pre-stage, verify old-host health, and abort the window. The
+runbook must not guess whether the legacy supervisor is PM2, systemd, or
+another wrapper; the private record supplies the observed production commands.
 
 State immediately after the branch: `Public routing has not changed at this
 point.`
@@ -545,9 +558,11 @@ files, semantically migrated configuration, and referenced non-TLS secrets.
 Require systemd and Caddy configuration validation before the cutover window.
 Any pre-window application-health check must use an isolated foreground
 process, a disposable App Attest state path, and non-production
-configuration. Keep the production systemd service stopped until the
-post-stop final store passes the aggregate pre-start gate; do not send
-production traffic to the new host yet.
+configuration. Require the production proxy to be inactive before and after
+the service-neutral `Atomic current-link activation` pre-stage operation.
+Keep it stopped and do not run `Apply an activated release` until the post-stop
+final store passes the aggregate pre-start gate; do not send production traffic
+to the new host yet.
 
 Create the state directory and install the final store before first service
 start through a unique same-directory mode-`0600` temporary file. Validate
@@ -558,11 +573,13 @@ destination, and verify the final destination's JSON/count/checksum/owner/mode.
 Put all checksum and count comparisons in one strict aggregate pre-start
 block. Start the production systemd service and Caddy in that same block only
 after every gate passes, require loopback health, and require the unchanged
-JSON-object count after start. Execute the private routing-forward command
-only after the aggregate block exits zero. Perform public `/health`, WSS, a
-complete MUD session, correct forwarded client attribution, and the mandatory
-assertion from an already-registered production client after public routing
-but before acceptance.
+JSON-object count after start. From the first start attempt, an `EXIT` trap
+must preserve the original nonzero status and stop both new services after a
+start, loopback-health, or post-start count failure. Execute the private
+routing-forward command only after the aggregate block exits zero. Perform
+public `/health`, WSS, a complete MUD session, correct forwarded client
+attribution, and the mandatory assertion from an already-registered
+production client after public routing but before acceptance.
 
 Use the literal sentence `Active sessions do not survive cutover.` Explain
 that all players disconnect and resume buffers are lost. Select a low-traffic
@@ -586,11 +603,13 @@ For DNS:
 - state rollback is bounded by resolver caches rather than instant.
 
 If rollback occurs after the new host served traffic, stop and flush the new
-proxy, validate and persist the new store's JSON object, numeric count,
-checksum, numeric owner, and numeric mode, then copy it to a mode-`0600`
-same-directory unique temporary file on the old filesystem. Validate the
-temporary file, apply the original recorded old-path owner/mode, atomically
-rename it over the old configured path, and verify the final destination's
+proxy, stop Caddy, and verify that both new services are inactive before any
+old-host state mutation, routing reversal, or old-service restart. Then
+validate and persist the new store's JSON object, numeric count, checksum,
+numeric owner, and numeric mode, and copy it to a mode-`0600` same-directory
+unique temporary file on the old filesystem. Validate the temporary file,
+apply the original recorded old-path owner/mode, atomically rename it over the
+old configured path, and verify the final destination's
 JSON/count/checksum/owner/mode. Reverse routing or restart the old service
 only after that block exits zero. Explain why this preserves new registrations
 and assertion counters and why v3.1.0 round-trips `lastUsedAt`.

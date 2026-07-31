@@ -112,7 +112,39 @@ Before a declared low-traffic window, the production owner must:
    system Bun.
 5. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
    according to `systemd.md`. Verify artifact checksum and provenance before
-   extraction, then follow its immutable-release and atomic-activation rules.
+   extraction, install the unit, and keep both the proxy and Caddy inactive.
+   On the new host, run this as root to record both service states and require
+   both to be exactly `inactive`:
+
+   ```bash
+   NEW_HOST=production-new
+   : "${NEW_HOST:?}"
+   ssh "$NEW_HOST" 'sudo bash -s' <<'EOF'
+   set -euo pipefail
+   PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
+   CADDY_STATE="$(systemctl is-active caddy || true)"
+   [[ "$PROXY_STATE" == "inactive" && "$CADDY_STATE" == "inactive" ]]
+   EOF
+   ```
+
+   As root on the new host, run only `Atomic current-link activation`. After
+   the link swap, again run this as root on the new host to record both service
+   states and require both to be exactly `inactive`:
+
+   ```bash
+   NEW_HOST=production-new
+   : "${NEW_HOST:?}"
+   ssh "$NEW_HOST" 'sudo bash -s' <<'EOF'
+   set -euo pipefail
+   PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
+   CADDY_STATE="$(systemctl is-active caddy || true)"
+   [[ "$PROXY_STATE" == "inactive" && "$CADDY_STATE" == "inactive" ]]
+   EOF
+   ```
+
+   `Apply an activated release` is forbidden until the final App Attest
+   transfer gate.
+
 6. Semantically migrate the environment and referenced non-TLS secret files
    as described in the transfer inventory.
 7. Resolve the legacy App Attest path, take the validated pre-stop safety
@@ -341,10 +373,17 @@ ssh "$NEW_HOST" \
   == "700 mud-web-proxy:mud-web-proxy" ]]
 
 REMOTE_INSTALL_TEMP=
+NEW_SERVICES_MAY_BE_RUNNING=0
 cleanup() {
+  status=$?
   if [[ -n "$REMOTE_INSTALL_TEMP" ]]; then
     ssh "$NEW_HOST" "sudo rm -f -- '$REMOTE_INSTALL_TEMP'" || true
   fi
+  if ((status != 0 && NEW_SERVICES_MAY_BE_RUNNING == 1)); then
+    ssh "$NEW_HOST" \
+      'sudo systemctl stop mud-web-proxy caddy' || true
+  fi
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -395,6 +434,7 @@ REMOTE_FINAL_STAT="$(
 [[ "$REMOTE_FINAL_SHA256" == "$LOCAL_FINAL_SHA256" ]]
 [[ "$REMOTE_FINAL_STAT" == "600 mud-web-proxy:mud-web-proxy" ]]
 
+NEW_SERVICES_MAY_BE_RUNNING=1
 ssh "$NEW_HOST" 'sudo systemctl start mud-web-proxy caddy'
 ssh "$NEW_HOST" \
   'curl --fail --silent --show-error http://127.0.0.1:6200/health >/dev/null'
@@ -404,12 +444,16 @@ POST_START_COUNT="$(
 )"
 [[ "$POST_START_COUNT" =~ ^[0-9]+$ ]]
 [[ "$POST_START_COUNT" == "$LOCAL_FINAL_COUNT" ]]
+NEW_SERVICES_MAY_BE_RUNNING=0
+trap - EXIT
 ```
 
 Do not execute the recorded routing-forward command unless this entire block
 exits zero. Thus a failed JSON, numeric-count, checksum, ownership, mode,
 service-start, loopback-health, or post-start count gate cannot be masked by a
-later command.
+later command. A nonzero service-start or later gate automatically attempts to
+stop both new services; the explicit recovery precondition remains
+authoritative.
 
 ## Failure before routing changes
 
@@ -420,13 +464,23 @@ temporary file, applies the recorded numeric owner and mode, atomically
 renames it over the configured path, and verifies the final destination.
 An interrupted SSH transfer leaves the live old-host store untouched:
 
+The procedure first stops and verifies inactivity of both new-host services.
+Failure of that precondition aborts recovery before any old-host mutation,
+restart, ingress restoration, or routing reversal.
+
 ```bash
 set -euo pipefail
 umask 077
 
+NEW_HOST=production-new
+: "${NEW_HOST:?}"
 : "${OLD_HOST:?}"
 : "${OLD_KEYS_PATH:?}"
 : "${STAGING_DIR:?}"
+ssh "$NEW_HOST" \
+  'sudo systemctl stop mud-web-proxy caddy &&
+   ! systemctl is-active --quiet mud-web-proxy &&
+   ! systemctl is-active --quiet caddy'
 SAFETY_STORE="$STAGING_DIR/attested-keys.pre-stop.json"
 SAFETY_COUNT_RECORD="$STAGING_DIR/attested-keys.pre-stop.count"
 SAFETY_SHA_RECORD="$STAGING_DIR/attested-keys.pre-stop.sha256"
@@ -538,18 +592,29 @@ timestamp. Start the old-Droplet retention clock only after acceptance.
 
 The old Droplet is a rollback target only while it remains functional and the
 reversal commands remain available in the private record. If acceptance fails
-before new public traffic is served, stop the new services, run the recorded
-routing reverse command if it was applied, restart the old service with its
-recorded command, restore old ingress, and verify old-host health and a
-complete client session.
+before new public traffic is served, first run this authoritative gate. It
+must exit zero before any old-host mutation, old-service restart, ingress
+restoration, or routing reversal:
+
+```bash
+: "${NEW_HOST:?}"
+ssh "$NEW_HOST" \
+  'sudo systemctl stop mud-web-proxy caddy &&
+   ! systemctl is-active --quiet mud-web-proxy &&
+   ! systemctl is-active --quiet caddy'
+```
+
+Only then run the recorded routing reverse command if it was applied, restart
+the old service with its recorded command, restore old ingress, and verify
+old-host health and a complete client session.
 
 If the new host has served public traffic, its App Attest store may contain
 new registrations or higher assertion counters. Use this complete reverse
 transfer before restarting the old service or reversing routing. It stops the
-new proxy and waits for exit, records and validates the new store, then uses a
-mode-`0600` unique temporary file in the old path's directory and the original
-recorded numeric destination owner and mode. A partial transfer cannot replace
-the old live file:
+new proxy and Caddy and verifies both are inactive, records and validates the
+new store, then uses a mode-`0600` unique temporary file in the old path's
+directory and the original recorded numeric destination owner and mode. A
+partial transfer cannot replace the old live file:
 
 ```bash
 set -euo pipefail
@@ -565,8 +630,9 @@ OLD_KEYS_DIR="$(dirname -- "$OLD_KEYS_PATH")"
 OLD_STAT_RECORD="$STAGING_DIR/attested-keys.pre-stop.stat"
 
 ssh "$NEW_HOST" \
-  'sudo systemctl stop mud-web-proxy &&
-   if sudo systemctl is-active --quiet mud-web-proxy; then exit 1; fi'
+  'sudo systemctl stop mud-web-proxy caddy &&
+   ! systemctl is-active --quiet mud-web-proxy &&
+   ! systemctl is-active --quiet caddy'
 
 REVERSE_LOCAL_TEMP=
 REMOTE_REVERSE_TEMP=

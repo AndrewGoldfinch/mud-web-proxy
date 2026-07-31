@@ -369,21 +369,31 @@ An upgrade performs:
    point;
 8. create the release-local `runtime` symlink;
 9. run the release's pre-activation checks;
-10. persist the validated prior `current` target in the root-only
-    `/var/lib/mud-web-proxy-deploy/previous-release` record;
-11. create a unique temporary symlink under `/opt/mud-web-proxy`, clean it
-    through a trap, and atomically rename it over `current`;
-12. restart `mud-web-proxy.service`; and
-13. require application health, WSS, and a complete mock-MUD session before
-    accepting the release.
+10. activate the release's `current` link; then
+11. apply the activated release by restarting `mud-web-proxy.service` and
+    completing acceptance checks.
 
-The activation shell uses `set -euo pipefail`, accepts only a safe basename
+#### Atomic current-link activation
+
+Atomic current-link activation is service-neutral: it never starts, stops, or
+restarts a service. Its shell uses `set -euo pipefail`, accepts only a safe basename
 release identifier, proves the resolved release is a direct child of
 `releases/`, and validates `VERSION`, `node_modules`, `dist/wsproxy.js`,
 `.bun-version`, `package.json#engines.bun`, the relative runtime symlink, and
 the runtime's reported version before writing the record or changing
-`current`. A stale fixed temporary name is never reused, and restart cannot
-run after a failed prerequisite or rename.
+`current`. It persists the validated prior `current` target in the root-only
+`/var/lib/mud-web-proxy-deploy/previous-release` record, then creates a unique
+temporary symlink under `/opt/mud-web-proxy`, cleans it through a trap, and
+atomically renames it over `current`. A stale fixed temporary name is never
+reused.
+
+#### Apply an activated release
+
+Applying an activated release is the separate process-activation phase. Only
+after successful current-link activation may it restart
+`mud-web-proxy.service` and require application health, WSS, and a complete
+mock-MUD session before accepting the release. It cannot run after a failed
+link-activation prerequisite or rename.
 
 The service becomes unready before closing connections. A restart closes
 WebSocket clients with code `1001` and reason `Server restarting`, closes
@@ -400,8 +410,9 @@ Rollback:
    direct-child path validation;
 3. creates a unique same-filesystem temporary symlink with trap cleanup and
    atomically renames it over `current`;
-4. restarts `mud-web-proxy.service`; and
-5. repeats health, WSS, and mock-MUD validation.
+4. ends the current-link procedure after the rename; then
+5. runs the separate `Apply an activated release` phase, which restarts
+   `mud-web-proxy.service` and repeats health, WSS, and mock-MUD validation.
 
 No download, dependency installation, package-manager resolution, or DNS
 lookup for artifacts occurs during rollback.
@@ -435,12 +446,16 @@ window:
 6. Resolve the old App Attest path and take the validated pre-stop safety
    copy, checksum, and key-count floor. Defer only the final copy until the
    old service is quiescent.
-7. Validate the systemd and Caddy configuration while keeping the production
+7. Require `mud-web-proxy.service` to be inactive before atomic current-link
+   activation, run only that service-neutral phase, and verify that the proxy
+   remains inactive afterward. Do not apply the activated release before the
+   final App Attest store is installed and passes its aggregate transfer gate.
+8. Validate the systemd and Caddy configuration while keeping the production
    systemd service stopped. Any pre-window application-health check uses an
    isolated foreground process, disposable App Attest state, and
    non-production configuration. Do not send production traffic to the new
    host.
-8. Record the old and new Droplet IDs, current public-routing mechanism,
+9. Record the old and new Droplet IDs, current public-routing mechanism,
    previous DNS values and TTL, active and rollback release identifiers,
    artifact checksum, App Attest key count, cutover operator, and rollback
    command sequence in the private operations record.
@@ -490,15 +505,20 @@ The cutover runs during a declared low-traffic window:
    place.
 5. Validate the final App Attest JSON before calculating its count, require
    both the pre-stop floor and final count to be decimal integers, and require
-   the final count to be at least the floor. If any check fails, atomically
-   restore and verify the safety copy, restart the old service, restore
-   old-host ingress, and abort before routing.
+   the final count to be at least the floor. If any check fails, stop
+   `mud-web-proxy.service` and Caddy on the new host and verify that both are
+   inactive before atomically restoring and verifying the safety copy,
+   restarting the old service, restoring old-host ingress, or reversing
+   routing; then abort before routing.
 6. Persist the valid final store's checksum and numeric count.
 7. Copy the exact final store through a unique same-directory temporary file,
    atomically replace the new destination, and verify final JSON, checksum,
    ownership, mode, and count.
 8. Start the production systemd service for the first time only after the
-   aggregate transfer gate; start Caddy and require loopback health.
+   aggregate transfer gate; start Caddy and require loopback health. From the
+   first start attempt, an `EXIT` trap preserves any nonzero status and stops
+   both new services on a start, loopback-health, or post-start App Attest
+   count failure.
 9. Reassign the existing Reserved IP, or update DNS to the new Droplet.
 10. Require public HTTPS health, WSS upgrade, a complete MUD session, correct
     forwarded client attribution, and the unchanged final App Attest key
@@ -527,16 +547,19 @@ the reversal is pre-staged.
 
 If acceptance fails before the new host receives public traffic:
 
-1. stop the new services;
-2. reassign the Reserved IP to the old Droplet, or restore the old DNS value;
+1. stop `mud-web-proxy.service` and Caddy, then verify that both new services
+   are inactive;
+2. only then reassign the Reserved IP to the old Droplet, or restore the old
+   DNS value;
 3. start the old service; and
 4. verify health and a complete client session.
 
 If the new host has received public traffic, its App Attest store may contain
 new registrations or higher counters. Before restarting the old service:
 
-1. stop the new proxy and wait for its state flush;
-2. validate its JSON object, require a numeric count, and record its checksum,
+1. stop the new proxy and Caddy, wait for the proxy's state flush, and verify
+   that both new services are inactive;
+2. validate the new proxy's JSON object, require a numeric count, and record its checksum,
    count, numeric owner, and numeric mode;
 3. transfer it into a same-directory mode-`0600` unique temporary file on the
    old filesystem, leaving the live store untouched on partial transfer;
