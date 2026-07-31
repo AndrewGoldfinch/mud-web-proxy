@@ -266,9 +266,44 @@ stat -c '%a %U:%G %n' \
 
 ## Installing a release
 
-Verify archive checksum and provenance before extraction. In the newly
-extracted release, before making it immutable, install dependencies and create
-the runtime link:
+### Obtain and verify the bundle
+
+Releases publish `mud-web-proxy-<version>.tar.gz`, `SHA256SUMS`, and an SPDX
+SBOM, each carrying a build-provenance attestation.
+
+Verification is a required step, not an optional one. Both checks run
+**before extraction**, because extracting first means an unverified archive
+has already written to the filesystem:
+
+```bash
+VERSION=4.0.0
+gh release download "v${VERSION}" --repo AndrewGoldfinch/mud-web-proxy \
+  --pattern 'mud-web-proxy-*.tar.gz' --pattern 'SHA256SUMS'
+
+# 1. Integrity: the archive is the one the checksum names.
+sha256sum -c SHA256SUMS
+
+# 2. Provenance: that archive was built by this repository's release
+#    workflow, from the commit the attestation names.
+gh attestation verify "mud-web-proxy-${VERSION}.tar.gz" \
+  --owner AndrewGoldfinch
+```
+
+The two answer different questions and neither substitutes for the other. A
+checksum proves the file matches a digest you were given; it says nothing
+about who produced that digest. The attestation is what ties the artifact to
+this repository. If either fails, stop — do not extract.
+
+The bundle contains no dependencies and no Bun binary. `node_modules` is
+installed on the host from the bundled `bun.lock`, and the runtime is the
+shared, versioned installation under `/opt/mud-web-proxy/runtimes/`, linked
+per release. Bundling either would make the archive
+architecture-specific and duplicate a runtime for every retained release.
+
+### Install
+
+In the newly extracted release, before making it immutable, install
+dependencies and create the runtime link:
 
 ```bash
 set -euo pipefail
