@@ -70,6 +70,10 @@ semantics are under test.
   Bun-only. Node 22.21.1 is checksum-verified and used only to run the two
   acceptance clients because evidence proves Bun 1.3.14 rewrites a wire-level
   close code 1001 to callback code 1000.
+- Provider evidence must be bound to the running disposable host by comparing
+  its Droplet ID with a bounded on-host metadata lookup. Before host mutation,
+  retain a clean tracked Git HEAD and hashes of the acceptance runner/helpers
+  so the evidence identifies the exact reviewed source.
 
 ## File map
 
@@ -1149,6 +1153,9 @@ git commit -m "docs: publish native systemd deployment guide"
 - Modify when evidence exposes an acceptance-client defect:
   `tests/deployment/systemd-acceptance-client.ts` and
   `tests/deployment/systemd-load-client.ts`
+- Create when evidence requires independent host/source binding:
+  `tests/deployment/digitalocean-metadata-id.sh` and
+  `tests/deployment/systemd-source-identity.sh`
 - Modify when evidence requires:
   `docs/deployment/systemd.md`
 - Modify when evidence requires:
@@ -1404,9 +1411,11 @@ deletion by Droplet ID; do not leave an undated billed VM with test state.
 git add tests/deployment/systemd-security-baseline.json \
   tests/deployment/systemd-contract.test.ts \
   tests/deployment/systemd-acceptance-client.ts \
+  tests/deployment/digitalocean-metadata-id.sh \
   tests/deployment/systemd-load-client.ts \
   tests/deployment/run-systemd-acceptance.sh \
   tests/deployment/systemd-evidence.sh \
+  tests/deployment/systemd-source-identity.sh \
   docs/deployment/systemd-acceptance.md \
   docs/deployment/systemd.md \
   docs/superpowers/specs/2026-07-30-hardened-systemd-and-caddy-design.md \
