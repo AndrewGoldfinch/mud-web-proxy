@@ -1,5 +1,9 @@
 import { readFileSync } from 'fs';
 import WebSocket, { type RawData } from 'ws';
+import {
+  spansSustainedInterval,
+  type SustainedActivity,
+} from './systemd-load-activity';
 
 const sessionCount = Number(process.env.SESSION_COUNT ?? '50');
 const sustainMs = Number(process.env.SUSTAIN_MS ?? '60000');
@@ -72,7 +76,7 @@ const createSession = (
     | 'closed' = 'opening';
   let readySettled = false;
   let closeSettled = false;
-  let trafficObserved = false;
+  const activity: SustainedActivity = { startedAt: 0 };
   let loginTimer: ReturnType<typeof setInterval> | undefined;
   let trafficTimer: ReturnType<typeof setInterval> | undefined;
   let rejectReady: (error: Error) => void = () => {};
@@ -150,7 +154,11 @@ const createSession = (
 
       const text = Buffer.from(message.payload, 'base64').toString('utf8');
       const plainText = text.replace(/\x1b\[[0-9;]*m/g, '');
-      if (phase === 'sustaining') trafficObserved = true;
+      if (phase === 'sustaining' && plainText.includes(`look ${index}`)) {
+        const now = performance.now();
+        activity.firstInboundAt ??= now;
+        activity.lastInboundAt = now;
+      }
       if (plainText.includes('Welcome to the Mock MUD!')) {
         if (readySettled) {
           rejectUnsettled(
@@ -231,13 +239,21 @@ const createSession = (
         return;
       }
       phase = 'sustaining';
-      trafficTimer = setInterval(() => {
+      activity.startedAt = performance.now();
+      const sendTraffic = (): void => {
+        const now = performance.now();
+        activity.firstOutboundAt ??= now;
+        activity.lastOutboundAt = now;
         socket.send(
           JSON.stringify({
             type: 'input',
             text: `look ${index}\r\n`,
           }),
         );
+      };
+      sendTraffic();
+      trafficTimer = setInterval(() => {
+        sendTraffic();
       }, 1000);
     },
     finishTraffic: () => {
@@ -245,7 +261,10 @@ const createSession = (
         clearInterval(trafficTimer);
         trafficTimer = undefined;
       }
-      if (phase !== 'sustaining' || !trafficObserved) {
+      if (
+        phase !== 'sustaining' ||
+        !spansSustainedInterval(activity, performance.now(), sustainMs)
+      ) {
         throw new Error(
           `systemd-load-client: session ${index} did not sustain bidirectional traffic`,
         );

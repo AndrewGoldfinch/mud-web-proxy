@@ -18,6 +18,9 @@ readonly BUN_VERSION=1.3.14
 readonly RELEASE_VERSION=systemd-acceptance
 readonly RUN_STARTED="$(date --iso-8601=seconds)"
 
+# shellcheck source=tests/deployment/systemd-evidence.sh
+source "${REPO_ROOT}/tests/deployment/systemd-evidence.sh"
+
 mock_mud_pid=
 acceptance_client_pid=
 load_client_pid=
@@ -134,6 +137,7 @@ install_identity_and_unit() {
 }
 
 install_test_release() {
+  local dependency_check_dir
   local release_bun
   local release_root
   local runtime_root
@@ -168,8 +172,9 @@ install_test_release() {
   install -o root -g root -m 0444 \
     "${REPO_ROOT}/config/apple-app-attest-root-ca.pem" \
     "${release_root}/config/apple-app-attest-root-ca.pem"
-  install -o root -g root -m 0444 "${REPO_ROOT}/dist/wsproxy.js" \
-    "${release_root}/dist/wsproxy.js"
+  cp -a "${REPO_ROOT}/dist/." "${release_root}/dist/"
+  [[ -s "${release_root}/dist/wsproxy.js" ]] ||
+    fail 'test release has no compiled entrypoint'
   ln -s "../../runtimes/bun/${BUN_VERSION}" "${release_root}/runtime"
 
   release_bun="${runtime_root}/bin/bun"
@@ -184,6 +189,14 @@ install_test_release() {
     "${release_bun}" -e \
       'await import("cbor-x"); await import("iconv-lite"); await import("ws")'
   )
+  dependency_check_dir="$(mktemp -d /tmp/mwp-105-dist-check.XXXXXX)"
+  (
+    cd "${release_root}"
+    "${release_bun}" build dist/wsproxy.js --target=bun \
+      --outdir "${dependency_check_dir}"
+  )
+  find "${dependency_check_dir}" -type f -delete
+  rmdir "${dependency_check_dir}"
 
   chown -R root:root "${INSTALL_ROOT}"
   chown -h root:root "${release_root}/runtime"
@@ -364,17 +377,49 @@ start_mock_mud() {
 wait_for_health() {
   local expected="$1"
   local url="$2"
+  local deadline_ms="${3:-}"
   local attempts=300
+  local curl_max_time=1
+  local now_ms
+  local remaining_ms
   local status
 
   while ((attempts > 0)); do
-    status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
-      "${url}" || true)"
+    if [[ -n "${deadline_ms}" ]]; then
+      now_ms="$(monotonic_milliseconds)"
+      ((now_ms < deadline_ms)) ||
+        fail "drain exceeded 30 seconds while waiting for ${url}"
+      remaining_ms=$((deadline_ms - now_ms))
+      printf -v curl_max_time '%d.%03d' \
+        "$((remaining_ms / 1000))" "$((remaining_ms % 1000))"
+    fi
+    status="$(curl --silent --max-time "${curl_max_time}" --output /dev/null \
+      --write-out '%{http_code}' "${url}" || true)"
     [[ "${status}" == "${expected}" ]] && return 0
     attempts=$((attempts - 1))
     sleep 0.1
   done
   fail "${url} did not return ${expected}; last status ${status}"
+}
+
+monotonic_milliseconds() {
+  awk '{ printf "%.0f\n", $1 * 1000 }' /proc/uptime
+}
+
+deadline_has_elapsed() {
+  local deadline_ms="$1"
+  local now_ms
+
+  now_ms="$(monotonic_milliseconds)"
+  ((now_ms >= deadline_ms))
+}
+
+require_before_deadline() {
+  local deadline_ms="$1"
+  local label="$2"
+
+  ! deadline_has_elapsed "${deadline_ms}" ||
+    fail "drain exceeded 30 seconds during ${label}"
 }
 
 verify_loopback_listener() {
@@ -433,7 +478,7 @@ capture_resource_evidence() {
     -p ControlGroup >"${EVIDENCE_DIR}/resources.txt"
   printf 'FileDescriptors=%s\n' "${fd_count}" \
     >>"${EVIDENCE_DIR}/resources.txt"
-  cp "${memory_events}" "${EVIDENCE_DIR}/memory-events-after.txt"
+  cp "${memory_events}" "${EVIDENCE_DIR}/memory-events-load.txt"
 
   [[ "${fd_count}" -lt 1024 ]] ||
     fail 'file-descriptor count reached LimitNOFILE'
@@ -545,16 +590,31 @@ verify_security() {
 
 verify_logs() {
   local journal="${EVIDENCE_DIR}/mud-web-proxy-journal.txt"
+  local system_journal="${EVIDENCE_DIR}/system-journal.txt"
 
   journalctl -u mud-web-proxy.service --since "${RUN_STARTED}" --no-pager \
     >"${journal}"
+  journalctl --since "${RUN_STARTED}" --no-pager >"${system_journal}"
   grep -Fq 'shutdown: completed' "${journal}" ||
     fail 'shutdown completion was not logged'
-  if grep -Eiq \
-    'EROFS|read-only file system|shutdown: .*failed:|stop job.*timed out|SIGKILL|Killed process' \
-    "${journal}"; then
-    fail 'journal contains a filesystem or shutdown failure'
+  if journal_has_unit_failure "${journal}"; then
+    fail 'journal contains a filesystem, timeout, deadline, OOM, or signal failure'
   fi
+  if journal_has_system_failure "${system_journal}"; then
+    fail 'system journal contains a filesystem, OOM, or signal failure'
+  fi
+}
+
+capture_terminal_memory_events() {
+  local output="${EVIDENCE_DIR}/memory-events-after.txt"
+
+  # Parent counters are hierarchical and remain readable after the unit cgroup
+  # is pruned, so they close the terminal-read race without losing unit events.
+  [[ -r "${parent_memory_events}" ]] ||
+    fail 'parent memory.events disappeared during service shutdown'
+  cp "${parent_memory_events}" "${output}"
+  [[ -s "${output}" ]] ||
+    fail 'terminal memory.events was not captured after service shutdown'
 }
 
 verify_memory_events() {
@@ -563,21 +623,21 @@ verify_memory_events() {
 
   [[ -f "${before}" && -f "${after}" ]] ||
     fail 'memory.events evidence is incomplete'
-  awk '
-    NR == FNR { original[$1] = $2; next }
-    $1 == "oom" || $1 == "oom_kill" || $1 == "max" {
-      if ($2 != original[$1]) exit 1
-    }
-  ' "${before}" "${after}" ||
-    fail 'memory.events recorded an oom, oom_kill, or max increment'
+  memory_events_unchanged "${before}" "${after}" ||
+    fail 'memory.events recorded an oom, oom kill, or max increment'
 }
 
 wait_for_inactive() {
   local attempts=300
+  local deadline_ms="${2:-}"
   local state
   local unit="$1"
 
   while ((attempts > 0)); do
+    if [[ -n "${deadline_ms}" ]] &&
+      deadline_has_elapsed "${deadline_ms}"; then
+      fail "${unit} did not become inactive within the shared 30-second drain"
+    fi
     state="$(systemctl show -p ActiveState --value "${unit}")"
     if [[ "${state}" == inactive ]]; then
       return 0
@@ -591,12 +651,19 @@ wait_for_inactive() {
 
 wait_for_background_client() {
   local attempts=300
+  local deadline_ms="${4:-}"
   local label="$2"
   local log_file="$3"
   local pid="$1"
   local status
 
   while kill -0 "${pid}" >/dev/null 2>&1; do
+    if [[ -n "${deadline_ms}" ]] &&
+      deadline_has_elapsed "${deadline_ms}"; then
+      kill "${pid}" >/dev/null 2>&1 || true
+      cat "${log_file}" >&2
+      fail "${label} did not exit within the shared 30-second drain"
+    fi
     attempts=$((attempts - 1))
     if ((attempts == 0)); then
       kill "${pid}" >/dev/null 2>&1 || true
@@ -605,6 +672,9 @@ wait_for_background_client() {
     fi
     sleep 0.1
   done
+  if [[ -n "${deadline_ms}" ]]; then
+    require_before_deadline "${deadline_ms}" "${label} completion"
+  fi
   if wait "${pid}"; then
     return 0
   else
@@ -638,6 +708,7 @@ stop_test_helpers() {
 }
 
 prepare_reboot() {
+  local install_boot_id
   local resume_staging
 
   systemctl enable mud-web-proxy.service caddy.service
@@ -650,6 +721,13 @@ prepare_reboot() {
   journalctl -u mud-web-proxy.service -u caddy.service \
     --since "${RUN_STARTED}" --no-pager \
     >"${EVIDENCE_DIR}/pre-reboot-journal.txt"
+  install_boot_id="$(</proc/sys/kernel/random/boot_id)"
+  [[ "${install_boot_id}" =~ \
+    ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    fail 'install boot ID is invalid'
+  printf '%s\n' "${install_boot_id}" \
+    >"${EVIDENCE_DIR}/install-boot-id"
+  chmod 0600 "${EVIDENCE_DIR}/install-boot-id"
 
   resume_staging="$(mktemp /root/.mwp-105-acceptance-resume.XXXXXX)"
   printf '%s\n' "${EVIDENCE_DIR}" >"${resume_staging}"
@@ -665,7 +743,9 @@ prepare_reboot() {
 
 verify_post_reboot() {
   local caddy_ca
+  local current_boot_id
   local evidence_complete
+  local install_boot_id
   local resume_evidence
 
   [[ "${EUID}" -eq 0 ]] || fail 'must run as root'
@@ -682,6 +762,21 @@ verify_post_reboot() {
     fail 'acceptance resume path is invalid'
   [[ "$(stat -c '%a %U:%G' "${resume_evidence}")" == '700 root:root' ]] ||
     fail 'acceptance evidence directory owner or mode is wrong'
+  [[ -f "${resume_evidence}/install-boot-id" &&
+    ! -L "${resume_evidence}/install-boot-id" ]] ||
+    fail 'persisted install boot ID is missing'
+  [[ "$(stat -c '%a %U:%G' "${resume_evidence}/install-boot-id")" == \
+    '600 root:root' ]] ||
+    fail 'persisted install boot ID owner or mode is wrong'
+  install_boot_id="$(<"${resume_evidence}/install-boot-id")"
+  current_boot_id="$(</proc/sys/kernel/random/boot_id)"
+  [[ "${install_boot_id}" =~ \
+    ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ &&
+    "${current_boot_id}" =~ \
+    ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] ||
+    fail 'boot ID evidence is invalid'
+  [[ "${install_boot_id}" != "${current_boot_id}" ]] ||
+    fail 'post-reboot phase requires a different boot ID'
 
   systemctl is-enabled --quiet mud-web-proxy.service
   systemctl is-enabled --quiet caddy.service
@@ -805,9 +900,17 @@ control_group="$(
   systemctl show -p ControlGroup --value mud-web-proxy.service
 )"
 memory_events="/sys/fs/cgroup${control_group}/memory.events"
-[[ "${main_pid}" =~ ^[1-9][0-9]*$ && -f "${memory_events}" ]] ||
+parent_control_group="${control_group%/*}"
+parent_memory_events="/sys/fs/cgroup${parent_control_group}/memory.events"
+[[ "${main_pid}" =~ ^[1-9][0-9]*$ &&
+  "${parent_control_group}" != "${control_group}" &&
+  -f "${memory_events}" &&
+  -f "${parent_memory_events}" ]] ||
   fail 'could not resolve the running service cgroup'
-cp "${memory_events}" "${EVIDENCE_DIR}/memory-events-before.txt"
+cp "${memory_events}" "${EVIDENCE_DIR}/memory-events-unit-before.txt"
+cp "${parent_memory_events}" "${EVIDENCE_DIR}/memory-events-before.txt"
+printf 'unit=%s\nparent=%s\n' "${control_group}" "${parent_control_group}" \
+  >"${EVIDENCE_DIR}/memory-events-cgroups.txt"
 
 env \
   SESSION_COUNT="${SESSION_COUNT}" \
@@ -828,21 +931,25 @@ wait_for_marker "${EVIDENCE_DIR}/load-client.log" \
 capture_resource_evidence
 verify_mount_boundary
 
+drain_deadline_ms=$(( $(monotonic_milliseconds) + 30000 ))
 systemctl kill --signal=TERM mud-web-proxy.service
-wait_for_health 503 'http://127.0.0.1:6200/health'
+wait_for_health 503 'http://127.0.0.1:6200/health' "${drain_deadline_ms}"
 wait_for_background_client "${acceptance_client_pid}" \
-  'acceptance client' "${EVIDENCE_DIR}/acceptance-client.log"
+  'acceptance client' "${EVIDENCE_DIR}/acceptance-client.log" \
+  "${drain_deadline_ms}"
 acceptance_client_pid=
 wait_for_background_client "${load_client_pid}" \
-  'load client' "${EVIDENCE_DIR}/load-client.log"
+  'load client' "${EVIDENCE_DIR}/load-client.log" "${drain_deadline_ms}"
 load_client_pid=
+wait_for_inactive mud-web-proxy.service "${drain_deadline_ms}"
+require_before_deadline "${drain_deadline_ms}" 'drain assertions'
+capture_terminal_memory_events
 grep -Fq 'systemd-acceptance-client: ca-loaded' \
   "${EVIDENCE_DIR}/acceptance-client.log"
 grep -Fq 'systemd-acceptance-client: graceful-close-observed' \
   "${EVIDENCE_DIR}/acceptance-client.log"
 grep -Fq 'systemd-load-client: graceful-close-observed' \
   "${EVIDENCE_DIR}/load-client.log"
-wait_for_inactive mud-web-proxy.service
 verify_memory_events
 [[ "$(stat -c '%a %U:%G' "${STATE_DIR}")" == \
   '700 mud-web-proxy:mud-web-proxy' ]] ||

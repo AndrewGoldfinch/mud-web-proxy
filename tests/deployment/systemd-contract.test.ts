@@ -1,6 +1,14 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, readFileSync } from 'fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'fs';
+import { tmpdir } from 'os';
 import path from 'path';
+import { spansSustainedInterval } from './systemd-load-activity';
 
 const repoRoot = path.resolve(import.meta.dir, '../..');
 const readArtifact = (relativePath: string): string =>
@@ -198,6 +206,25 @@ const runAcceptance = (
     stderr: 'pipe',
   });
 
+const runEvidenceFunction = (
+  functionName: string,
+  ...args: string[]
+): ReturnType<typeof Bun.spawnSync> =>
+  Bun.spawnSync({
+    cmd: [
+      'bash',
+      '-c',
+      'source "$1"; shift; "$@"',
+      'systemd-evidence-test',
+      path.join(repoRoot, 'tests/deployment/systemd-evidence.sh'),
+      functionName,
+      ...args,
+    ],
+    cwd: repoRoot,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
 describe('Ubuntu acceptance preflight behavior', () => {
   test('rejects an unsupported phase before mutating the host', () => {
     const protectedPaths = [
@@ -229,5 +256,115 @@ describe('Ubuntu acceptance preflight behavior', () => {
     expect(result.stderr.toString()).toContain(
       'set the exact disposable VM acknowledgement',
     );
+  });
+});
+
+describe('systemd shutdown evidence predicates', () => {
+  test('rejects unit and system journal failure vocabulary', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-evidence-'),
+    );
+    const journal = path.join(directory, 'journal.txt');
+    try {
+      for (const failure of [
+        'write failed: Read-only filesystem',
+        'shutdown: state failed: EROFS',
+        'drain deadline exceeded',
+        'Main process exited, code=killed, status=9/KILL',
+        'Out of memory: Killed process 42 (bun)',
+      ]) {
+        writeFileSync(journal, `${failure}\n`);
+        expect(
+          runEvidenceFunction('journal_has_unit_failure', journal).exitCode,
+        ).toBe(0);
+      }
+      writeFileSync(journal, 'Welcome to the room\nshutdown: completed\n');
+      expect(
+        runEvidenceFunction('journal_has_unit_failure', journal).exitCode,
+      ).not.toBe(0);
+
+      writeFileSync(journal, 'kernel: oom-kill: Killed process 42 (bun)\n');
+      expect(
+        runEvidenceFunction('journal_has_system_failure', journal).exitCode,
+      ).toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('requires complete unchanged terminal memory counters', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-evidence-'),
+    );
+    const before = path.join(directory, 'before.txt');
+    const after = path.join(directory, 'after.txt');
+    const baseline =
+      'low 0\nhigh 0\nmax 0\noom 0\noom_kill 0\noom_group_kill 0\n';
+    try {
+      writeFileSync(before, baseline);
+      writeFileSync(after, baseline);
+      expect(
+        runEvidenceFunction('memory_events_unchanged', before, after).exitCode,
+      ).toBe(0);
+
+      writeFileSync(after, baseline.replace('oom_kill 0', 'oom_kill 1'));
+      expect(
+        runEvidenceFunction('memory_events_unchanged', before, after).exitCode,
+      ).not.toBe(0);
+
+      writeFileSync(after, 'low 0\nhigh 0\n');
+      expect(
+        runEvidenceFunction('memory_events_unchanged', before, after).exitCode,
+      ).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('systemd load activity evidence', () => {
+  test('requires matching traffic near both ends of the sustained interval', () => {
+    expect(
+      spansSustainedInterval(
+        {
+          startedAt: 1_000,
+          firstOutboundAt: 1_000,
+          lastOutboundAt: 59_500,
+          firstInboundAt: 1_100,
+          lastInboundAt: 59_600,
+        },
+        61_000,
+        60_000,
+      ),
+    ).toBe(true);
+  });
+
+  test('rejects residual login data and beginning-only traffic', () => {
+    expect(
+      spansSustainedInterval(
+        {
+          startedAt: 1_000,
+          firstOutboundAt: 1_000,
+          lastOutboundAt: 2_000,
+          firstInboundAt: 900,
+          lastInboundAt: 2_100,
+        },
+        61_000,
+        60_000,
+      ),
+    ).toBe(false);
+    expect(
+      spansSustainedInterval(
+        {
+          startedAt: 1_000,
+          firstOutboundAt: 1_000,
+          lastOutboundAt: 59_500,
+          firstInboundAt: 1_100,
+          lastInboundAt: 1_100,
+        },
+        61_000,
+        60_000,
+      ),
+    ).toBe(false);
   });
 });
