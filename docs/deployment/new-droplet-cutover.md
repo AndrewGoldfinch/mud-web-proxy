@@ -112,20 +112,24 @@ Before a declared low-traffic window, the production owner must:
    system Bun.
 5. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
    according to `systemd.md`. Verify artifact checksum and provenance before
-   extraction, install the unit, and keep it inactive. Record the service
-   state and require it to be exactly `inactive`:
+   extraction, install the unit, and keep both the proxy and Caddy inactive.
+   Record both service states and require each to be exactly `inactive`:
 
    ```bash
    PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
    [[ "$PROXY_STATE" == "inactive" ]]
+   CADDY_STATE="$(systemctl is-active caddy || true)"
+   [[ "$CADDY_STATE" == "inactive" ]]
    ```
 
-   Run only `Atomic current-link activation`. After the link swap, record the
-   service state again and require it to be exactly `inactive`:
+   Run only `Atomic current-link activation`. After the link swap, record both
+   service states again and require each to be exactly `inactive`:
 
    ```bash
    PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
    [[ "$PROXY_STATE" == "inactive" ]]
+   CADDY_STATE="$(systemctl is-active caddy || true)"
+   [[ "$CADDY_STATE" == "inactive" ]]
    ```
 
    `Apply an activated release` is forbidden until the final App Attest
