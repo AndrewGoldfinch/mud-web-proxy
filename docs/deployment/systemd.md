@@ -2,10 +2,22 @@
 
 ## Scope and implementation status
 
-This is MWP-104's normative layout and operations contract for a native host.
-It defines the public contract; it does not provide the unit or release
-bundle. MWP-105 supplies the systemd/Caddy files and MWP-103 supplies the
-release bundle.
+This guide installs and operates MWP-104's native-host layout. The repository
+ships these MWP-105 artifacts:
+
+- [`deploy/sysusers.d/mud-web-proxy.conf`](../../deploy/sysusers.d/mud-web-proxy.conf)
+  creates the persistent service identity.
+- [`deploy/systemd/mud-web-proxy.service`](../../deploy/systemd/mud-web-proxy.service)
+  supervises the release-local Bun process.
+- [`config/mud-web-proxy.env.systemd.example`](../../config/mud-web-proxy.env.systemd.example)
+  is the native environment starting point.
+- [`deploy/caddy/Caddyfile.example`](../../deploy/caddy/Caddyfile.example)
+  is the reusable HTTPS/WSS edge template.
+
+MWP-103 supplies a verified release bundle. The production state-transfer,
+final App Attest, activation, and rollback gates remain in the
+[New-Droplet cutover runbook](new-droplet-cutover.md); this guide does not
+replace them.
 
 ## Supported host
 
@@ -64,7 +76,7 @@ notes](https://documentation.ubuntu.com/release-notes/26.04/) and
 /var/lib/mud-web-proxy-deploy/previous-release: 0600 root:root
 ```
 
-MWP-105 requires:
+The shipped unit requires:
 
 ```text
 StateDirectory=mud-web-proxy
@@ -73,7 +85,7 @@ UMask=0077
 DynamicUser=no
 ```
 
-`DynamicUser=yes is forbidden`. It relocates state under `/var/lib/private`,
+`DynamicUser=yes` is forbidden. It relocates state under `/var/lib/private`,
 uses a transient UID/GID, and conflicts with pre-seeded
 `mud-web-proxy:mud-web-proxy` state.
 
@@ -117,6 +129,140 @@ application, owns inbound TLS. Add production target, authentication, origin,
 trusted-proxy, App Attest, APNS, resource-limit, and shutdown settings using
 the [configuration reference](../configuration.md); do not blindly copy the
 old environment.
+
+## Install the native operator files
+
+Run this installation sequence as root on the new Ubuntu 26.04 host, after
+the MWP-103 release has been verified and before the MWP-104 final activation
+gate. It installs no production App Attest state and does not start either
+service. Keep the production environment and final App Attest store out of
+this procedure until the cutover runbook permits them.
+
+Install Caddy from its official stable Ubuntu repository. The package starts
+`caddy.service`; stop it immediately so the packaged default cannot serve
+before the rendered configuration is validated.
+
+```bash
+sudo apt install -y \
+  debian-keyring debian-archive-keyring apt-transport-https curl
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' |
+  sudo gpg --dearmor \
+    -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf \
+  'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' |
+  sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null
+sudo chmod o+r \
+  /usr/share/keyrings/caddy-stable-archive-keyring.gpg \
+  /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update
+sudo apt install -y caddy
+sudo systemctl stop caddy.service
+```
+
+Install the persistent identity and verify its locked shell, home directory,
+and matching primary group. `DynamicUser=yes` is prohibited: it would create a
+transient identity and relocate state under `/var/lib/private`, breaking the
+pre-seeded `mud-web-proxy:mud-web-proxy` App Attest store. The shipped unit
+sets `DynamicUser=no` explicitly.
+
+```bash
+install -D -o root -g root -m 0644 \
+  deploy/sysusers.d/mud-web-proxy.conf \
+  /usr/local/lib/sysusers.d/mud-web-proxy.conf
+systemd-sysusers mud-web-proxy.conf
+service_group_gid="$(
+  getent group mud-web-proxy | awk -F: '
+    $1 == "mud-web-proxy" { print $3; found = 1 }
+    END { exit !found }
+  '
+)"
+[[ "$service_group_gid" =~ ^[0-9]+$ ]]
+getent passwd mud-web-proxy | awk -F: \
+  -v group_gid="$service_group_gid" '
+    $1 == "mud-web-proxy" && $4 == group_gid &&
+    $6 == "/var/lib/mud-web-proxy" && $7 == "/usr/sbin/nologin" {
+      found = 1
+    }
+    END { exit !found }
+  '
+passwd -S mud-web-proxy | awk '
+  $1 == "mud-web-proxy" && $2 == "L" { found = 1 }
+  END { exit !found }
+'
+```
+
+Install the unit and prepare a root-owned staging copy of the environment.
+Replace every example target, origin, authentication, App Attest, APNS, and
+other production value in the staging file according to the
+[configuration reference](../configuration.md). Do not add
+`ALLOW_INSECURE_INBOUND_NO_TLS`, `TLS_CERT_PATH`, or `TLS_KEY_PATH`: the
+application is plaintext only on loopback and Caddy owns inbound TLS.
+
+```bash
+install -D -o root -g root -m 0644 \
+  deploy/systemd/mud-web-proxy.service \
+  /etc/systemd/system/mud-web-proxy.service
+systemctl daemon-reload
+systemd-analyze verify /etc/systemd/system/mud-web-proxy.service
+```
+
+Render Caddy only after setting a real public proxy hostname. `PROXY_HOSTNAME`
+and `MUD_HOSTNAME` below are operator inputs, not repository production
+values. The placeholder gate rejects every shipped example hostname, including
+the example allowed origin. Caddy owns public ports 80 and 443; never create a
+firewall rule for port 6200.
+
+```bash
+set -euo pipefail
+umask 077
+: "${PROXY_HOSTNAME:?set the public proxy hostname}"
+: "${MUD_HOSTNAME:?set the fixed MUD target hostname}"
+: "${EDITOR:?set EDITOR to a root-safe editor}"
+[[ "$PROXY_HOSTNAME" =~ ^[A-Za-z0-9.-]+$ ]]
+[[ "$MUD_HOSTNAME" =~ ^[A-Za-z0-9.-]+$ ]]
+
+environment_staging="$(mktemp /root/.mud-web-proxy.env.staging.XXXXXX)"
+environment_rendered="$(mktemp /root/.mud-web-proxy.env.rendered.XXXXXX)"
+caddy_staging="$(mktemp /etc/caddy/.Caddyfile.XXXXXX)"
+cleanup() {
+  rm -f "$environment_staging" "$environment_rendered" "$caddy_staging"
+}
+trap cleanup EXIT
+install -o root -g root -m 0600 \
+  config/mud-web-proxy.env.systemd.example "$environment_staging"
+# Set every approved production value; do not add the forbidden TLS variables.
+"$EDITOR" "$environment_staging"
+sed \
+  -e "s|proxy\\.example\\.com|$PROXY_HOSTNAME|g" \
+  -e "s|mud\\.example\\.com|$MUD_HOSTNAME|g" \
+  "$environment_staging" >"$environment_rendered"
+sed "s|proxy\\.example\\.com|$PROXY_HOSTNAME|g" \
+  deploy/caddy/Caddyfile.example >"$caddy_staging"
+if grep -Eq \
+  'proxy\.example\.com|mud\.example\.com|https://proxy\.example\.com' \
+  "$environment_rendered" "$caddy_staging"; then
+  echo 'unrendered deployment placeholder remains' >&2
+  exit 1
+fi
+install -o root -g mud-web-proxy -m 0640 \
+  "$environment_rendered" /etc/mud-web-proxy.env
+install -o root -g root -m 0644 "$caddy_staging" /etc/caddy/Caddyfile
+caddy fmt --overwrite /etc/caddy/Caddyfile
+caddy validate --config /etc/caddy/Caddyfile
+systemctl stop caddy.service
+```
+
+The environment is `0640 root:mud-web-proxy`; the unit and rendered Caddyfile
+are `0644 root:root`. Confirm the installed ownership and modes before the
+first permitted start:
+
+```bash
+stat -c '%a %U:%G %n' \
+  /usr/local/lib/sysusers.d/mud-web-proxy.conf \
+  /etc/systemd/system/mud-web-proxy.service \
+  /etc/mud-web-proxy.env \
+  /etc/caddy/Caddyfile
+```
 
 ## Installing a release
 
@@ -398,6 +544,132 @@ encrypted file backups. See [DigitalOcean firewall rules](https://docs.digitaloc
 [monitoring quickstart](https://docs.digitalocean.com/products/monitoring/getting-started/quickstart/),
 and [backup guidance](https://docs.digitalocean.com/support/how-do-i-manually-back-up-my-droplet/).
 
+## Operator commands
+
+Do not enable or start either service before the MWP-104 final App Attest
+transfer gate. At that gate, start the loopback proxy first, prove its health,
+then start Caddy and prove that its service is active. The linked post-routing
+gate proves public HTTPS/WSS. If a gate fails, follow the
+[cutover runbook's rollback procedure](new-droplet-cutover.md), which requires
+both new services to be inactive before restoring the old host.
+
+```bash
+systemctl enable mud-web-proxy.service caddy.service
+systemctl start mud-web-proxy.service
+curl --fail --silent --show-error http://127.0.0.1:6200/health
+systemctl start caddy.service
+systemctl is-active --quiet caddy.service
+```
+
+The linked post-routing MWP-104 gate owns the public HTTPS/WSS probe. Do not
+use a public hostname curl here: before routing changes, it can reach the old
+host rather than this prepared host.
+
+For routine operation, use systemd directly. PM2 is unsupported and must not
+supervise `mud-web-proxy.service`; there must be one systemd-managed process,
+not a second process manager or a legacy Git-checkout process.
+
+```bash
+systemctl stop mud-web-proxy.service
+systemctl restart mud-web-proxy.service
+systemctl status mud-web-proxy.service caddy.service --no-pager
+journalctl -u mud-web-proxy.service -u caddy.service -n 200 --no-pager
+journalctl -u mud-web-proxy.service --since '1 hour ago' --no-pager
+curl --fail --silent --show-error http://127.0.0.1:6200/health
+: "${PROXY_HOSTNAME:?set the public proxy hostname}"
+curl --fail --silent --show-error "https://${PROXY_HOSTNAME}/health"
+ss -ltnp 'sport = :6200'
+systemctl show mud-web-proxy.service \
+  -p MemoryCurrent -p MemoryPeak -p TasksCurrent -p TasksMax \
+  -p LimitNOFILE -p MainPID -p ControlGroup
+systemd-analyze verify /etc/systemd/system/mud-web-proxy.service
+systemd-analyze security --no-pager mud-web-proxy.service
+```
+
+Port 6200 must appear only as `127.0.0.1:6200`; Caddy is the public HTTPS/WSS
+listener. The live descriptor count is available from the reported `MainPID`:
+
+```bash
+main_pid="$(systemctl show -p MainPID --value mud-web-proxy.service)"
+find "/proc/${main_pid}/fd" -mindepth 1 -maxdepth 1 | wc -l
+```
+
+### Capacity and security boundaries
+
+`MAX_SESSIONS_GLOBAL=200` rejects excess sessions before the service consumes
+an accidental host-default limit. `LimitNOFILE=1024` budgets four descriptors
+per admitted session (800 total) and reserves 224 for listeners, DNS/TLS,
+APNS, journald, and transient accepts. A session normally uses a client and a
+MUD descriptor; four is deliberate headroom, not an assertion that each
+session always needs four.
+
+The initial one-vCPU, one-GiB host envelope is provisional:
+
+```text
+MemoryHigh=384M
+MemoryMax=512M
+TasksMax=128
+LimitNOFILE=1024
+```
+
+The clean-host profile is a lower bound: it sustains 50 concurrent
+WebSocket-to-mock-MUD sessions with bidirectional traffic for 60 seconds. It
+does not prove the 200-session production cap. `MemoryHigh` is the pressure
+boundary; at `MemoryMax=512M`, systemd can OOM-kill and restart the proxy,
+disconnecting every active session. That is an availability trade to reserve
+capacity for Caddy, the kernel, journald, SSH, and a one-GiB host. MWP-106
+must record representative production `MemoryCurrent`, `MemoryPeak`, task,
+descriptor, and `memory.events` measurements before these values are treated
+as production sizing.
+
+#### Steady-state memory observation
+
+`MemoryCurrent` on its own cannot distinguish a service resting well under
+its ceiling from one being reclaimed at it repeatedly. The cgroup event
+counters are what separate the two:
+
+```bash
+systemctl show mud-web-proxy \
+  -p MemoryCurrent -p MemoryPeak -p TasksCurrent -p LimitNOFILE
+cat /sys/fs/cgroup/system.slice/mud-web-proxy.service/memory.events
+```
+
+| Event increments            | Meaning                                                                |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `oom`, `oom_kill`, or `max` | The hard ceiling is being reached. Sessions are being dropped; resize. |
+| `high`                      | `MemoryHigh` throttled allocation. Review before it becomes an `oom`.  |
+| none                        | Operating inside the envelope.                                         |
+
+During a cutover this is a gate rather than a diagnostic: an `oom`,
+`oom_kill`, or `max` increment blocks native-deployment acceptance outright,
+and a `high` increment requires explicit review. See
+[Production resource observation](new-droplet-cutover.md#production-resource-observation)
+for the 24-hour schedule and the fail-closed recovery.
+
+Change these limits through the MWP-105 resource design, not the unit alone.
+They are one set: `LimitNOFILE=1024` is budgeted against
+`MAX_SESSIONS_GLOBAL=200`, so raising the session cap without the descriptor
+limit exhausts descriptors before the cap is reached.
+
+The unit deliberately permits only `AF_UNIX`, `AF_INET`, and `AF_INET6`.
+`AF_NETLINK` is not a speculative allowance. The Ubuntu acceptance test uses
+the hostname `mwp-mud.test` rather than an IP literal, so its WSS/session
+evidence records whether the restricted hostname-resolution path works. Keep
+the unit unchanged when that evidence succeeds. If it fails by hostname while
+the same target succeeds by IP, record both diagnostics and the required
+`AF_NETLINK` rationale in the Ubuntu acceptance evidence and security
+baseline before proposing a unit change; do not loosen the address-family
+restriction silently.
+
+The security report must remain in systemd's `OK` assessment band. The first
+Ubuntu measurement records its exact image, systemd package, and measured
+exposure in the acceptance evidence. The committed
+`tests/deployment/systemd-security-baseline.json` maximum is exactly measured
+exposure plus `0.1` (for example, `2.3` measures to a `2.4` maximum). A later
+verification run reads that committed maximum; it must never calculate a new
+threshold from the current host. See [Systemd acceptance](systemd-acceptance.md)
+for the measurement-to-baseline workflow and evidence paths.
+
 ## Verification
 
 Run these commands as root:
@@ -430,7 +702,7 @@ App Attest identifiers are configured, also expect `600
 mud-web-proxy:mud-web-proxy` for its store. The Bun version must equal the
 release pin, and port 6200 must be loopback-only at `127.0.0.1:6200`.
 
-## Responsibilities of follow-up tickets
-
-MWP-103 supplies verified release bundles. MWP-105 supplies the systemd unit,
-static service account, and Caddy configuration implementing this contract.
+The clean-host procedure and evidence checklist are in
+[Systemd acceptance](systemd-acceptance.md). It validates the files and
+runtime behavior on a disposable host; it does not replace the MWP-104
+production cutover gates.
