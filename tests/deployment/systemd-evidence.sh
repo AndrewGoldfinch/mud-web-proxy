@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 
+tree_has_no_writable_files_or_directories() {
+  local writable
+
+  [[ "$#" -gt 0 ]] || return 1
+  writable="$(
+    find "$@" \( -type f -o -type d \) -perm /0222 -print -quit
+  )" || return 1
+  [[ -z "${writable}" ]]
+}
+
 journal_has_unit_failure() {
   local journal="$1"
 

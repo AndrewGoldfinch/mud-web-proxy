@@ -214,8 +214,8 @@ install_test_release() {
     fail 'test release has no production node_modules'
   [[ -f "${INSTALL_ROOT}/current/config/apple-app-attest-root-ca.pem" ]] ||
     fail 'test release has no App Attest root CA'
-  [[ -z "$(find "${INSTALL_ROOT}/releases" "${INSTALL_ROOT}/runtimes" \
-    -perm /0222 -print -quit)" ]] ||
+  tree_has_no_writable_files_or_directories \
+    "${INSTALL_ROOT}/releases" "${INSTALL_ROOT}/runtimes" ||
     fail 'test release is not immutable'
 }
 

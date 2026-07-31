@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
+  chmodSync,
   existsSync,
   mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from 'fs';
 import { tmpdir } from 'os';
@@ -260,6 +263,69 @@ describe('Ubuntu acceptance preflight behavior', () => {
 });
 
 describe('systemd shutdown evidence predicates', () => {
+  test('ignores symlink mode bits in an immutable tree', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-immutable-'),
+    );
+    const release = path.join(directory, 'release');
+    const artifact = path.join(release, 'artifact');
+    try {
+      mkdirSync(release, { mode: 0o755 });
+      writeFileSync(artifact, 'release artifact\n', { mode: 0o444 });
+      symlinkSync('artifact', path.join(release, 'artifact-link'));
+      symlinkSync('.', path.join(release, 'directory-link'));
+      chmodSync(release, 0o555);
+      expect(
+        runEvidenceFunction(
+          'tree_has_no_writable_files_or_directories',
+          release,
+        ).exitCode,
+      ).toBe(0);
+    } finally {
+      if (existsSync(release)) chmodSync(release, 0o755);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects writable regular files and directories', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-immutable-'),
+    );
+    const release = path.join(directory, 'release');
+    const artifact = path.join(release, 'artifact');
+    try {
+      mkdirSync(release, { mode: 0o755 });
+      writeFileSync(artifact, 'release artifact\n', { mode: 0o644 });
+      chmodSync(release, 0o555);
+      expect(
+        runEvidenceFunction(
+          'tree_has_no_writable_files_or_directories',
+          release,
+        ).exitCode,
+      ).not.toBe(0);
+
+      chmodSync(artifact, 0o444);
+      chmodSync(release, 0o755);
+      expect(
+        runEvidenceFunction(
+          'tree_has_no_writable_files_or_directories',
+          release,
+        ).exitCode,
+      ).not.toBe(0);
+
+      chmodSync(release, 0o555);
+      expect(
+        runEvidenceFunction(
+          'tree_has_no_writable_files_or_directories',
+          release,
+        ).exitCode,
+      ).toBe(0);
+    } finally {
+      if (existsSync(release)) chmodSync(release, 0o755);
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('rejects unit and system journal failure vocabulary', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-evidence-'),
