@@ -56,6 +56,10 @@ semantics are under test.
   not proof of the 200-session ceiling.
 - Do not guess a `systemd-analyze security` threshold. Record the first
   Ubuntu 26.04 score and commit a maximum exactly 0.1 above it.
+- Store measured and maximum exposure on systemd's human-readable 0-10 scale.
+  At the `systemd-analyze security --threshold` boundary only, convert the
+  one-decimal maximum to systemd 259's integer percentage by multiplying by
+  10 exactly; for example, stored exposure 2.9 becomes CLI threshold 29.
 - Never run the destructive acceptance setup on an existing host. The script
   requires an explicit disposable-host acknowledgement and still refuses any
   existing production-shaped path.
@@ -1369,7 +1373,8 @@ Expected:
 
 - host and systemd package match the JSON;
 - `systemd-analyze verify` passes;
-- `systemd-analyze security --threshold=<maximumExposure>` passes;
+- `systemd-analyze security
+--threshold=<maximumExposure-times-10-as-an-integer>` passes;
 - hostname-based mock-MUD traffic passes under the final address families;
 - the 50-session profile passes;
 - the write boundary and App Attest flush pass;
