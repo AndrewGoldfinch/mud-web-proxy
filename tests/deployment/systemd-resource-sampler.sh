@@ -51,10 +51,23 @@ for ((sample = 1; sample <= sample_limit; sample += 1)); do
 
   file_descriptors=0
   if ((main_pid > 0)); then
-    file_descriptors="$(
+    if ! file_descriptors="$(
       find "/proc/${main_pid}/fd" -mindepth 1 -maxdepth 1 2>/dev/null |
-        wc -l || true
-    )"
+        wc -l
+    )"; then
+      state="$(
+        "${systemctl_bin}" is-active "${service}" 2>/dev/null || true
+      )"
+      case "${state}" in
+        inactive | deactivating)
+          main_pid=0
+          tasks=0
+          file_descriptors=0
+          ;;
+        active | activating) exit 65 ;;
+        *) exit 65 ;;
+      esac
+    fi
     [[ "${file_descriptors}" =~ ^[0-9]+$ ]] || exit 65
   fi
   monotonic_ms="$(

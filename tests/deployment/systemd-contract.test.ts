@@ -522,6 +522,100 @@ exit 1
     }
   });
 
+  test('rechecks state after descriptor failure and fails if still active', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-resource-descriptor-failure-'),
+    );
+    const fakeFind = path.join(directory, 'find');
+    const fakeSystemctl = path.join(directory, 'systemctl');
+    const stateReads = path.join(directory, 'state-reads');
+    const stopFile = path.join(directory, 'stop');
+    try {
+      writeFileSync(fakeFind, '#!/usr/bin/env bash\nexit 42\n', {
+        mode: 0o755,
+      });
+      writeFileSync(
+        fakeSystemctl,
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == is-active ]]; then
+  reads=0
+  [[ ! -e "\${FAKE_STATE_READS}" ]] || reads="$(<"\${FAKE_STATE_READS}")"
+  reads=$((reads + 1))
+  printf '%s\n' "\${reads}" >"\${FAKE_STATE_READS}"
+  if ((reads == 1)); then
+    printf 'active\n'
+  else
+    printf '%s\n' "\${FAKE_FINAL_STATE}"
+  fi
+  exit 0
+fi
+if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
+  case "$3" in
+    MainPID) printf '%s\n' "\${FAKE_MAIN_PID}" ;;
+    TasksCurrent) printf '3\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(stopFile, 'stop\n');
+      const result = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/systemd-resource-sampler.sh',
+          'mud-web-proxy.service',
+          stopFile,
+        ],
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          FAKE_FINAL_STATE: 'active',
+          FAKE_MAIN_PID: String(process.pid),
+          FAKE_STATE_READS: stateReads,
+          PATH: `${directory}:${process.env.PATH ?? ''}`,
+          SYSTEMCTL_BIN: fakeSystemctl,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode).not.toBe(0);
+      expect(result.stdout.toString().trim().split('\n')).toEqual([
+        'sample\tmonotonic_ms\tstate\tmain_pid\ttasks\tfile_descriptors',
+      ]);
+
+      rmSync(stateReads, { force: true });
+      const drainResult = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/systemd-resource-sampler.sh',
+          'mud-web-proxy.service',
+          stopFile,
+        ],
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          FAKE_FINAL_STATE: 'inactive',
+          FAKE_MAIN_PID: String(process.pid),
+          FAKE_STATE_READS: stateReads,
+          PATH: `${directory}:${process.env.PATH ?? ''}`,
+          SYSTEMCTL_BIN: fakeSystemctl,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(drainResult.exitCode).toBe(0);
+      expect(drainResult.stdout.toString().trim().split('\n')[1]).toMatch(
+        /^1\t[0-9]+\tinactive\t0\t0\t0$/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('derives task and descriptor peaks from a complete sample series', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-resource-peaks-'),
@@ -941,6 +1035,72 @@ describe('systemd security residual comparison', () => {
       expect(JSON.parse(readFileSync(comparison, 'utf8'))).toEqual({
         status: 'invalid',
         error: 'unparseable failed systemd assessment',
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('retains a residual mismatch when the exposure threshold fails', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-security-threshold-'),
+    );
+    const analyzerReport = path.join(directory, 'analyzer-report.txt');
+    const fakeAnalyzer = path.join(directory, 'systemd-analyze');
+    const report = path.join(directory, 'report.txt');
+    const baselineFile = path.join(directory, 'baseline.json');
+    const comparison = path.join(directory, 'comparison.json');
+    try {
+      writeFileSync(baselineFile, `${JSON.stringify(baseline)}\n`);
+      writeFileSync(
+        analyzerReport,
+        [
+          '✗ RootDirectory=/RootImage=       Host root          0.1',
+          '✗ MemoryDenyWriteExecute=         JIT memory         0.1',
+          '✗ PrivateNetwork=                 Host network       0.5',
+          '',
+          '→ Overall exposure level for mud-web-proxy.service: 3.0 OK',
+          '',
+        ].join('\n'),
+      );
+      writeFileSync(
+        fakeAnalyzer,
+        `#!/usr/bin/env bash
+set -euo pipefail
+[[ "$1" == security && "$2" == --threshold=29 && "$3" == --no-pager ]]
+command cat "\${FAKE_SECURITY_REPORT}"
+exit 42
+`,
+        { mode: 0o755 },
+      );
+      const result = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/systemd-security-check.sh',
+          '29',
+          'mud-web-proxy.service',
+          report,
+          baselineFile,
+          comparison,
+        ],
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          BUN_BIN: process.execPath,
+          FAKE_SECURITY_REPORT: analyzerReport,
+          SYSTEMD_ANALYZE_BIN: fakeAnalyzer,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode).not.toBe(0);
+      const retained = existsSync(comparison);
+      expect(retained).toBe(true);
+      if (!retained) return;
+      expect(JSON.parse(readFileSync(comparison, 'utf8'))).toMatchObject({
+        status: 'mismatch',
+        missing: [],
+        extra: ['PrivateNetwork='],
       });
     } finally {
       rmSync(directory, { recursive: true, force: true });

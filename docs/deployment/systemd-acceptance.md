@@ -224,6 +224,8 @@ one-decimal value to systemd 259's integer percentage (`2.9` becomes `29`). It
 does not derive a new maximum. It also parses every live failed-assessment
 identifier and requires exact sorted equality with the baseline: duplicates,
 missing identifiers, extras, or an unparseable failure line block acceptance.
+The comparison JSON is retained before either a threshold failure or residual
+mismatch is reported, so a failed verification preserves the exact delta.
 On success, reboot from the current SSH or console session:
 
 ```bash

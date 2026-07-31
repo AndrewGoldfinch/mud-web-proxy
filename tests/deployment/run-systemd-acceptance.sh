@@ -722,17 +722,14 @@ verify_security() {
   current_systemd="$(dpkg-query -W -f='${Version}\n' systemd)"
   [[ "${current_systemd}" == "${baseline_systemd}" ]] ||
     fail 'systemd package does not match the security baseline'
-  systemd-analyze security \
-    "--threshold=${maximum_exposure_percentage}" --no-pager \
-    mud-web-proxy.service >"${report}"
-  require_ok_security_assessment "${report}"
-  if ! "${INSTALL_ROOT}/current/runtime/bin/bun" \
-    "${REPO_ROOT}/tests/deployment/systemd-security-residuals.ts" \
+  if ! BUN_BIN="${INSTALL_ROOT}/current/runtime/bin/bun" \
+    bash "${REPO_ROOT}/tests/deployment/systemd-security-check.sh" \
+    "${maximum_exposure_percentage}" mud-web-proxy.service \
     "${report}" "${baseline}" \
     "${EVIDENCE_DIR}/systemd-security-residuals.json"; then
-    fail 'live systemd residuals do not exactly match the baseline'
+    fail 'systemd security threshold or live residual comparison failed'
   fi
-  chmod 0600 "${EVIDENCE_DIR}/systemd-security-residuals.json"
+  require_ok_security_assessment "${report}"
 }
 
 verify_logs() {
