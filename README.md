@@ -82,6 +82,21 @@ Compose own port publication and the HTTP readiness probe because that layer
 selects the internal TLS mode. Docker port publication still works without
 `EXPOSE`.
 
+### Docker Compose
+
+The portable, container-first path: Caddy terminates HTTPS/WSS and the proxy
+runs behind it on an internal network, with only 80 and 443 published.
+
+```bash
+cp .env.compose.example .env
+$EDITOR .env
+docker compose up -d
+```
+
+See [Docker Compose deployment](docs/deployment/compose.md). Health checks,
+restart policy, bounded logs, and the App Attest state volume land in
+MWP-101. For a single Linux VM, prefer the systemd path below.
+
 ### Native systemd deployment
 
 The preferred single-VM deployment uses immutable releases, a versioned Bun
