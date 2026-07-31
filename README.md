@@ -55,9 +55,10 @@ Build the production image:
 docker build --pull -t mud-web-proxy:local .
 ```
 
-The supported Phase 2 deployment places Caddy in front of the proxy. Until the
-Compose topology lands in MWP-100, this loopback-only command exercises the same
-internal plaintext hop without exposing port 6200 beyond the host:
+The supported Phase 2 deployment places Caddy in front of the proxy — see
+[Docker Compose](#docker-compose) below. This loopback-only command exercises
+the same internal plaintext hop directly, without exposing port 6200 beyond
+the host, which is useful for testing the image on its own:
 
 ```bash
 docker volume create mud-web-proxy-state
@@ -95,7 +96,8 @@ docker compose up -d
 
 See [Docker Compose deployment](docs/deployment/compose.md). Health checks,
 restart policy, bounded logs, and the App Attest state volume land in
-MWP-101. For a single Linux VM, prefer the systemd path below.
+MWP-101. Proxy settings from docs/configuration.md go straight into `.env`
+under their real names. For a single Linux VM, prefer the systemd path below.
 
 ### Native systemd deployment
 

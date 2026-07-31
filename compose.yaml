@@ -56,6 +56,20 @@ services:
     build:
       context: .
     restart: unless-stopped
+    # Every proxy setting in .env reaches the container under its real,
+    # documented name — see docs/configuration.md. Enumerating them here
+    # instead would mean this file silently gates which of the ~58
+    # documented variables are usable, and drifting out of step with the
+    # reference the moment either changes. In particular the mode-specific
+    # requirements (ALLOWED_TARGETS for allowlist; ARBITRARY_ALLOWED_PORTS
+    # plus an authentication mode for arbitrary) arrive without compose
+    # needing to know they exist.
+    #
+    # `environment:` below takes precedence over anything here, so the
+    # topology values that must not be overridden cannot be.
+    env_file:
+      - path: .env
+        required: false
     environment:
       # --- Internal plaintext hop (MWP-98 contract) ------------------------
       # The image leaves deployment topology unset, so all three of these are
@@ -74,9 +88,12 @@ services:
       TRUSTED_PROXY_CIDRS: 172.28.0.0/24
 
       # --- Target policy ---------------------------------------------------
-      TARGET_MODE: ${MWP_TARGET_MODE:-fixed}
-      TN_HOST: ${MWP_TN_HOST:?set MWP_TN_HOST in .env (copy .env.compose.example)}
-      TN_PORT: ${MWP_TN_PORT:-4000}
+      # TARGET_MODE and its mode-specific companions arrive via env_file.
+      # TN_HOST is repeated here only for the :? guard: it defaults to a
+      # real third-party MUD (muds.maldorne.org), so an operator who never
+      # sets it would otherwise start a proxy quietly fronting someone
+      # else's server rather than failing.
+      TN_HOST: ${TN_HOST:?set TN_HOST in .env (copy .env.compose.example)}
     networks:
       - edge
     read_only: true

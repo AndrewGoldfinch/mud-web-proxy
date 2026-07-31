@@ -58,18 +58,57 @@ That is the intended behaviour, not a fault.
 
 ## Configuration
 
-Only the deployment-shaped values live in `.env`. Everything else the proxy
-understands is documented in [configuration.md](../configuration.md) and can
-be added to the `proxy` service's `environment:` block.
+Two kinds of setting live in `.env`, distinguished by name:
 
-| Variable          | Required | Purpose                                            |
-| ----------------- | -------- | -------------------------------------------------- |
-| `MWP_DOMAIN`      | yes      | Public hostname; the certificate is issued for it  |
-| `MWP_ACME_EMAIL`  | yes      | Let's Encrypt account contact, for expiry warnings |
-| `MWP_TN_HOST`     | yes      | The MUD to front, under the default `TARGET_MODE`  |
-| `MWP_TN_PORT`     | no       | Defaults to `4000`                                 |
-| `MWP_TARGET_MODE` | no       | Defaults to `fixed`                                |
-| `MWP_IMAGE`       | no       | Published image; unset builds from source          |
+- **`MWP_*`** — compose and Caddy concerns.
+- **Everything else** — proxy configuration, under the exact names in
+  [configuration.md](../configuration.md).
+
+The `proxy` service loads `.env` directly, so **any** variable from that
+reference works without being added to `compose.yaml` first. That is
+deliberate: enumerating a subset here would silently gate which of the ~58
+documented variables are usable, and drift out of step the moment either
+side changed.
+
+| Variable         | Required | Purpose                                            |
+| ---------------- | -------- | -------------------------------------------------- |
+| `MWP_DOMAIN`     | yes      | Public hostname; the certificate is issued for it  |
+| `MWP_ACME_EMAIL` | yes      | Let's Encrypt account contact, for expiry warnings |
+| `TN_HOST`        | yes      | The MUD to front, under the default `TARGET_MODE`  |
+| `TN_PORT`        | no       | Defaults to `4000`                                 |
+| `MWP_IMAGE`      | no       | Published image; unset builds from source          |
+
+`TN_HOST` is required rather than defaulted because the proxy's built-in
+default is a real third-party server (`muds.maldorne.org`). Leaving it
+unset would start a proxy quietly fronting someone else's MUD, so
+`compose.yaml` guards it and fails instead.
+
+### Settings you cannot override
+
+`compose.yaml` sets `BIND_HOST`, `INBOUND_TLS_MODE`,
+`ALLOW_INSECURE_INBOUND_NO_TLS`, and `TRUSTED_PROXY_CIDRS` in its
+`environment:` block, which takes precedence over `.env`. Putting them in
+`.env` has no effect — by design. Widening `TRUSTED_PROXY_CIDRS` to
+`0.0.0.0/0`, for instance, would make forwarded-header spoofing trivial,
+and the topology contract should not be editable by accident.
+
+### Choosing a target mode
+
+`TARGET_MODE` defaults to `fixed`, which restricts every client to
+`TN_HOST:TN_PORT`. The other modes each have mandatory companions, and the
+proxy **refuses to start** without them rather than falling back to
+something permissive:
+
+| Mode        | Also required                                                                                                                                                                            |
+| ----------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `fixed`     | nothing                                                                                                                                                                                  |
+| `allowlist` | `ALLOWED_TARGETS` — at least one valid `host:port`                                                                                                                                       |
+| `arbitrary` | `ARBITRARY_ALLOWED_PORTS`, **and** either `AUTH_MODE=shared-secret` with a ≥32-byte `PROXY_SHARED_SECRET`, or `REQUIRE_APP_AUTH=true` with `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID` |
+
+`arbitrary` lets the client name any host, so the authentication
+requirement is what keeps it from being an open relay. All of these are
+ordinary `.env` entries; see `.env.compose.example` for a commented
+template.
 
 ### The internal plaintext hop
 
