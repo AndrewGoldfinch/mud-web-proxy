@@ -94,6 +94,7 @@ docs/deployment/
 ├── systemd.md
 └── systemd-acceptance.md
 tests/deployment/
+├── systemd-security-baseline.json
 ├── systemd-contract.test.ts
 └── run-systemd-acceptance.sh
 ```
@@ -325,6 +326,14 @@ Allowed address families cover:
   APNs traffic; and
 - `AF_UNIX` for runtime and host-local facilities.
 
+`AF_NETLINK` is not granted speculatively. On glibc systems,
+`getaddrinfo` may open a netlink route socket while sorting resolved
+addresses. Whether Bun's production `net.connect` and TLS paths require that
+socket under Ubuntu 26.04 must be decided by the hostname-based clean-host
+test below. If the restricted service cannot connect through a hostname but
+the same target works by IP, the unit adds `AF_NETLINK`; the design and
+security-baseline explanation then record that measured requirement.
+
 The clean-host acceptance test is authoritative for compatibility with Bun,
 JavaScriptCore, `ws`, `cbor-x`, DNS, TLS, and App Attest file persistence.
 If a directive proves incompatible, the implementation must return to design
@@ -358,6 +367,7 @@ and 1 GiB RAM. The unit sets:
 MemoryHigh=384M
 MemoryMax=512M
 TasksMax=128
+LimitNOFILE=1024
 ```
 
 `MemoryHigh` is the primary pressure boundary. `MemoryMax` is the final
@@ -371,18 +381,50 @@ These limits leave capacity for the kernel, Caddy, journald, SSH, and package
 operations. Release installation and dependency installation do not run
 inside the service cgroup.
 
+The hard memory limit is an explicit availability trade. If the proxy reaches
+512 MiB, systemd may OOM-kill and restart it, disconnecting every active
+session. Preventing one process from starving Caddy and the 1 GiB host takes
+priority over preserving those sessions. The limit is not described as
+cost-free containment.
+
+The native environment also sets:
+
+```text
+MAX_SESSIONS_GLOBAL=200
+```
+
+That makes the application reject excess sessions through its normal
+capacity path before the process reaches an implicit descriptor ceiling.
+`LimitNOFILE=1024` is stated explicitly rather than inheriting a host default.
+The budget allows four descriptors per admitted session (800 total) and
+reserves 224 for listeners, DNS/TLS work, APNs, journald, and transient
+accepts. A normal session is expected to retain two descriptors: the client
+WebSocket and its MUD socket. The factor of two is headroom, not a claim that
+every session always uses four.
+
 The acceptance workload records:
 
 - idle `MemoryCurrent`;
 - peak `MemoryCurrent`;
 - `MemoryPeak`;
 - current task count; and
+- file-descriptor count;
+- `memory.events`; and
 - whether either memory boundary was crossed.
 
-The test must run a real WebSocket-to-mock-MUD session. A passing idle start
-does not validate the caps. The initial values have moderate confidence until
-the real workload is measured. A limit change requires recorded evidence and
-a design update.
+The clean-host profile sustains at least 50 concurrent
+WebSocket-to-mock-MUD sessions with periodic bidirectional traffic for at
+least 60 seconds. A passing idle start or one-session test does not validate
+the caps. The profile is a repeatable lower bound, not a claim that it proves
+the 200-session production ceiling.
+
+The values remain provisional until MWP-106 records the first production
+`MemoryCurrent`, `MemoryPeak`, task count, descriptor count, and
+`memory.events` under representative traffic. That production measurement is
+the real sizing gate. An `oom`, `oom_kill`, or `max` event blocks acceptance;
+a `high` event requires review and either a justified retained limit or a
+measured change. Any limit change updates this design and its recorded
+evidence.
 
 ## Native environment contract
 
@@ -397,6 +439,7 @@ TRUSTED_PROXY_CIDRS=127.0.0.1
 ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
 SHUTDOWN_GRACE_MS=3000
 SHUTDOWN_DEADLINE_MS=15000
+MAX_SESSIONS_GLOBAL=200
 ```
 
 Production must additionally set the fixed MUD target, origin/authentication
@@ -542,7 +585,9 @@ requires:
   restrictions;
 - `Restart=on-failure` and bounded restart delay;
 - the parsed 3-second/15-second/30-second shutdown inequality;
-- `MemoryHigh=384M`, `MemoryMax=512M`, and `TasksMax=128`;
+- `MemoryHigh=384M`, `MemoryMax=512M`, `TasksMax=128`, and
+  `LimitNOFILE=1024`;
+- `MAX_SESSIONS_GLOBAL=200`;
 - no `DynamicUser=yes`;
 - no non-loopback application bind;
 - no insecure plaintext acknowledgement or application TLS-key variables;
@@ -585,8 +630,10 @@ The test:
 3. creates the static account through `systemd-sysusers`;
 4. creates a root-owned immutable test release with the versioned Bun
    runtime layout from MWP-104;
-5. runs the repository mock MUD on loopback as a separate test process;
-6. renders the native environment for that fixed mock target;
+5. runs the repository mock MUD as a separate test process on the VM's
+   non-loopback test address;
+6. assigns that address a reserved `.test` hostname and renders `TN_HOST` to
+   the hostname, never its IP literal;
 7. enables App Attest with test identifiers and a test `{}` key store so the
    atomic state path is exercised;
 8. renders the Caddy template to `localhost`;
@@ -595,24 +642,29 @@ The test:
 11. proves `ss` shows port 6200 only on loopback;
 12. proves HTTPS through Caddy while explicitly trusting Caddy's local test
     CA, without disabling TLS verification;
-13. opens WSS through Caddy, establishes a real mock-MUD session, and
-    exchanges data in both directions;
+13. opens WSS through Caddy, establishes a real mock-MUD session through the
+    hostname target, and exchanges data in both directions, proving the
+    service's restricted `net.connect` hostname-resolution path;
 14. sends spoofed `X-Forwarded-For` and `X-Real-IP` values and proves the
     accepted connection log contains the actual test peer, not either
     spoofed value;
-15. records memory and task metrics during the real session;
-16. enters the service mount namespace as the service user and proves a write
+15. sustains at least 50 simultaneous WSS-to-mock-MUD sessions with periodic
+    bidirectional traffic for at least 60 seconds;
+16. records memory, task, descriptor, and `memory.events` metrics during that
+    profile;
+17. enters the service mount namespace as the service user and proves a write
     below the active release fails while a state-directory write succeeds;
-17. sends SIGTERM with the session active and proves the graceful shutdown
+18. sends SIGTERM with sessions active and proves the graceful shutdown
     contract;
-18. proves the App Attest store is valid JSON and was flushed without
+19. proves the App Attest store is valid JSON and was flushed without
     `EROFS`, `read-only file system`, or `shutdown: ... failed:` logs;
-19. starts the service again and repeats loopback health and WSS checks;
-20. explicitly stops and restarts each of `mud-web-proxy.service` and
+20. starts the service again and repeats loopback health and hostname-based
+    WSS checks;
+21. explicitly stops and restarts each of `mud-web-proxy.service` and
     `caddy.service`, requiring the expected inactive and healthy states after
     each operation;
-21. reboots the VM and proves both enabled services return healthy; and
-22. captures service status, journal excerpts, security analysis, socket
+22. reboots the VM and proves both enabled services return healthy; and
+23. captures service status, journal excerpts, security analysis, socket
     state, memory peak, and task peak as review evidence.
 
 The test does not mount repository source or tests into the installed
@@ -620,17 +672,40 @@ release. Test helpers run outside the service filesystem boundary.
 
 ### Security score
 
-The VM runs:
+The first Ubuntu 26.04 run measures the loaded unit without a guessed
+threshold:
 
 ```bash
 systemd-analyze verify /etc/systemd/system/mud-web-proxy.service
-systemd-analyze security \
-  --threshold=4.5 \
-  --no-pager \
-  mud-web-proxy.service
+systemd-analyze security --no-pager mud-web-proxy.service
 ```
 
-The security command must exit zero and its complete output is retained. A
+The implementation records the exact Ubuntu image, systemd package version,
+measured exposure score, and every residual assessment in
+`tests/deployment/systemd-security-baseline.json`. The committed maximum is
+exactly 0.1 above the measured score. For example, a measured `2.3` produces
+a maximum of `2.4`; this example is arithmetic, not the expected score.
+
+After that baseline is committed, the authoritative rerun reads the maximum
+from the JSON and executes:
+
+```text
+systemd-analyze security --threshold=<recorded maximum> --no-pager mud-web-proxy.service
+```
+
+The command must exit zero and its complete output is retained. The contract
+test requires both JSON values to be one-decimal numbers and requires:
+
+```text
+maximumExposure == measuredExposure + 0.1
+```
+
+The acceptance script refuses a missing baseline, a host release or systemd
+version that differs from the recorded baseline, or a current score above
+the recorded maximum. It never derives the threshold from the current run;
+doing that would create a gate that cannot detect regression.
+
+The measured score must be in systemd's `OK` assessment band or better. A
 threshold is a regression gate, not proof that the service is secure.
 `systemd-analyze` measures only systemd-provided controls and describes lower
 scores as lower exposure:
@@ -660,7 +735,9 @@ Provisioning fails before service start when:
 - the Caddy placeholder remains;
 - Caddy formatting or validation fails;
 - `systemd-analyze verify` reports a unit error; or
-- the security exposure exceeds the approved threshold.
+- the security baseline is absent or does not match the host;
+- the measured security result is not `OK` or better; or
+- the security exposure exceeds the measured baseline plus 0.1.
 
 Runtime acceptance fails when:
 
@@ -670,7 +747,7 @@ Runtime acceptance fails when:
 - a spoofed client-IP header survives;
 - a release/configuration write succeeds;
 - a state-directory write or atomic state flush fails;
-- the service hits a resource limit under the approved acceptance workload;
+- the 50-session profile records an `oom`, `oom_kill`, or `max` memory event;
 - shutdown reaches SIGKILL or omits `shutdown: completed`; or
 - either service fails to return after reboot.
 
@@ -717,7 +794,8 @@ MWP-105 is complete when:
 4. The proxy's only persistent writable host path is
    `/var/lib/mud-web-proxy`.
 5. The unit carries no Linux capability and applies the approved sandbox.
-6. The 1 GiB resource limits survive a real WSS-to-mock-MUD workload.
+6. The 1 GiB provisional resource limits survive the 50-session clean-host
+   profile, and MWP-106 owns the representative production measurement gate.
 7. Shutdown drains the real session and exits before 30 seconds without
    SIGKILL.
 8. The proxy listens only on `127.0.0.1:6200`.
@@ -726,8 +804,9 @@ MWP-105 is complete when:
 11. App Attest state survives stop, restart, and reboot with its required
     owner, mode, and JSON shape.
 12. `systemd-analyze verify` passes.
-13. `systemd-analyze security --threshold=4.5` passes and every residual is
-    explained.
+13. The measured systemd security score is `OK` or better, the checked-in
+    threshold is exactly 0.1 above it, the threshold rerun passes, and every
+    residual is explained.
 14. Both services stop and restart cleanly, and both enabled services return
     healthy after reboot.
 15. Contract tests, repository quality gates, and the Ubuntu 26.04
