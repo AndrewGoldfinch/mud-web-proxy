@@ -21,35 +21,8 @@ readonly NODE_ACCEPTANCE_DIST_URL="https://nodejs.org/dist/v${NODE_ACCEPTANCE_VE
 readonly NODE_ACCEPTANCE_RUNTIME_ROOT="/root/mwp-105-node-${NODE_ACCEPTANCE_VERSION}"
 readonly NODE_ACCEPTANCE_CLIENT_ROOT="${REPO_ROOT}/node_modules/.cache/mwp-105-systemd-clients"
 readonly PROVIDER_EVIDENCE_PATH="${MWP_DIGITALOCEAN_EVIDENCE_PATH:-}"
-readonly DIGITALOCEAN_METADATA_URL="${MWP_DIGITALOCEAN_METADATA_URL:-}"
 readonly RELEASE_VERSION=systemd-acceptance
 readonly RUN_STARTED="$(date --iso-8601=seconds)"
-readonly -a SOURCE_EVIDENCE_FILES=(
-  .bun-version
-  bun.lock
-  package.json
-  tsconfig.json
-  wsproxy.ts
-  config/apple-app-attest-root-ca.pem
-  config/mud-web-proxy.env.systemd.example
-  deploy/caddy/Caddyfile.example
-  deploy/systemd/mud-web-proxy.service
-  deploy/sysusers.d/mud-web-proxy.conf
-  tests/deployment/build-systemd-acceptance-clients.sh
-  tests/deployment/digitalocean-evidence.ts
-  tests/deployment/digitalocean-metadata-id.sh
-  tests/deployment/run-systemd-acceptance.sh
-  tests/deployment/systemd-acceptance-client.ts
-  tests/deployment/systemd-evidence.sh
-  tests/deployment/systemd-exposure-threshold.sh
-  tests/deployment/systemd-load-activity.ts
-  tests/deployment/systemd-load-client.ts
-  tests/deployment/systemd-resource-sampler.sh
-  tests/deployment/systemd-security-baseline.json
-  tests/deployment/systemd-security-check.sh
-  tests/deployment/systemd-security-residuals.ts
-  tests/deployment/systemd-source-identity.sh
-)
 
 # shellcheck source=tests/deployment/systemd-evidence.sh
 source "${REPO_ROOT}/tests/deployment/systemd-evidence.sh"
@@ -138,11 +111,8 @@ require_disposable_host() {
   [[ "$(stat -c '%a %U:%G' "${PROVIDER_EVIDENCE_PATH}")" == \
     '600 root:root' ]] ||
     fail 'DigitalOcean control-plane evidence owner or mode is wrong'
-  [[ -n "${DIGITALOCEAN_METADATA_URL}" ]] ||
-    fail 'DigitalOcean metadata URL is missing'
   on_host_droplet_id="$(
-    bash "${REPO_ROOT}/tests/deployment/digitalocean-metadata-id.sh" \
-      "${DIGITALOCEAN_METADATA_URL}"
+    bash "${REPO_ROOT}/tests/deployment/digitalocean-metadata-id.sh"
   )" || fail 'could not read the on-host DigitalOcean metadata ID'
   source_commit="$(
     bash "${REPO_ROOT}/tests/deployment/systemd-source-identity.sh" \
@@ -316,6 +286,13 @@ install_test_release() {
   cp -a "${REPO_ROOT}/dist/." "${release_root}/dist/"
   [[ -s "${release_root}/dist/wsproxy.js" ]] ||
     fail 'test release has no compiled entrypoint'
+  record_release_artifact_hash \
+    "${REPO_ROOT}/dist/wsproxy.js" \
+    "${release_root}/dist/wsproxy.js" \
+    dist/wsproxy.js \
+    "${EVIDENCE_DIR}/release-artifacts.sha256" ||
+    fail 'installed release artifact does not match the build output'
+  chmod 0600 "${EVIDENCE_DIR}/release-artifacts.sha256"
   ln -s "../../runtimes/bun/${BUN_VERSION}" "${release_root}/runtime"
 
   release_bun="${runtime_root}/bin/bun"
@@ -1042,8 +1019,7 @@ printf '%s\n' "${on_host_droplet_id}" \
   >"${EVIDENCE_DIR}/digitalocean-on-host-id.txt"
 chmod 0600 "${EVIDENCE_DIR}/digitalocean-on-host-id.txt"
 bash "${REPO_ROOT}/tests/deployment/systemd-source-identity.sh" \
-  "${REPO_ROOT}" "${EVIDENCE_DIR}" "${source_commit}" \
-  "${SOURCE_EVIDENCE_FILES[@]}" ||
+  "${REPO_ROOT}" "${EVIDENCE_DIR}" "${source_commit}" ||
   fail 'could not retain acceptance source identity'
 {
   printf 'run-started=%s\n' "${RUN_STARTED}"

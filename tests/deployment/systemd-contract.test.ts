@@ -825,6 +825,48 @@ exit 1
     }
   });
 
+  test('retains the hash only when the deployed release artifact matches', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-release-artifact-'),
+    );
+    const built = path.join(directory, 'built.js');
+    const installed = path.join(directory, 'installed.js');
+    const output = path.join(directory, 'release-artifacts.sha256');
+    const mismatchOutput = path.join(directory, 'mismatch.sha256');
+    const body = 'built release artifact\n';
+    try {
+      writeFileSync(built, body);
+      writeFileSync(installed, body);
+      expect(
+        runEvidenceFunction(
+          'record_release_artifact_hash',
+          built,
+          installed,
+          'dist/wsproxy.js',
+          output,
+        ).exitCode,
+      ).toBe(0);
+      const checksum = createHash('sha256').update(body).digest('hex');
+      expect(readFileSync(output, 'utf8')).toBe(
+        `${checksum}  dist/wsproxy.js\n`,
+      );
+
+      writeFileSync(installed, 'different artifact\n');
+      expect(
+        runEvidenceFunction(
+          'record_release_artifact_hash',
+          built,
+          installed,
+          'dist/wsproxy.js',
+          mismatchOutput,
+        ).exitCode,
+      ).not.toBe(0);
+      expect(existsSync(mismatchOutput)).toBe(false);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('ignores symlink mode bits in an immutable tree', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-immutable-'),
@@ -1234,6 +1276,8 @@ describe('DigitalOcean acceptance evidence', () => {
         fakeCurl,
         `#!/usr/bin/env bash
 set -euo pipefail
+expected_url="$(printf 'http://%d.%d.%d.%d/metadata/v1/id' 169 254 169 254)"
+[[ "\${*: -1}" == "\${expected_url}" ]]
 printf '%s' "\${FAKE_METADATA_RESPONSE}"
 `,
         { mode: 0o755 },
@@ -1242,16 +1286,12 @@ printf '%s' "\${FAKE_METADATA_RESPONSE}"
         response: string,
       ): ReturnType<typeof Bun.spawnSync> =>
         Bun.spawnSync({
-          cmd: [
-            'bash',
-            'tests/deployment/digitalocean-metadata-id.sh',
-            'http://metadata.invalid/metadata/v1/id',
-          ],
+          cmd: ['bash', 'tests/deployment/digitalocean-metadata-id.sh'],
           cwd: repoRoot,
           env: {
             ...process.env,
-            CURL_BIN: fakeCurl,
             FAKE_METADATA_RESPONSE: response,
+            MWP_METADATA_TEST_CURL_BIN: fakeCurl,
           },
           stdout: 'pipe',
           stderr: 'pipe',
@@ -1263,6 +1303,18 @@ printf '%s' "\${FAKE_METADATA_RESPONSE}"
       for (const invalid of ['', '0\n', ' 123\n', '123\n456\n', 'id=123\n']) {
         expect(runMetadataHelper(invalid).exitCode).not.toBe(0);
       }
+      expect(
+        Bun.spawnSync({
+          cmd: [
+            'bash',
+            'tests/deployment/digitalocean-metadata-id.sh',
+            'http://metadata.invalid/metadata/v1/id',
+          ],
+          cwd: repoRoot,
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }).exitCode,
+      ).not.toBe(0);
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }
@@ -1270,7 +1322,7 @@ printf '%s' "\${FAKE_METADATA_RESPONSE}"
 });
 
 describe('systemd acceptance source identity', () => {
-  test('requires a clean reviewed commit and hashes the runner inputs', () => {
+  test('requires a clean reviewed commit and hashes every tracked file', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-source-identity-'),
     );
@@ -1295,7 +1347,8 @@ describe('systemd acceptance source identity', () => {
         0,
       );
       writeFileSync(path.join(repository, 'tracked.txt'), 'reviewed helper\n');
-      expect(runGit('add', 'tracked.txt').exitCode).toBe(0);
+      writeFileSync(path.join(repository, 'second.txt'), 'second input\n');
+      expect(runGit('add', 'tracked.txt', 'second.txt').exitCode).toBe(0);
       expect(runGit('commit', '--quiet', '-m', 'fixture').exitCode).toBe(0);
       const head = runGit('rev-parse', 'HEAD').stdout.toString().trim();
       const helper = path.join(
@@ -1313,7 +1366,7 @@ describe('systemd acceptance source identity', () => {
       expect(preflight.stdout.toString()).toBe(`${head}\n`);
 
       const retained = Bun.spawnSync({
-        cmd: ['bash', helper, repository, evidence, head, 'tracked.txt'],
+        cmd: ['bash', helper, repository, evidence, head],
         stdout: 'pipe',
         stderr: 'pipe',
       });
@@ -1324,9 +1377,12 @@ describe('systemd acceptance source identity', () => {
       const checksum = createHash('sha256')
         .update('reviewed helper\n')
         .digest('hex');
+      const secondChecksum = createHash('sha256')
+        .update('second input\n')
+        .digest('hex');
       expect(
         readFileSync(path.join(evidence, 'source-files.sha256'), 'utf8'),
-      ).toBe(`${checksum}  tracked.txt\n`);
+      ).toBe(`${secondChecksum}  second.txt\n${checksum}  tracked.txt\n`);
 
       writeFileSync(path.join(repository, 'tracked.txt'), 'dirty helper\n');
       expect(
@@ -1345,7 +1401,6 @@ describe('systemd acceptance source identity', () => {
           repository,
           staleEvidence,
           '0000000000000000000000000000000000000000',
-          'tracked.txt',
         ],
         stdout: 'pipe',
         stderr: 'pipe',

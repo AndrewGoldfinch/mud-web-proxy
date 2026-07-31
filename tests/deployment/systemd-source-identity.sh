@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-[[ "$#" -eq 1 || "$#" -ge 4 ]] || exit 64
+[[ "$#" -eq 1 || "$#" -eq 3 ]] || exit 64
 readonly repository="$1"
 shift
 
@@ -33,24 +33,22 @@ shift 2
 [[ "${head_commit}" == "${expected_commit}" ]] || exit 65
 [[ -d "${evidence_dir}" && ! -L "${evidence_dir}" ]] || exit 65
 
-for source_file in "$@"; do
-  [[ "${source_file}" != /* &&
-    "${source_file}" != .. &&
-    "${source_file}" != ../* &&
-    "${source_file}" != */../* ]] || exit 64
-  git -C "${repository}" ls-files --error-unmatch -- "${source_file}" \
-    >/dev/null 2>&1 || exit 65
-  [[ -f "${repository}/${source_file}" &&
-    ! -L "${repository}/${source_file}" ]] || exit 65
-done
-
 umask 077
 identity_staging="$(mktemp "${evidence_dir}/.source-identity.XXXXXX")"
 manifest_staging="$(mktemp "${evidence_dir}/.source-files.XXXXXX")"
+tracked_list="$(mktemp "${evidence_dir}/.source-list.XXXXXX")"
 cleanup() {
-  rm -f "${identity_staging}" "${manifest_staging}"
+  rm -f "${identity_staging}" "${manifest_staging}" "${tracked_list}"
 }
 trap cleanup EXIT
+
+git -C "${repository}" ls-files -z >"${tracked_list}" || exit 65
+mapfile -d '' -t tracked_files <"${tracked_list}"
+[[ "${#tracked_files[@]}" -gt 0 ]] || exit 65
+for source_file in "${tracked_files[@]}"; do
+  [[ -f "${repository}/${source_file}" &&
+    ! -L "${repository}/${source_file}" ]] || exit 65
+done
 
 {
   printf 'git-head=%s\n' "${head_commit}"
@@ -58,9 +56,10 @@ trap cleanup EXIT
 } >"${identity_staging}"
 (
   cd "${repository}"
-  sha256sum -- "$@"
+  sha256sum -- "${tracked_files[@]}"
 ) >"${manifest_staging}"
 chmod 0600 "${identity_staging}" "${manifest_staging}"
 mv -Tf "${identity_staging}" "${evidence_dir}/source-identity.txt"
 mv -Tf "${manifest_staging}" "${evidence_dir}/source-files.sha256"
+rm -f "${tracked_list}"
 trap - EXIT

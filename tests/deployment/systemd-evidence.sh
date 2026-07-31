@@ -28,6 +28,28 @@ tree_has_no_writable_files_or_directories() {
   [[ -z "${writable}" ]]
 }
 
+record_release_artifact_hash() {
+  [[ "$#" -eq 4 ]] || return 1
+
+  local built="$1"
+  local installed="$2"
+  local label="$3"
+  local output="$4"
+  local checksum
+
+  [[ -f "${built}" && ! -L "${built}" &&
+    -f "${installed}" && ! -L "${installed}" ]] || return 1
+  [[ "${label}" != /* &&
+    "${label}" != .. &&
+    "${label}" != ../* &&
+    "${label}" != */../* ]] || return 1
+  cmp --silent -- "${built}" "${installed}" || return 1
+  checksum="$(sha256sum -- "${built}")" || return 1
+  checksum="${checksum%% *}"
+  [[ "${checksum}" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s  %s\n' "${checksum}" "${label}" >"${output}"
+}
+
 journal_has_unit_failure() {
   local journal="$1"
 

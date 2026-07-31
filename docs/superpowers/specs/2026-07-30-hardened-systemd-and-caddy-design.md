@@ -698,10 +698,11 @@ the root-only pointer created by the install phase.
 
 Before host mutation, acceptance also requires sanitized DigitalOcean
 control-plane evidence for the exact image slug, size slug, region, memory,
-vCPU count, disk size, and active state. A bounded, fail-closed request to the
-Droplet metadata service reads the on-host ID, and the runner requires that
-ID to equal the control-plane `dropletId`. The ID is retained, but the
-metadata endpoint and network fields are not. This rejects a valid but stale
+vCPU count, disk size, and active state. A bounded, fail-closed request through
+the system curl binary to DigitalOcean's fixed on-host metadata endpoint reads
+the Droplet ID, and the runner requires that ID to equal the control-plane
+`dropletId`. The endpoint is not operator-configurable. The ID is retained,
+but the endpoint and network fields are not. This rejects a valid but stale
 record copied from another acceptance host. The host independently verifies
 Ubuntu 26.04 x86_64, one logical CPU, and 900,000-1,200,000 KiB of visible
 memory, so provider metadata is not the sole shape gate.
@@ -709,10 +710,11 @@ memory, so provider metadata is not the sole shape gate.
 The accepted source must be a real Git checkout at a full commit ID, not an
 export without repository identity. Before package installation or build,
 the runner requires no tracked changes, records the exact `HEAD`, and hashes
-the runner, helpers, deployment inputs, and toolchain lock files used by the
-acceptance run. Untracked dependency and evidence caches are permitted. The
-same clean commit is rechecked while the source manifest is written, so the
-copied evidence can be compared mechanically with the reviewed commit.
+the entire tracked checkout. Untracked dependency and evidence caches are
+permitted. The same clean commit is rechecked while the source manifest is
+written, so the copied evidence can be compared mechanically with the
+reviewed commit. The built entrypoint is hashed separately after the installed
+copy is proved byte-identical, permitting a deterministic rebuild comparison.
 
 ### Security score
 
