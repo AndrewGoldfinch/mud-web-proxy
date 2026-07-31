@@ -38,7 +38,8 @@
     "check:bun-version": "bun scripts/check-bun-version.ts",
     "check:config-docs": "bun scripts/check-config-docs.ts",
     "typecheck": "tsc --noEmit",
-    "audit": "bun audit --audit-level=moderate"
+    "audit": "bun audit --audit-level=moderate",
+    "build:bundle": "bun scripts/build-release-bundle.ts"
   },
   "repository": {
     "type": "git",
