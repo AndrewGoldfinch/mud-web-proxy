@@ -20,6 +20,7 @@ const requireObject = (value: unknown): Record<string, unknown> => {
 
 export const normalizeDigitalOceanEvidence = (
   value: unknown,
+  onHostDropletId: string,
 ): DigitalOceanEvidence => {
   const input = requireObject(value);
   const capturedAt = input.capturedAt;
@@ -43,6 +44,19 @@ export const normalizeDigitalOceanEvidence = (
     throw new Error('DigitalOcean evidence does not match the acceptance VM');
   }
 
+  if (!/^[1-9][0-9]*$/.test(onHostDropletId)) {
+    throw new Error('on-host DigitalOcean metadata ID is invalid');
+  }
+  const metadataDropletId = Number(onHostDropletId);
+  if (
+    !Number.isSafeInteger(metadataDropletId) ||
+    metadataDropletId !== input.dropletId
+  ) {
+    throw new Error(
+      'DigitalOcean control-plane evidence belongs to a different host',
+    );
+  }
+
   return {
     dropletId: input.dropletId as number,
     name: input.name,
@@ -58,18 +72,21 @@ export const normalizeDigitalOceanEvidence = (
 };
 
 const main = async (): Promise<void> => {
-  const [, , inputPath, outputPath] = Bun.argv;
-  if (!inputPath) {
-    throw new Error('usage: digitalocean-evidence INPUT [OUTPUT]');
+  const [, , inputPath, outputPath, onHostDropletId] = Bun.argv;
+  if (!inputPath || !outputPath || !onHostDropletId) {
+    throw new Error(
+      'usage: digitalocean-evidence INPUT OUTPUT ON_HOST_DROPLET_ID',
+    );
   }
   const normalized = normalizeDigitalOceanEvidence(
     await Bun.file(inputPath).json(),
+    onHostDropletId,
   );
   const body = `${JSON.stringify(normalized, null, 2)}\n`;
-  if (outputPath) {
-    await Bun.write(outputPath, body);
-  } else {
+  if (outputPath === '-') {
     process.stdout.write(body);
+  } else {
+    await Bun.write(outputPath, body);
   }
 };
 

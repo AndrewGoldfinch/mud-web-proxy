@@ -634,7 +634,9 @@ never deletes or reuses it.
 
 The test:
 
-1. proves the host release and architecture;
+1. proves the host release and architecture, binds the sanitized
+   control-plane record to the Droplet's on-host metadata ID, and records a
+   clean tracked Git HEAD plus hashes of the acceptance runner and helpers;
 2. installs the official Caddy package and repository artifacts;
 3. creates the static account through `systemd-sysusers`;
 4. creates a root-owned immutable test release with the versioned Bun
@@ -662,6 +664,9 @@ The test:
 16. runs a bounded sampler from before the load client starts until the
     service reaches inactive after drain, retains every task/descriptor
     sample, and derives fail-closed peaks below `TasksMax` and `LimitNOFILE`;
+    a failed process read may produce a zero drain row only after one
+    refreshed snapshot reports `inactive` or `deactivating` with
+    `MainPID=0`;
 17. enters the service mount namespace as the service user and proves a write
     below the active release fails while a state-directory write succeeds;
 18. sends SIGTERM with sessions active and proves the graceful shutdown
@@ -693,10 +698,21 @@ the root-only pointer created by the install phase.
 
 Before host mutation, acceptance also requires sanitized DigitalOcean
 control-plane evidence for the exact image slug, size slug, region, memory,
-vCPU count, disk size, and active state. Network fields are never retained.
-The host independently verifies Ubuntu 26.04 x86_64, one logical CPU, and
-900,000-1,200,000 KiB of visible memory, so provider metadata is not the sole
-shape gate.
+vCPU count, disk size, and active state. A bounded, fail-closed request to the
+Droplet metadata service reads the on-host ID, and the runner requires that
+ID to equal the control-plane `dropletId`. The ID is retained, but the
+metadata endpoint and network fields are not. This rejects a valid but stale
+record copied from another acceptance host. The host independently verifies
+Ubuntu 26.04 x86_64, one logical CPU, and 900,000-1,200,000 KiB of visible
+memory, so provider metadata is not the sole shape gate.
+
+The accepted source must be a real Git checkout at a full commit ID, not an
+export without repository identity. Before package installation or build,
+the runner requires no tracked changes, records the exact `HEAD`, and hashes
+the runner, helpers, deployment inputs, and toolchain lock files used by the
+acceptance run. Untracked dependency and evidence caches are permitted. The
+same clean commit is rechecked while the source manifest is written, so the
+copied evidence can be compared mechanically with the reviewed commit.
 
 ### Security score
 

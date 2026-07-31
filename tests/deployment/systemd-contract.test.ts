@@ -426,6 +426,10 @@ if [[ "$1" == is-active ]]; then
   printf 'deactivating\\n'
   exit 0
 fi
+if [[ "$1" == show && "$2" == --property=ActiveState ]]; then
+  printf 'MainPID=0\\nTasksCurrent=[not set]\\nActiveState=deactivating\\n'
+  exit 0
+fi
 if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
   case "$3" in
     MainPID) printf '0\\n' ;;
@@ -484,6 +488,10 @@ if [[ "$1" == is-active ]]; then
   fi
   exit 0
 fi
+if [[ "$1" == show && "$2" == --property=ActiveState ]]; then
+  printf 'MainPID=0\nTasksCurrent=[not set]\nActiveState=inactive\n'
+  exit 0
+fi
 if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
   case "$3" in
     MainPID) printf '0\n' ;;
@@ -522,13 +530,12 @@ exit 1
     }
   });
 
-  test('rechecks state after descriptor failure and fails if still active', () => {
+  test('fails descriptor sampling while a refreshed drain process is live', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-resource-descriptor-failure-'),
     );
     const fakeFind = path.join(directory, 'find');
     const fakeSystemctl = path.join(directory, 'systemctl');
-    const stateReads = path.join(directory, 'state-reads');
     const stopFile = path.join(directory, 'stop');
     try {
       writeFileSync(fakeFind, '#!/usr/bin/env bash\nexit 42\n', {
@@ -539,15 +546,12 @@ exit 1
         `#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == is-active ]]; then
-  reads=0
-  [[ ! -e "\${FAKE_STATE_READS}" ]] || reads="$(<"\${FAKE_STATE_READS}")"
-  reads=$((reads + 1))
-  printf '%s\n' "\${reads}" >"\${FAKE_STATE_READS}"
-  if ((reads == 1)); then
-    printf 'active\n'
-  else
-    printf '%s\n' "\${FAKE_FINAL_STATE}"
-  fi
+  printf 'deactivating\n'
+  exit 0
+fi
+if [[ "$1" == show && "$2" == --property=ActiveState ]]; then
+  printf 'MainPID=%s\nTasksCurrent=3\nActiveState=deactivating\n' \
+    "\${FAKE_MAIN_PID}"
   exit 0
 fi
 if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
@@ -573,9 +577,7 @@ exit 1
         cwd: repoRoot,
         env: {
           ...process.env,
-          FAKE_FINAL_STATE: 'active',
           FAKE_MAIN_PID: String(process.pid),
-          FAKE_STATE_READS: stateReads,
           PATH: `${directory}:${process.env.PATH ?? ''}`,
           SYSTEMCTL_BIN: fakeSystemctl,
         },
@@ -586,9 +588,48 @@ exit 1
       expect(result.stdout.toString().trim().split('\n')).toEqual([
         'sample\tmonotonic_ms\tstate\tmain_pid\ttasks\tfile_descriptors',
       ]);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
 
-      rmSync(stateReads, { force: true });
-      const drainResult = Bun.spawnSync({
+  test('zeroes a drain row only after refreshed MainPID is absent', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-resource-terminal-drain-'),
+    );
+    const fakeFind = path.join(directory, 'find');
+    const fakeSystemctl = path.join(directory, 'systemctl');
+    const stopFile = path.join(directory, 'stop');
+    try {
+      writeFileSync(fakeFind, '#!/usr/bin/env bash\nexit 42\n', {
+        mode: 0o755,
+      });
+      writeFileSync(
+        fakeSystemctl,
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == is-active ]]; then
+  printf 'active\n'
+  exit 0
+fi
+if [[ "$1" == show && "$2" == --property=ActiveState ]]; then
+  printf 'MainPID=0\nTasksCurrent=[not set]\nActiveState=deactivating\n'
+  exit 0
+fi
+if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
+  case "$3" in
+    MainPID) printf '%s\n' "\${FAKE_MAIN_PID}" ;;
+    TasksCurrent) printf '3\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(stopFile, 'stop\n');
+      const result = Bun.spawnSync({
         cmd: [
           'bash',
           'tests/deployment/systemd-resource-sampler.sh',
@@ -598,18 +639,16 @@ exit 1
         cwd: repoRoot,
         env: {
           ...process.env,
-          FAKE_FINAL_STATE: 'inactive',
           FAKE_MAIN_PID: String(process.pid),
-          FAKE_STATE_READS: stateReads,
           PATH: `${directory}:${process.env.PATH ?? ''}`,
           SYSTEMCTL_BIN: fakeSystemctl,
         },
         stdout: 'pipe',
         stderr: 'pipe',
       });
-      expect(drainResult.exitCode).toBe(0);
-      expect(drainResult.stdout.toString().trim().split('\n')[1]).toMatch(
-        /^1\t[0-9]+\tinactive\t0\t0\t0$/,
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim().split('\n')[1]).toMatch(
+        /^1\t[0-9]+\tdeactivating\t0\t0\t0$/,
       );
     } finally {
       rmSync(directory, { recursive: true, force: true });
@@ -1134,6 +1173,7 @@ describe('DigitalOcean acceptance evidence', () => {
         'tests/deployment/digitalocean-evidence.ts',
         input,
         output,
+        '123',
       );
       expect(result.exitCode).toBe(0);
       expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual({
@@ -1165,9 +1205,155 @@ describe('DigitalOcean acceptance evidence', () => {
             'tests/deployment/digitalocean-evidence.ts',
             input,
             output,
+            '123',
           ).exitCode,
         ).not.toBe(0);
       }
+
+      writeFileSync(input, `${JSON.stringify(valid)}\n`);
+      expect(
+        runDeploymentBunScript(
+          'tests/deployment/digitalocean-evidence.ts',
+          input,
+          output,
+          '456',
+        ).exitCode,
+      ).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('accepts only one positive decimal metadata identity', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-metadata-id-'),
+    );
+    const fakeCurl = path.join(directory, 'curl');
+    try {
+      writeFileSync(
+        fakeCurl,
+        `#!/usr/bin/env bash
+set -euo pipefail
+printf '%s' "\${FAKE_METADATA_RESPONSE}"
+`,
+        { mode: 0o755 },
+      );
+      const runMetadataHelper = (
+        response: string,
+      ): ReturnType<typeof Bun.spawnSync> =>
+        Bun.spawnSync({
+          cmd: [
+            'bash',
+            'tests/deployment/digitalocean-metadata-id.sh',
+            'http://metadata.invalid/metadata/v1/id',
+          ],
+          cwd: repoRoot,
+          env: {
+            ...process.env,
+            CURL_BIN: fakeCurl,
+            FAKE_METADATA_RESPONSE: response,
+          },
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+
+      const valid = runMetadataHelper('123\n');
+      expect(valid.exitCode).toBe(0);
+      expect(valid.stdout.toString()).toBe('123\n');
+      for (const invalid of ['', '0\n', ' 123\n', '123\n456\n', 'id=123\n']) {
+        expect(runMetadataHelper(invalid).exitCode).not.toBe(0);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('systemd acceptance source identity', () => {
+  test('requires a clean reviewed commit and hashes the runner inputs', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-source-identity-'),
+    );
+    const repository = path.join(directory, 'repository');
+    const evidence = path.join(directory, 'evidence');
+    const staleEvidence = path.join(directory, 'stale-evidence');
+    try {
+      mkdirSync(repository);
+      mkdirSync(evidence);
+      mkdirSync(staleEvidence);
+      const runGit = (...args: string[]): ReturnType<typeof Bun.spawnSync> =>
+        Bun.spawnSync({
+          cmd: ['git', '-C', repository, ...args],
+          stdout: 'pipe',
+          stderr: 'pipe',
+        });
+      expect(runGit('init', '--quiet').exitCode).toBe(0);
+      expect(
+        runGit('config', 'user.email', 'acceptance@example.invalid').exitCode,
+      ).toBe(0);
+      expect(runGit('config', 'user.name', 'Acceptance Test').exitCode).toBe(
+        0,
+      );
+      writeFileSync(path.join(repository, 'tracked.txt'), 'reviewed helper\n');
+      expect(runGit('add', 'tracked.txt').exitCode).toBe(0);
+      expect(runGit('commit', '--quiet', '-m', 'fixture').exitCode).toBe(0);
+      const head = runGit('rev-parse', 'HEAD').stdout.toString().trim();
+      const helper = path.join(
+        repoRoot,
+        'tests/deployment/systemd-source-identity.sh',
+      );
+
+      const preflight = Bun.spawnSync({
+        cmd: ['bash', helper, repository],
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(preflight.exitCode).toBe(0);
+      if (preflight.exitCode !== 0) return;
+      expect(preflight.stdout.toString()).toBe(`${head}\n`);
+
+      const retained = Bun.spawnSync({
+        cmd: ['bash', helper, repository, evidence, head, 'tracked.txt'],
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(retained.exitCode).toBe(0);
+      expect(
+        readFileSync(path.join(evidence, 'source-identity.txt'), 'utf8'),
+      ).toBe(`git-head=${head}\ntracked-checkout-clean=yes\n`);
+      const checksum = createHash('sha256')
+        .update('reviewed helper\n')
+        .digest('hex');
+      expect(
+        readFileSync(path.join(evidence, 'source-files.sha256'), 'utf8'),
+      ).toBe(`${checksum}  tracked.txt\n`);
+
+      writeFileSync(path.join(repository, 'tracked.txt'), 'dirty helper\n');
+      expect(
+        Bun.spawnSync({
+          cmd: ['bash', helper, repository],
+          stdout: 'pipe',
+          stderr: 'pipe',
+        }).exitCode,
+      ).not.toBe(0);
+
+      writeFileSync(path.join(repository, 'tracked.txt'), 'reviewed helper\n');
+      const stale = Bun.spawnSync({
+        cmd: [
+          'bash',
+          helper,
+          repository,
+          staleEvidence,
+          '0000000000000000000000000000000000000000',
+          'tracked.txt',
+        ],
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(stale.exitCode).not.toBe(0);
+      expect(existsSync(path.join(staleEvidence, 'source-identity.txt'))).toBe(
+        false,
+      );
     } finally {
       rmSync(directory, { recursive: true, force: true });
     }

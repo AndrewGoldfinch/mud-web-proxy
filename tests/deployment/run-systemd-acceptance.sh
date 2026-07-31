@@ -21,8 +21,35 @@ readonly NODE_ACCEPTANCE_DIST_URL="https://nodejs.org/dist/v${NODE_ACCEPTANCE_VE
 readonly NODE_ACCEPTANCE_RUNTIME_ROOT="/root/mwp-105-node-${NODE_ACCEPTANCE_VERSION}"
 readonly NODE_ACCEPTANCE_CLIENT_ROOT="${REPO_ROOT}/node_modules/.cache/mwp-105-systemd-clients"
 readonly PROVIDER_EVIDENCE_PATH="${MWP_DIGITALOCEAN_EVIDENCE_PATH:-}"
+readonly DIGITALOCEAN_METADATA_URL="${MWP_DIGITALOCEAN_METADATA_URL:-}"
 readonly RELEASE_VERSION=systemd-acceptance
 readonly RUN_STARTED="$(date --iso-8601=seconds)"
+readonly -a SOURCE_EVIDENCE_FILES=(
+  .bun-version
+  bun.lock
+  package.json
+  tsconfig.json
+  wsproxy.ts
+  config/apple-app-attest-root-ca.pem
+  config/mud-web-proxy.env.systemd.example
+  deploy/caddy/Caddyfile.example
+  deploy/systemd/mud-web-proxy.service
+  deploy/sysusers.d/mud-web-proxy.conf
+  tests/deployment/build-systemd-acceptance-clients.sh
+  tests/deployment/digitalocean-evidence.ts
+  tests/deployment/digitalocean-metadata-id.sh
+  tests/deployment/run-systemd-acceptance.sh
+  tests/deployment/systemd-acceptance-client.ts
+  tests/deployment/systemd-evidence.sh
+  tests/deployment/systemd-exposure-threshold.sh
+  tests/deployment/systemd-load-activity.ts
+  tests/deployment/systemd-load-client.ts
+  tests/deployment/systemd-resource-sampler.sh
+  tests/deployment/systemd-security-baseline.json
+  tests/deployment/systemd-security-check.sh
+  tests/deployment/systemd-security-residuals.ts
+  tests/deployment/systemd-source-identity.sh
+)
 
 # shellcheck source=tests/deployment/systemd-evidence.sh
 source "${REPO_ROOT}/tests/deployment/systemd-evidence.sh"
@@ -36,6 +63,8 @@ test_address=
 hosts_line=
 firewall_table_created=
 acceptance_node_bin=
+on_host_droplet_id=
+source_commit=
 
 fail() {
   echo "systemd-acceptance: $*" >&2
@@ -109,13 +138,23 @@ require_disposable_host() {
   [[ "$(stat -c '%a %U:%G' "${PROVIDER_EVIDENCE_PATH}")" == \
     '600 root:root' ]] ||
     fail 'DigitalOcean control-plane evidence owner or mode is wrong'
+  [[ -n "${DIGITALOCEAN_METADATA_URL}" ]] ||
+    fail 'DigitalOcean metadata URL is missing'
+  on_host_droplet_id="$(
+    bash "${REPO_ROOT}/tests/deployment/digitalocean-metadata-id.sh" \
+      "${DIGITALOCEAN_METADATA_URL}"
+  )" || fail 'could not read the on-host DigitalOcean metadata ID'
+  source_commit="$(
+    bash "${REPO_ROOT}/tests/deployment/systemd-source-identity.sh" \
+      "${REPO_ROOT}"
+  )" || fail 'acceptance source is not a clean tracked Git checkout'
   source_bun="$(command -v bun)" || fail 'Bun is not on PATH'
   [[ "$("${source_bun}" --version)" == "${BUN_VERSION}" ]] ||
     fail "Bun ${BUN_VERSION} is required"
   "${source_bun}" \
     "${REPO_ROOT}/tests/deployment/digitalocean-evidence.ts" \
-    "${PROVIDER_EVIDENCE_PATH}" >/dev/null ||
-    fail 'DigitalOcean control-plane evidence does not match the host shape'
+    "${PROVIDER_EVIDENCE_PATH}" - "${on_host_droplet_id}" >/dev/null ||
+    fail 'DigitalOcean control-plane evidence does not match this host'
 }
 
 install_caddy() {
@@ -996,8 +1035,16 @@ source_bun="$(command -v bun)" || fail 'Bun is not on PATH'
 "${source_bun}" \
   "${REPO_ROOT}/tests/deployment/digitalocean-evidence.ts" \
   "${PROVIDER_EVIDENCE_PATH}" \
-  "${EVIDENCE_DIR}/digitalocean-control-plane.json"
+  "${EVIDENCE_DIR}/digitalocean-control-plane.json" \
+  "${on_host_droplet_id}"
 chmod 0600 "${EVIDENCE_DIR}/digitalocean-control-plane.json"
+printf '%s\n' "${on_host_droplet_id}" \
+  >"${EVIDENCE_DIR}/digitalocean-on-host-id.txt"
+chmod 0600 "${EVIDENCE_DIR}/digitalocean-on-host-id.txt"
+bash "${REPO_ROOT}/tests/deployment/systemd-source-identity.sh" \
+  "${REPO_ROOT}" "${EVIDENCE_DIR}" "${source_commit}" \
+  "${SOURCE_EVIDENCE_FILES[@]}" ||
+  fail 'could not retain acceptance source identity'
 {
   printf 'run-started=%s\n' "${RUN_STARTED}"
   printf 'architecture=%s\n' "$(uname -m)"

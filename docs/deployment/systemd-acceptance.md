@@ -11,12 +11,19 @@ production state-transfer or rollback procedure. Those gates remain in the
 
 ## Prerequisites and host refusal
 
-Run as root from a checkout of the branch being accepted. The checkout needs
-the exact Bun release in `.bun-version` on `PATH` and frozen dependencies
-installed. Confirm the OS, architecture, and one-GiB class before the run:
+Run as root from a real Git checkout of the exact commit being accepted. The
+checkout must have no tracked changes; untracked dependency caches are
+allowed. If source is copied to the host rather than cloned, transfer a Git
+bundle and clone that bundle so `HEAD` remains independently verifiable. The
+checkout needs the exact Bun release in `.bun-version` on `PATH` and frozen
+dependencies installed. Confirm the source, OS, architecture, and one-GiB
+class before the run:
 
 ```bash
 source /etc/os-release
+test -z "$(git status --porcelain=v1 --untracked-files=no)"
+test "$(git rev-parse --show-toplevel)" = "$(pwd -P)"
+git rev-parse --verify 'HEAD^{commit}'
 test "${ID}" = ubuntu
 test "${VERSION_ID}" = 26.04
 test "$(uname -m)" = x86_64
@@ -47,10 +54,16 @@ doctl compute droplet get "$DROPLET_ID" --output json |
 ```
 
 Copy it to `/root/mwp-105-digitalocean-control-plane.json` on the disposable
-host and set `MWP_DIGITALOCEAN_EVIDENCE_PATH` to that path. The runner rejects
-anything except the exact `ubuntu-26-04-x64`, `s-1vcpu-1gb`, 1,024 MiB,
-one-vCPU, 25 GiB active acceptance shape, and it independently checks the
-host's visible CPU and memory.
+host and set `MWP_DIGITALOCEAN_EVIDENCE_PATH` to that path. Also set
+`MWP_DIGITALOCEAN_METADATA_URL` to DigitalOcean's documented Droplet-ID
+metadata endpoint ending in `/metadata/v1/id`; keep the endpoint value out of
+captured commands and evidence. The runner reads it with bounded timeouts,
+requires one positive decimal ID, and requires that ID to equal the
+control-plane `dropletId`. It rejects anything except the exact
+`ubuntu-26-04-x64`, `s-1vcpu-1gb`, 1,024 MiB, one-vCPU, 25 GiB active
+acceptance shape, and independently checks the host's visible CPU and memory.
+It retains the on-host ID, exact clean Git `HEAD`, and a SHA-256 manifest for
+the runner and helper inputs before installing or building anything.
 
 The install phase downloads Node 22.21.1 from the official Node distribution,
 verifies its archive against the official `SHASUMS256.txt`, and extracts it
@@ -88,6 +101,7 @@ does not claim that a baseline gate passed.
 sudo env \
   PATH="$PATH" \
   MWP_DIGITALOCEAN_EVIDENCE_PATH=/root/mwp-105-digitalocean-control-plane.json \
+  MWP_DIGITALOCEAN_METADATA_URL="$MWP_DIGITALOCEAN_METADATA_URL" \
   MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' \
   MWP_SECURITY_MODE=measure \
   MWP_ACCEPTANCE_PHASE=install \
@@ -209,6 +223,7 @@ and committing the baseline. Then run:
 sudo env \
   PATH="$PATH" \
   MWP_DIGITALOCEAN_EVIDENCE_PATH=/root/mwp-105-digitalocean-control-plane.json \
+  MWP_DIGITALOCEAN_METADATA_URL="$MWP_DIGITALOCEAN_METADATA_URL" \
   MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' \
   MWP_SECURITY_MODE=verify \
   MWP_ACCEPTANCE_PHASE=install \
@@ -246,7 +261,8 @@ evidence directory contains `evidence-complete`.
 
 Copy the evidence directory off the Droplet before cleanup. Review
 `host.txt`, `systemd-verify.txt`, `systemd-security.txt`, and the measurement
-JSON; `digitalocean-control-plane.json`,
+JSON; `digitalocean-control-plane.json`, `digitalocean-on-host-id.txt`,
+`source-identity.txt`, `source-files.sha256`,
 `systemd-security-residuals.json`, `resources.txt`, `resource-samples.tsv`,
 `resource-peaks.txt`, `resource-sampler.log`, all `memory-events-*.txt` files,
 `memory-events-cgroups.txt`, `port-6200.txt`, `mock-mud-firewall.txt`, and
@@ -261,6 +277,14 @@ JSON; `digitalocean-control-plane.json`,
 must contain distinct valid install and post-reboot IDs. The journals must include
 `shutdown: completed` and must not show read-only filesystem, timeout,
 deadline, SIGKILL, OOM, or state-flush failures.
+
+Require the `dropletId` in `digitalocean-control-plane.json` to equal the
+single decimal line in `digitalocean-on-host-id.txt`. Require the `git-head`
+in `source-identity.txt` to equal the full commit under review and
+`tracked-checkout-clean=yes`. Materialize that exact commit into a temporary
+directory and run `sha256sum --check` there with `source-files.sha256`; this
+compares every retained runner/helper hash to the reviewed commit rather than
+to the operator's current checkout.
 
 The load client must record `50 sessions ready`, `sustained`, and graceful
 close. It has periodic bidirectional WebSocket-to-mock-MUD traffic for at
