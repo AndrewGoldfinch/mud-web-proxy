@@ -82,6 +82,19 @@ Compose own port publication and the HTTP readiness probe because that layer
 selects the internal TLS mode. Docker port publication still works without
 `EXPOSE`.
 
+### Native systemd deployment
+
+The preferred single-VM deployment uses immutable releases, a versioned Bun
+runtime, a hardened systemd service on loopback, and host Caddy for HTTPS/WSS.
+See [Native systemd deployment](docs/deployment/systemd.md). The systemd unit
+and native release bundle land in MWP-105 and MWP-103 respectively; the guide
+already defines the filesystem and operational contract they must implement.
+
+Migration from the legacy PM2/git-checkout host uses a new Ubuntu 26.04
+Droplet rather than an in-place conversion. Follow the
+[New-Droplet cutover runbook](docs/deployment/new-droplet-cutover.md); App
+Attest state preservation is mandatory for the current production deployment.
+
 App Attest is disabled unless both `APPATTEST_BUNDLE_ID` and
 `APPATTEST_TEAM_ID` are set. When enabled, mount the writable directory
 `/var/lib/mud-web-proxy`, not the `attested-keys.json` file; atomic persistence
@@ -96,7 +109,16 @@ runtime. CI reads `.bun-version` directly, and
 `rg 'oven/bun:' Dockerfile tests/container tests/docker-image-contract.test.ts`
 to find every container pin.
 
-You need to have your certificates available to use wsproxy. Inbound TLS is required by default, so starting without usable certificates aborts at startup rather than quietly falling back to plaintext:
+### Direct application-managed TLS
+
+The certificate instructions below apply only when the application itself
+terminates inbound TLS. The native host-Caddy path and the Compose edge path
+terminate TLS at the edge, set `INBOUND_TLS_MODE=off`, and omit
+`TLS_CERT_PATH` and `TLS_KEY_PATH` from the application environment.
+
+For direct application-managed TLS, you need to have certificates available
+to use wsproxy. Inbound TLS is required by default, so starting without usable
+certificates aborts at startup rather than quietly falling back to plaintext:
 
 ```bash
 $ bun dev
@@ -109,7 +131,8 @@ The check is more than a file-existence test: an unreadable file, a malformed ce
 
 To run without TLS during local development — behind a reverse proxy that terminates it, or against a loopback-only listener — set `INBOUND_TLS_MODE=off`. On any non-loopback `BIND_HOST` that additionally requires `ALLOW_INSECURE_INBOUND_NO_TLS=true`, so an exposed plaintext listener is always something you asked for explicitly.
 
-You need to have available both files in the same directory as the proxy, like this:
+For this direct-TLS mode, make both files available in the same directory as
+the proxy, like this:
 
 ```bash
 $ ls
