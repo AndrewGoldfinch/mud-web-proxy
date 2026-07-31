@@ -108,6 +108,13 @@ describe('Stress Tests', () => {
       const result = await conn.connect(proxy.url);
       expect(result.success).toBe(true);
 
+      // Wait for the login prompt before typing. The session frame is sent
+      // before the telnet socket is established, so 'user' was written with
+      // nowhere to go and dropped. That shifted the whole exchange by one:
+      // 'pass' became the username and cmd_0 was consumed as the password,
+      // which is why cmd_0 alone never produced an echo.
+      await conn.waitForMessage('data', 5000);
+
       // Login
       conn.sendCommand('user');
       await new Promise((r) => setTimeout(r, 500));
@@ -140,9 +147,22 @@ describe('Stress Tests', () => {
       expect(matchingCmds[0]).toBe('cmd_0');
       expect(matchingCmds[99]).toBe('cmd_99');
 
-      // Should have received echo responses
-      const dataMessages = conn.getMessages().filter((m) => m.type === 'data');
-      expect(dataMessages.length).toBeGreaterThan(10);
+      // The echoes must come back. Assert on content, not on how many
+      // WebSocket frames they were split across: the proxy coalesces a
+      // burst of MUD output, so the frame count reflects scheduling rather
+      // than delivery. A >10 bar on frame count read as 5 on CI and 20+
+      // locally for identical, correct behaviour.
+      const echoDeadline = Date.now() + 10000;
+      while (
+        Date.now() < echoDeadline &&
+        !conn.getDataPayloads().join('').includes('cmd_99')
+      ) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
+
+      const echoed = conn.getDataPayloads().join('');
+      expect(echoed).toContain('cmd_0');
+      expect(echoed).toContain('cmd_99');
     } finally {
       conn.close();
       await proxy.stop();

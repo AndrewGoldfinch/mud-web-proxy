@@ -96,6 +96,8 @@ export interface MockClient {
   lineBuffer: string;
   /** Incomplete telnet sequence carried between TCP reads. */
   rawBuffer: Buffer;
+  /** Serializes async data handling so input is processed in order. */
+  processing: Promise<void>;
 }
 
 export class MockMUDServer extends EventEmitter {
@@ -228,6 +230,7 @@ export class MockMUDServer extends EventEmitter {
       windowHeight: 24,
       lineBuffer: '',
       rawBuffer: Buffer.alloc(0),
+      processing: Promise.resolve(),
     };
 
     this.clients.set(clientId, client);
@@ -239,14 +242,22 @@ export class MockMUDServer extends EventEmitter {
     // output reached the proxy until after a full login. Tests asserting
     // real-MUD behaviour therefore saw zero data and no negotiated
     // protocols, which read as proxy defects rather than mock defects.
-    void this.greetClient(client);
+    // Chained into the same queue as reads so the greeting always precedes
+    // the handling of anything the client sends.
+    client.processing = client.processing.then(() => this.greetClient(client));
 
-    socket.on('data', async (data) => {
-      try {
-        await this.handleData(client, data);
-      } catch (err) {
-        console.error('[MockMUD] Error handling data:', err);
-      }
+    // Node does not serialize async 'data' handlers: a second read is
+    // dispatched while the first is still awaiting. sendWelcome() awaits
+    // several writes, so a command arriving during login was processed
+    // concurrently and its echo interleaved or vanished — cmd_0's reply
+    // went missing in roughly two runs out of three. Real MUDs process a
+    // player's input strictly in order, so chain the handlers.
+    socket.on('data', (data) => {
+      client.processing = client.processing
+        .then(() => this.handleData(client, data))
+        .catch((err) => {
+          console.error('[MockMUD] Error handling data:', err);
+        });
     });
 
     socket.on('close', () => {
