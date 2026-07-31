@@ -17,7 +17,9 @@ the actual sandbox, hostname resolution, resource profile, shutdown, Caddy
 header boundary, reboot behavior, and measured systemd security score.
 
 **Tech Stack:** Bun 1.3.14, TypeScript, Bun test, systemd 259 on Ubuntu 26.04
-LTS x64, Caddy's official Ubuntu package, Bash, WebSocket/Telnet test helpers.
+LTS x64, Caddy's official Ubuntu package, Bash, WebSocket/Telnet test helpers,
+and Node 22.21.1 solely for acceptance clients when direct close-frame callback
+semantics are under test.
 
 ## Global constraints
 
@@ -60,6 +62,10 @@ LTS x64, Caddy's official Ubuntu package, Bash, WebSocket/Telnet test helpers.
 - Do not weaken the acceptance script to make a failing hardening directive
   pass. Capture the failure, identify the required behavior, and revise the
   design explicitly.
+- The deployed service, release build, and production dependency tree remain
+  Bun-only. Node 22.21.1 is checksum-verified and used only to run the two
+  acceptance clients because evidence proves Bun 1.3.14 rewrites a wire-level
+  close code 1001 to callback code 1000.
 
 ## File map
 
@@ -1175,7 +1181,11 @@ Expected: every command exits zero.
 - [ ] **Step 2: Run measurement mode**
 
 Transfer or clone the branch, install the exact Bun version from
-`.bun-version`, install frozen dependencies, and run:
+`.bun-version`, install frozen dependencies, and install the checksum-verified
+Node 22.21.1 test runtime required by the acceptance clients. Node must not be
+copied into the synthetic release or referenced by the systemd unit. Both
+clients must use the actual npm `ws` implementation under Node and directly
+observe close code 1001 with reason `Server restarting`. Then run:
 
 ```bash
 sudo env \
