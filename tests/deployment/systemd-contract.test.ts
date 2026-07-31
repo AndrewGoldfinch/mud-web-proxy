@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { readFileSync } from 'fs';
+import { existsSync, readFileSync } from 'fs';
 import path from 'path';
 
 const repoRoot = path.resolve(import.meta.dir, '../..');
@@ -184,5 +184,50 @@ describe('host Caddy template', () => {
       1,
     );
     expect(caddy).not.toMatch(/header_up \+X-(?:Forwarded-For|Real-IP)/);
+  });
+});
+
+const runAcceptance = (
+  environment: Record<string, string>,
+): ReturnType<typeof Bun.spawnSync> =>
+  Bun.spawnSync({
+    cmd: ['bash', 'tests/deployment/run-systemd-acceptance.sh'],
+    cwd: repoRoot,
+    env: { ...process.env, ...environment },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+describe('Ubuntu acceptance preflight behavior', () => {
+  test('rejects an unsupported phase before mutating the host', () => {
+    const protectedPaths = [
+      '/opt/mud-web-proxy',
+      '/etc/mud-web-proxy.env',
+      '/var/lib/mud-web-proxy',
+      '/var/lib/mud-web-proxy-deploy',
+    ];
+    const before = protectedPaths.map((candidate) => existsSync(candidate));
+    const result = runAcceptance({
+      MWP_ACCEPTANCE_PHASE: 'unsupported',
+      MWP_DISPOSABLE_VM_ACK: 'ERASE THIS CLEAN UBUNTU 26.04 VM',
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(
+      'unsupported MWP_ACCEPTANCE_PHASE: unsupported',
+    );
+    expect(protectedPaths.map((candidate) => existsSync(candidate))).toEqual(
+      before,
+    );
+  });
+
+  test('requires the exact disposable-host acknowledgement', () => {
+    const result = runAcceptance({
+      MWP_ACCEPTANCE_PHASE: 'install',
+      MWP_DISPOSABLE_VM_ACK: '',
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(
+      'set the exact disposable VM acknowledgement',
+    );
   });
 });

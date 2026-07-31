@@ -29,6 +29,8 @@
     "test:e2e:mock": "USE_MOCK_MUD=1 bun tests/e2e/run-mock-tests.ts",
     "test:mock": "USE_MOCK_MUD=1 bun tests/e2e/run-mock-tests.ts",
     "test:container": "bash tests/container/run.sh",
+    "test:systemd": "bun test tests/deployment/systemd-contract.test.ts",
+    "test:systemd:acceptance": "bash tests/deployment/run-systemd-acceptance.sh",
     "lint": "bunx eslint .",
     "lint:fix": "bunx eslint . --fix",
     "format": "prettier --check .",
