@@ -92,6 +92,10 @@ export interface MockClient {
   character?: string;
   windowWidth: number;
   windowHeight: number;
+  /** Partial line carried between TCP reads. */
+  lineBuffer: string;
+  /** Incomplete telnet sequence carried between TCP reads. */
+  rawBuffer: Buffer;
 }
 
 export class MockMUDServer extends EventEmitter {
@@ -222,10 +226,20 @@ export class MockMUDServer extends EventEmitter {
       authenticated: false,
       windowWidth: 80,
       windowHeight: 24,
+      lineBuffer: '',
+      rawBuffer: Buffer.alloc(0),
     };
 
     this.clients.set(clientId, client);
     this.emit('connect', client);
+
+    // A real MUD speaks first: it offers its protocol options and prints a
+    // login prompt the moment the TCP connection is up. This mock used to
+    // wait silently for the client, so nothing was ever negotiated and no
+    // output reached the proxy until after a full login. Tests asserting
+    // real-MUD behaviour therefore saw zero data and no negotiated
+    // protocols, which read as proxy defects rather than mock defects.
+    void this.greetClient(client);
 
     socket.on('data', async (data) => {
       try {
@@ -245,6 +259,39 @@ export class MockMUDServer extends EventEmitter {
     socket.on('error', (err) => {
       console.error(`[MockMUD] Socket error for ${clientId}:`, err.message);
     });
+  }
+
+  /**
+   * Offer the options this server supports, then print the login prompt.
+   *
+   * Order matters: the offers go out before any text so the client can
+   * negotiate before the first line arrives, which is what real MUDs do and
+   * what the proxy's negotiation engine expects.
+   */
+  private async greetClient(client: MockClient): Promise<void> {
+    const offers: number[] = [];
+    if (this.config.supports.mccp) offers.push(OPT_MCCP);
+    if (this.config.supports.gmcp) offers.push(OPT_GMCP);
+    if (this.config.supports.mxp) offers.push(OPT_MXP);
+    if (this.config.supports.msdp) offers.push(OPT_MSDP);
+
+    for (const opt of offers) {
+      if (client.socket.destroyed) return;
+      this.sendIAC(client, WILL, opt);
+    }
+
+    // Options the server asks the client to enable, rather than offering.
+    if (!client.socket.destroyed) {
+      this.sendIAC(client, DO, OPT_TERMINAL_TYPE);
+      this.sendIAC(client, DO, OPT_NAWS);
+    }
+
+    // Give the client a moment to reply before the prompt, so a client that
+    // negotiates synchronously is not racing the first line of text.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    if (client.socket.destroyed) return;
+    await this.sendText(client, this.config.responses.loginPrompt);
   }
 
   private async handleData(client: MockClient, data: Buffer): Promise<void> {
@@ -276,16 +323,34 @@ export class MockMUDServer extends EventEmitter {
       }
     }
 
+    // Telnet sequences straddle TCP reads. Carry any incomplete trailing
+    // sequence forward instead of parsing a fragment, which desynchronized
+    // the parser and dumped subnegotiation payloads into the text path.
+    if (client.rawBuffer.length > 0) {
+      data = Buffer.concat([client.rawBuffer, data]);
+      client.rawBuffer = Buffer.alloc(0);
+    }
+
     // Process telnet commands
     let i = 0;
     while (i < data.length) {
       if (data[i] === IAC) {
-        // Telnet command
+        // Telnet command. Subnegotiations are variable-length, so the
+        // handler reports how many bytes it consumed; assuming 3 here fed
+        // the tail of every IAC SB ... IAC SE back through the text path,
+        // which is how a TTYPE reply surfaced as the player typing their
+        // terminal name.
         if (i + 2 < data.length) {
-          await this.handleTelnetCommand(client, data, i);
-          i += 3;
+          const consumed = await this.handleTelnetCommand(client, data, i);
+          if (consumed === 0) {
+            // Unterminated subnegotiation: wait for the rest.
+            client.rawBuffer = Buffer.from(data.subarray(i));
+            return;
+          }
+          i += consumed;
         } else {
-          break;
+          client.rawBuffer = Buffer.from(data.subarray(i));
+          return;
         }
       } else {
         // Regular text data
@@ -294,18 +359,19 @@ export class MockMUDServer extends EventEmitter {
           i++;
         }
         const text = data.slice(textStart, i).toString('utf8');
-        if (text.trim()) {
-          await this.handleText(client, text);
+        if (text) {
+          await this.handleTextChunk(client, text);
         }
       }
     }
   }
 
+  /** Returns the number of bytes consumed, including the leading IAC. */
   private async handleTelnetCommand(
     client: MockClient,
     data: Buffer,
     offset: number,
-  ): Promise<void> {
+  ): Promise<number> {
     const cmd = data[offset + 1];
     const opt = data[offset + 2];
 
@@ -343,27 +409,38 @@ export class MockMUDServer extends EventEmitter {
       this.sendIAC(client, DO, opt);
     } else if (cmd === SB) {
       // Subnegotiation
-      await this.handleSubnegotiation(client, data, offset);
+      return await this.handleSubnegotiation(client, data, offset);
     }
+
+    return 3;
   }
 
+  /** Returns the number of bytes consumed, including IAC SB and IAC SE. */
   private async handleSubnegotiation(
     client: MockClient,
     data: Buffer,
     offset: number,
-  ): Promise<void> {
+  ): Promise<number> {
     const opt = data[offset + 2];
 
     // Find SE
     let end = offset + 3;
+    let sawTerminator = false;
     while (end < data.length) {
       if (data[end] === IAC && end + 1 < data.length && data[end + 1] === SE) {
+        sawTerminator = true;
         break;
       }
       end++;
     }
 
     const subData = data.slice(offset + 3, end);
+
+    // Consume through IAC SE when present. Report 0 for an unterminated
+    // subnegotiation so the caller can retain the fragment and resume once
+    // the rest of it arrives, rather than parsing a partial payload.
+    const consumed = sawTerminator ? end + 2 - offset : 0;
+    if (!sawTerminator) return 0;
 
     if (opt === OPT_NAWS && subData.length >= 4) {
       // Window size
@@ -378,6 +455,8 @@ export class MockMUDServer extends EventEmitter {
       console.log('[MockMUD] GMCP received:', gmcpData);
       await this.handleGMCP(client, gmcpData);
     }
+
+    return consumed;
   }
 
   private async handleGMCP(client: MockClient, data: string): Promise<void> {
@@ -406,6 +485,30 @@ export class MockMUDServer extends EventEmitter {
     } catch (e) {
       // Invalid JSON
       console.error('[MockMUD] Invalid GMCP JSON:', json);
+    }
+  }
+
+  /**
+   * MUDs are line-oriented, but TCP is not: a burst of commands routinely
+   * arrives in one read, and a single command can be split across two.
+   * Treating each chunk as one command made 100 rapid commands look like 17,
+   * and let a username and password arrive glued together as one login.
+   */
+  private async handleTextChunk(
+    client: MockClient,
+    chunk: string,
+  ): Promise<void> {
+    client.lineBuffer += chunk;
+
+    const lines = client.lineBuffer.split(/\r?\n/);
+    // The trailing element is whatever follows the last newline: either an
+    // empty string, or a partial command still in flight.
+    client.lineBuffer = lines.pop() ?? '';
+
+    for (const line of lines) {
+      if (line.trim()) {
+        await this.handleText(client, line);
+      }
     }
   }
 

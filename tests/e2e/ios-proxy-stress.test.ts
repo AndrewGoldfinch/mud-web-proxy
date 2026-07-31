@@ -12,7 +12,7 @@ import {
 } from './mock-mud';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
-const STRESS_PROXY_PORT = 6450;
+const STRESS_PROXY_PORT = 6470;
 const STRESS_MUD_PORT = 6451;
 
 function makeConfig(port: number, timeoutMs = 20000) {
@@ -114,8 +114,17 @@ describe('Stress Tests', () => {
         conn.sendCommand(`cmd_${i}`);
       }
 
-      // Wait for commands to arrive
-      await new Promise((r) => setTimeout(r, 5000));
+      // Poll until all 100 land rather than betting they fit in a fixed 5s.
+      // Under a full suite run they intermittently did not, which made this
+      // the flakiest test in the repo.
+      const deadline = Date.now() + 20000;
+      while (
+        Date.now() < deadline &&
+        mock.getReceivedCommands().filter((c) => c.startsWith('cmd_')).length <
+          100
+      ) {
+        await new Promise((r) => setTimeout(r, 200));
+      }
 
       const received = mock.getReceivedCommands();
       // Should have received most commands (some may be batched)

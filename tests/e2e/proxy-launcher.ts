@@ -49,6 +49,11 @@ export async function startTestProxy(
         BIND_HOST: '127.0.0.1',
         MUD_TLS_MODE: extraEnv?.MUD_TLS_MODE || 'plain',
         REQUIRE_APP_AUTH: 'false',
+        // Production defaults to a 3s drain grace, which outlives the
+        // launcher's kill window and left the listener holding its port
+        // into the next suite ("Is port NNNN in use?").
+        SHUTDOWN_GRACE_MS: '100',
+        SHUTDOWN_DEADLINE_MS: '2000',
         AUTH_MODE: extraEnv?.AUTH_MODE || 'none',
         ...(extraEnv?.PROXY_SHARED_SECRET
           ? { PROXY_SHARED_SECRET: extraEnv.PROXY_SHARED_SECRET }
@@ -120,20 +125,34 @@ async function stopProxy(process: ChildProcess): Promise<void> {
   return new Promise((resolve) => {
     console.log('[E2E] Stopping test proxy...');
 
-    // Send SIGTERM
+    if (process.exitCode !== null || process.signalCode !== null) {
+      resolve();
+      return;
+    }
+
+    // Resolve only once the child has actually exited. Resolving on a timer
+    // returned while the listener still held its port, so the next suite's
+    // proxy failed to bind and every test in it failed at startup.
+    let settled = false;
+    const finish = (): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceKill);
+      resolve();
+    };
+
+    process.once('exit', finish);
+
     process.kill('SIGTERM');
 
-    // Force kill after 2 seconds
-    setTimeout(() => {
-      if (!process.killed) {
+    // If the graceful path stalls, escalate and wait for the kill to land
+    // rather than assuming it did.
+    const forceKill = setTimeout(() => {
+      if (!settled) {
         process.kill('SIGKILL');
+        setTimeout(finish, 250);
       }
-      resolve();
-    }, 2000);
-
-    process.on('exit', () => {
-      resolve();
-    });
+    }, 3000);
   });
 }
 

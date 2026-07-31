@@ -75,7 +75,7 @@ describe('legacy connect protocol, process-level', () => {
   let mudPort: number;
 
   beforeAll(async () => {
-    setup = await startMockMUDTest('ire', PROXY_PORT);
+    setup = await startMockMUDTest('ire', PROXY_PORT, 6323);
     mudPort = portOf(setup.mockServer);
   });
 
@@ -108,12 +108,24 @@ describe('legacy connect protocol, process-level', () => {
     // what silently vanished when the legacy connect created a Session but
     // never set socket.ts, leaving forward() with nothing to write to.
     ws.send('legacy-probe\r\n');
-    await settle();
+
+    // Poll for arrival rather than sleeping a fixed interval. A flat settle()
+    // is a bet that the round trip always fits in 1500ms, and under a full
+    // suite run it intermittently does not.
+    const deadline = Date.now() + 8000;
+    while (
+      Date.now() < deadline &&
+      !setup.mockServer.getReceivedCommands().includes('legacy-probe')
+    ) {
+      await settle(100);
+    }
 
     expect(setup.mockServer.getReceivedCommands()).toContain('legacy-probe');
     ws.close();
     await settle();
-  });
+    // Must exceed the poll deadline above, or the test is killed mid-poll
+    // and every later test in this block fails on the torn-down socket.
+  }, 15000);
 
   test('3. MUD output reaches a legacy client as bare base64, not JSON', async () => {
     const ws = await openRaw(setup.url);
@@ -270,6 +282,9 @@ describe('legacy connect under shared-secret auth', () => {
 
   beforeAll(async () => {
     mock = createIREMUD();
+    // The factory hardcodes 6301, which mock-mud.test.ts also uses; give
+    // this suite its own port so a full run cannot cross the two.
+    (mock as unknown as { config: { port: number } }).config.port = 6324;
     await mock.start();
     proxy = await startTestProxy(AUTH_PORT, {
       TN_HOST: 'localhost',
