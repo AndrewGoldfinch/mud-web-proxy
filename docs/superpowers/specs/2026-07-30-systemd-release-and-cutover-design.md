@@ -504,9 +504,11 @@ The cutover runs during a declared low-traffic window:
    place.
 5. Validate the final App Attest JSON before calculating its count, require
    both the pre-stop floor and final count to be decimal integers, and require
-   the final count to be at least the floor. If any check fails, atomically
-   restore and verify the safety copy, restart the old service, restore
-   old-host ingress, and abort before routing.
+   the final count to be at least the floor. If any check fails, stop
+   `mud-web-proxy.service` and Caddy on the new host and verify that both are
+   inactive before atomically restoring and verifying the safety copy,
+   restarting the old service, restoring old-host ingress, or reversing
+   routing; then abort before routing.
 6. Persist the valid final store's checksum and numeric count.
 7. Copy the exact final store through a unique same-directory temporary file,
    atomically replace the new destination, and verify final JSON, checksum,
