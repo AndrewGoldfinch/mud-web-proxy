@@ -1,4 +1,9 @@
-import { existsSync as nodeExistsSync, readFileSync } from 'fs';
+import {
+  accessSync,
+  constants,
+  existsSync as nodeExistsSync,
+  readFileSync,
+} from 'fs';
 import path from 'path';
 import {
   createPrivateKey,
@@ -379,10 +384,27 @@ export interface ConfigValidationErrors {
 // parseRuntimeConfig — single entry point
 // ---------------------------------------------------------------------------
 
+/**
+ * Can the process create files in this directory?
+ *
+ * Existence is not the question. The container image creates
+ * /var/lib/mud-web-proxy, so it exists even when the root filesystem is
+ * read-only and nothing can ever be written there.
+ */
+export const nodeDirIsWritable = (dirPath: string): boolean => {
+  try {
+    accessSync(dirPath, constants.W_OK);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 export const parseRuntimeConfig = (
   env: EnvLike,
   existsSync: (filePath: string) => boolean,
   basePath: string,
+  dirIsWritable: (dirPath: string) => boolean = nodeDirIsWritable,
 ): { config: Readonly<RuntimeConfig>; errors: string[] } => {
   const errors: string[] = [];
 
@@ -653,6 +675,33 @@ export const parseRuntimeConfig = (
         `${appAttestBundleId ? 'APPATTEST_TEAM_ID' : 'APPATTEST_BUNDLE_ID'} ` +
         'is missing. Set both to enable App Attest, or neither to disable it.',
     );
+  }
+
+  // App Attest must be able to persist, or it is not really enabled.
+  //
+  // Enabled-but-unwritable starts cleanly, passes its health check, and logs
+  // "App Attest ENABLED" — then fails on the first registration flush and
+  // loses it. The container case is the concrete one: the image creates
+  // /var/lib/mud-web-proxy, so the directory exists, but with a read-only
+  // root and no volume mounted over it every write returns EROFS. Existence
+  // checks cannot see that; only an access check can.
+  //
+  // The directory is what is tested, not the file. On a first run the file
+  // does not exist yet, and persistence writes a sibling staging file into
+  // the same directory before renaming it into place.
+  if (appAttest.enabled) {
+    const keysDir = path.dirname(appAttest.attestedKeysPath);
+    if (!dirIsWritable(keysDir)) {
+      errors.push(
+        `App Attest is enabled but its state directory is not writable: ${keysDir}. ` +
+          'Registrations would be accepted and then lost on the first flush. ' +
+          'In Docker, mount a writable volume at that DIRECTORY — ' +
+          '`docker compose -f compose.yaml -f compose.appattest.yaml up -d` — ' +
+          'never at the attested-keys.json file inside it. Natively, check ' +
+          "the service user's ownership of the path, or unset " +
+          'APPATTEST_BUNDLE_ID and APPATTEST_TEAM_ID to run without it.',
+      );
+    }
   }
 
   // Background push
