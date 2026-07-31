@@ -173,8 +173,12 @@ sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' M
 
 Verification rejects a missing baseline, host or systemd package mismatch, a
 non-`OK` assessment, or a score above the recorded maximum. It runs
-`systemd-analyze security --threshold=<maximumExposure>`; it does not derive a
-new threshold. On success, reboot from the current SSH or console session:
+`systemd-analyze security
+--threshold=<maximumExposure-times-10-as-an-integer>`. The JSON remains on
+systemd's human-readable 0-10 scale; only the CLI boundary converts the strict
+one-decimal value to systemd 259's integer percentage (`2.9` becomes `29`). It
+does not derive a new maximum. On success, reboot from the current SSH or
+console session:
 
 ```bash
 sudo systemctl reboot

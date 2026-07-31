@@ -562,6 +562,56 @@ interface SecurityBaseline {
   residuals: Array<{ assessment: string; reason: string }>;
 }
 
+const convertSystemdThreshold = async (
+  exposure: string,
+): Promise<{ status: number; stdout: string }> => {
+  const process = Bun.spawn({
+    cmd: [
+      'bash',
+      path.join(repoRoot, 'tests/deployment/systemd-exposure-threshold.sh'),
+      exposure,
+    ],
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+  const stdout = await new Response(process.stdout).text();
+  return { status: await process.exited, stdout };
+};
+
+test('converts one-decimal exposure scores to strict CLI percentages', async () => {
+  for (const [exposure, percentage] of [
+    ['0.0', '0'],
+    ['2.9', '29'],
+    ['9.9', '99'],
+    ['10.0', '100'],
+  ]) {
+    expect(await convertSystemdThreshold(exposure)).toEqual({
+      status: 0,
+      stdout: `${percentage}\n`,
+    });
+  }
+
+  for (const exposure of [
+    '',
+    '-0.1',
+    '2',
+    '2.90',
+    '02.9',
+    '10.1',
+    '11.0',
+    'not-a-number',
+  ]) {
+    expect((await convertSystemdThreshold(exposure)).status).not.toBe(0);
+  }
+
+  const runner = readArtifact('tests/deployment/run-systemd-acceptance.sh');
+  expect(runner).toContain(
+    'bash "${REPO_ROOT}/tests/deployment/systemd-exposure-threshold.sh"',
+  );
+  expect(runner).toContain('"--threshold=${maximum_exposure_percentage}"');
+  expect(runner).not.toContain('"--threshold=${maximum_exposure}"');
+});
+
 test('pins a measured Ubuntu security regression baseline', async () => {
   const baselinePath = path.join(
     repoRoot,

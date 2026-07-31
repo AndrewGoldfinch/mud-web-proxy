@@ -706,11 +706,14 @@ After that baseline is committed, the authoritative rerun reads the maximum
 from the JSON and executes:
 
 ```text
-systemd-analyze security --threshold=<recorded maximum> --no-pager mud-web-proxy.service
+systemd-analyze security --threshold=<recorded maximum times 10 as an integer> --no-pager mud-web-proxy.service
 ```
 
-The command must exit zero and its complete output is retained. The contract
-test requires both JSON values to be one-decimal numbers and requires:
+The JSON values remain on systemd's human-readable 0-10 exposure scale. At
+the systemd 259 CLI boundary only, the strict one-decimal maximum is converted
+to an integer percentage (`2.9` becomes `29`). The command must exit zero and
+its complete output is retained. The contract test requires both JSON values
+to be one-decimal numbers and requires:
 
 ```text
 maximumExposure == measuredExposure + 0.1

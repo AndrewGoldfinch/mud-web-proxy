@@ -631,6 +631,7 @@ verify_security() {
   local baseline_systemd
   local current_systemd
   local maximum_exposure
+  local maximum_exposure_percentage
   local report="${EVIDENCE_DIR}/systemd-security.txt"
 
   [[ -f "${baseline}" ]] ||
@@ -656,10 +657,17 @@ verify_security() {
     fail 'systemd security baseline host does not match'
   [[ "${maximum_exposure}" =~ ^[0-9]+\.[0-9]$ ]] ||
     fail 'systemd security baseline threshold is invalid'
+  maximum_exposure_percentage="$(
+    bash "${REPO_ROOT}/tests/deployment/systemd-exposure-threshold.sh" \
+      "${maximum_exposure}"
+  )" || fail 'systemd security baseline threshold is outside 0.0 to 10.0'
+  [[ "${maximum_exposure_percentage}" =~ ^([0-9]|[1-9][0-9]|100)$ ]] ||
+    fail 'systemd security CLI threshold is invalid'
   current_systemd="$(dpkg-query -W -f='${Version}\n' systemd)"
   [[ "${current_systemd}" == "${baseline_systemd}" ]] ||
     fail 'systemd package does not match the security baseline'
-  systemd-analyze security "--threshold=${maximum_exposure}" --no-pager \
+  systemd-analyze security \
+    "--threshold=${maximum_exposure_percentage}" --no-pager \
     mud-web-proxy.service >"${report}"
   require_ok_security_assessment "${report}"
 }
