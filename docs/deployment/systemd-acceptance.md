@@ -186,10 +186,11 @@ seconds and every client observed close code 1001 with reason
 | `MemoryPeak`    | 37,359,616 B   |
 
 The original task and descriptor values were single post-sustain snapshots,
-not peaks, so they are not load-bearing acceptance evidence. The fix-round
-verification uses a bounded 100 ms sampler from before load launch through
-the inactive drain state and records `TaskPeak` and `FileDescriptorPeak` from
-the complete retained sample series.
+not peaks, so they are not load-bearing acceptance evidence. The clean
+fix-round verification retained 393 bounded samples over 67,040 ms from
+before load launch through the inactive drain state. Its complete series
+recorded `TaskPeak=7` and `FileDescriptorPeak=118`, below the respective 128
+and 1,024 limits.
 
 The unit-before, parent-before, load, and terminal parent `memory.events`
 captures all recorded `low=0`, `high=0`, `max=0`, `oom=0`, `oom_kill=0`,
