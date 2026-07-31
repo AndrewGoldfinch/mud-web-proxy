@@ -106,10 +106,11 @@ $EDITOR .env
 docker compose up -d
 ```
 
-See [Docker Compose deployment](docs/deployment/compose.md). Health checks,
-restart policy, bounded logs, and the App Attest state volume land in
-MWP-101. Proxy settings from docs/configuration.md go straight into `.env`
-under their real names. For a single Linux VM, prefer the systemd path below.
+See [Docker Compose deployment](docs/deployment/compose.md). The stack ships
+health checks, `restart: unless-stopped`, and bounded logs; App Attest state
+is an opt-in overlay. Proxy settings from docs/configuration.md go straight
+into `.env` under their real names. For a single Linux VM, prefer the systemd
+path below.
 
 ### Native systemd deployment
 

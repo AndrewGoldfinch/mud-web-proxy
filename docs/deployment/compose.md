@@ -18,16 +18,6 @@ Both paths share the same architecture — Caddy in front, one Bun process
 behind, plaintext only on the internal hop — so the security properties are
 equivalent. Only the packaging differs.
 
-## Scope and implementation status
-
-This document covers the topology delivered by MWP-100: the two services,
-the network boundary, and the environment contract.
-
-Health checks, restart policy, log bounds, and the App Attest state volume
-are **not** configured yet; they belong to MWP-101. The mount point that
-work must use is reserved and commented in `compose.yaml` — see
-[App Attest state](#app-attest-state) below.
-
 ## Requirements
 
 - Docker Engine with the Compose plugin (v2).
@@ -164,9 +154,60 @@ every write fail — and it fails at write time, not at start, so it looks
 healthy until the first registration is lost.
 
 A volume mounted over that path stays writable despite `read_only: true` on
-the service. The volume itself, and making it writable by UID/GID
-`10001:10001`, are MWP-101's work; `compose.yaml` reserves the target in a
-comment and configures nothing.
+the service.
+
+Enable it by layering the override:
+
+```bash
+docker compose -f compose.yaml -f compose.appattest.yaml up -d
+```
+
+The base stack deliberately mounts nothing: with App Attest off the proxy
+needs no writable state, and it runs with a read-only root.
+
+**Use the named volume, not a bind mount.** The image creates
+`/var/lib/mud-web-proxy` owned by `10001:10001`, and Docker seeds an empty
+named volume from the image path it covers — including ownership. A bind
+mount does not: the host directory arrives root-owned, and the non-root
+process cannot write it.
+
+## Volumes
+
+| Volume          | Holds                                 | If deleted                                                                                | Back up?                            |
+| --------------- | ------------------------------------- | ----------------------------------------------------------------------------------------- | ----------------------------------- |
+| `caddy_data`    | Certificates, ACME account key        | Certificates are re-requested on next start, counting against Let's Encrypt rate limits   | **Yes**                             |
+| `caddy_config`  | Caddy's autosaved config              | Regenerated from the Caddyfile                                                            | No                                  |
+| `attested_keys` | App Attest registrations and counters | **Every registered client fails with `Unknown key`** and cannot re-register automatically | **Yes**, when App Attest is enabled |
+
+`caddy_data` is the one whose loss is silently expensive: nothing breaks
+immediately, but repeated recreates can exhaust the issuance rate limit and
+leave the stack unable to obtain a certificate for hours.
+
+Both tmpfs mounts (`/tmp`) hold nothing durable and need no backup.
+
+## Health, restarts, and logs
+
+Both services declare a health check, `restart: unless-stopped`, and bounded
+logging.
+
+**Logs are capped at 10 MB × 5 files per service.** The default `json-file`
+driver keeps everything forever; filling the host disk with logs is the most
+common way a small self-hosted deployment dies, and it happens months after
+anyone last touched the stack.
+
+**The proxy probe uses `bun`, not `curl` or `wget`** — neither is guaranteed
+in the runtime image, but bun is the entrypoint. It polls `/health` over
+plain HTTP, because this topology selects `INBOUND_TLS_MODE=off`.
+
+**A draining proxy reports unhealthy, and that is correct.** During graceful
+shutdown `/health` answers `503 {"status":"draining"}` — it is genuinely not
+ready to serve. It does not cause a restart loop: Compose's `restart` policy
+responds to the container _exiting_, not to health status. The timings make
+it moot anyway — three 30-second failures take 90 s to mark unhealthy, and
+`SHUTDOWN_DEADLINE_MS` bounds shutdown at 15 s, so the process is gone first.
+
+`restart: unless-stopped` rather than `always`, so a stack you deliberately
+stopped stays stopped across a daemon restart.
 
 ## Operations
 
