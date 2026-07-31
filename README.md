@@ -49,7 +49,19 @@ bun start
 
 ### Docker image
 
-Build the production image:
+Published multi-arch images (`linux/amd64`, `linux/arm64`) are available from
+GHCR:
+
+```bash
+docker pull ghcr.io/andrewgoldfinch/mud-web-proxy:latest
+```
+
+Every image carries a build-provenance attestation and an SBOM. Pin by digest
+in production and verify before deploying — see
+[Published container images](docs/deployment/images.md) for the tag policy and
+verification commands. Release candidates never move `latest`.
+
+Or build it yourself:
 
 ```bash
 docker build --pull -t mud-web-proxy:local .
