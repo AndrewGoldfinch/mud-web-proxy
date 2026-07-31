@@ -670,6 +670,15 @@ The test:
 The test does not mount repository source or tests into the installed
 release. Test helpers run outside the service filesystem boundary.
 
+Reboot verification is two-phase. The install phase completes the workload,
+enables both services, persists a root-only evidence pointer, and exits with
+an ordinary success status. The operator then reboots and invokes a
+post-reboot phase, which requires the persisted pointer and verifies both
+services, both health paths, and the loopback socket. The runner does not
+reboot its own SSH session and mistake a lost connection for a test result.
+The post-reboot phase skips the clean-host path check only after validating
+the root-only pointer created by the install phase.
+
 ### Security score
 
 The first Ubuntu 26.04 run measures the loaded unit without a guessed
