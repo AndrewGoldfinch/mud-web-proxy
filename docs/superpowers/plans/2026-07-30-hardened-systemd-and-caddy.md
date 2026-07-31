@@ -1136,6 +1136,9 @@ git commit -m "docs: publish native systemd deployment guide"
 - Modify when evidence exposes an acceptance-harness defect:
   `tests/deployment/run-systemd-acceptance.sh` and
   `tests/deployment/systemd-evidence.sh`
+- Modify when evidence exposes an acceptance-client defect:
+  `tests/deployment/systemd-acceptance-client.ts` and
+  `tests/deployment/systemd-load-client.ts`
 - Modify when evidence requires:
   `docs/deployment/systemd.md`
 - Modify when evidence requires:
@@ -1385,6 +1388,8 @@ deletion by Droplet ID; do not leave an undated billed VM with test state.
 ```bash
 git add tests/deployment/systemd-security-baseline.json \
   tests/deployment/systemd-contract.test.ts \
+  tests/deployment/systemd-acceptance-client.ts \
+  tests/deployment/systemd-load-client.ts \
   tests/deployment/run-systemd-acceptance.sh \
   tests/deployment/systemd-evidence.sh \
   docs/deployment/systemd-acceptance.md \
