@@ -199,7 +199,7 @@ seconds and every client observed close code 1001 with reason
 
 The original task and descriptor values were single post-sustain snapshots,
 not peaks, so they are not load-bearing acceptance evidence. The clean
-fix-round verification retained 393 bounded samples over 67,040 ms from
+fix-round verification retained 395 bounded samples over 67,680 ms from
 before load launch through the inactive drain state. Its complete series
 recorded `TaskPeak=7` and `FileDescriptorPeak=118`, below the respective 128
 and 1,024 limits.
