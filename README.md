@@ -84,14 +84,15 @@ selects the internal TLS mode. Docker port publication still works without
 
 ### Native systemd deployment
 
-The preferred single-VM deployment uses immutable releases, a versioned Bun
-runtime, a hardened systemd service on loopback, and host Caddy for HTTPS/WSS.
-See [Native systemd deployment](docs/deployment/systemd.md). The systemd unit
-and native release bundle land in MWP-105 and MWP-103 respectively; the guide
-already defines the filesystem and operational contract they must implement.
+The repository ships the hardened unit, static-user declaration, native
+environment example, and reusable Caddy template under `deploy/` and
+`config/`. Follow [Native systemd deployment](docs/deployment/systemd.md);
+validate changes on a disposable Ubuntu 26.04 host with
+[Systemd acceptance](docs/deployment/systemd-acceptance.md).
 
-Migration from the legacy PM2/git-checkout host uses a new Ubuntu 26.04
-Droplet rather than an in-place conversion. Follow the
+The verified MWP-103 release bundle is a separate deployment input. Migration
+from the legacy PM2/git-checkout host uses MWP-104's new Ubuntu 26.04 Droplet
+rather than an in-place conversion. Follow the
 [New-Droplet cutover runbook](docs/deployment/new-droplet-cutover.md); App
 Attest state preservation is mandatory for the current production deployment.
 
