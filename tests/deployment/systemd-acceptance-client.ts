@@ -93,8 +93,10 @@ const exerciseCaLoader = async (): Promise<void> => {
 
 const exerciseSession = async (): Promise<void> => {
   const socket = new WebSocket(wsUrl, {
-    ca,
-    rejectUnauthorized: true,
+    tls: {
+      ca,
+      rejectUnauthorized: true,
+    },
     headers: {
       'X-Forwarded-For': '198.51.100.77',
       'X-Real-IP': '203.0.113.88',

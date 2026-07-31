@@ -64,8 +64,10 @@ const createSession = (
   reportFatal: (error: Error) => void,
 ): LoadSession => {
   const socket = new WebSocket(wsUrl, {
-    ca,
-    rejectUnauthorized: true,
+    tls: {
+      ca,
+      rejectUnauthorized: true,
+    },
   });
   let phase:
     | 'opening'
