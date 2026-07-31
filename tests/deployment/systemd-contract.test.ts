@@ -551,3 +551,42 @@ describe('systemd load activity evidence', () => {
     ).toBe(false);
   });
 });
+
+interface SecurityBaseline {
+  image: string;
+  osVersion: string;
+  architecture: string;
+  systemdPackage: string;
+  measuredExposure: number;
+  maximumExposure: number;
+  residuals: Array<{ assessment: string; reason: string }>;
+}
+
+test('pins a measured Ubuntu security regression baseline', async () => {
+  const baselinePath = path.join(
+    repoRoot,
+    'tests/deployment/systemd-security-baseline.json',
+  );
+  const baselineExists = existsSync(baselinePath);
+  expect(baselineExists).toBe(true);
+  if (!baselineExists) return;
+
+  const baseline = (await Bun.file(baselinePath).json()) as SecurityBaseline;
+  expect(baseline.image).toBe('ubuntu-26-04-x64');
+  expect(baseline.osVersion).toBe('26.04');
+  expect(baseline.architecture).toBe('x86_64');
+  expect(baseline.systemdPackage).toMatch(/^[0-9]/);
+  expect(Number.isInteger(baseline.measuredExposure * 10)).toBe(true);
+  expect(Number.isInteger(baseline.maximumExposure * 10)).toBe(true);
+  expect(
+    Math.round((baseline.maximumExposure - baseline.measuredExposure) * 10),
+  ).toBe(1);
+  expect(baseline.residuals).toHaveLength(19);
+  expect(
+    new Set(baseline.residuals.map((residual) => residual.assessment)).size,
+  ).toBe(baseline.residuals.length);
+  for (const residual of baseline.residuals) {
+    expect(residual.assessment.trim()).not.toBe('');
+    expect(residual.reason.trim()).not.toBe('');
+  }
+});

@@ -1,0 +1,86 @@
+{
+  "image": "ubuntu-26-04-x64",
+  "osVersion": "26.04",
+  "architecture": "x86_64",
+  "systemdPackage": "259.5-0ubuntu3",
+  "measuredExposure": 2.8,
+  "maximumExposure": 2.9,
+  "residuals": [
+    {
+      "assessment": "RootDirectory=/RootImage=",
+      "reason": "A private root directory or image is deferred because the service consumes the host-managed release, runtime, environment file, and trust store; ProtectSystem=strict, ProtectHome=true, and the locked non-root identity provide the measured filesystem boundary."
+    },
+    {
+      "assessment": "MemoryDenyWriteExecute=",
+      "reason": "Bun 1.3.14 uses JIT-generated executable memory; MemoryDenyWriteExecute remains deferred until the exact runtime can pass the complete workload with it enabled."
+    },
+    {
+      "assessment": "RestrictAddressFamilies=~AF_UNIX",
+      "reason": "AF_UNIX is retained for Bun and host-local runtime compatibility; unrelated socket families are denied, and removing local sockets has not passed the measured workload."
+    },
+    {
+      "assessment": "RestrictAddressFamilies=~AF_(INET|INET6)",
+      "reason": "AF_INET and AF_INET6 are required for the loopback Caddy hop, hostname resolution results, and outbound MUD TCP or TLS connections."
+    },
+    {
+      "assessment": "PrivateNetwork=",
+      "reason": "PrivateNetwork cannot be enabled because the service must accept Caddy's loopback connection and open outbound MUD connections."
+    },
+    {
+      "assessment": "PrivateUsers=",
+      "reason": "PrivateUsers is not needed for the locked non-root identity: user namespaces are denied, capabilities are empty, and NoNewPrivileges is enabled."
+    },
+    {
+      "assessment": "DeviceAllow=",
+      "reason": "The analyzer's read-only RTC device comes from PrivateDevices' minimal private device set; the application has no device requirement and receives no device-related capabilities."
+    },
+    {
+      "assessment": "SystemCallFilter=~@clock",
+      "reason": "Bun's timers and event loop require ordinary clock syscalls; this group remains unfiltered until an exact-runtime syscall trace proves a safe narrower set."
+    },
+    {
+      "assessment": "SystemCallFilter=~@cpu-emulation",
+      "reason": "A broad syscall filter is deferred for Bun 1.3.14 compatibility because the measured workload has not established that every @cpu-emulation denial is safe."
+    },
+    {
+      "assessment": "SystemCallFilter=~@debug",
+      "reason": "Debug syscalls are already constrained by empty capabilities, ProtectProc=invisible, and the absence of CAP_SYS_PTRACE; a Bun-compatible syscall denylist is deferred."
+    },
+    {
+      "assessment": "SystemCallFilter=~@module",
+      "reason": "Module operations require privileges absent from the locked service; ProtectKernelModules and the empty capability set make an additional group filter inapplicable."
+    },
+    {
+      "assessment": "SystemCallFilter=~@mount",
+      "reason": "Mount operations require privileges absent from the locked service, while PrivateMounts and ProtectSystem=strict enforce the relevant filesystem boundary."
+    },
+    {
+      "assessment": "SystemCallFilter=~@obsolete",
+      "reason": "An @obsolete denylist is deferred until Bun 1.3.14 and its native dependencies are traced across startup, sustained traffic, and shutdown."
+    },
+    {
+      "assessment": "SystemCallFilter=~@privileged",
+      "reason": "Privileged syscalls are already constrained by the non-root identity, empty capability set, and NoNewPrivileges, so an additional group filter is inapplicable."
+    },
+    {
+      "assessment": "SystemCallFilter=~@raw-io",
+      "reason": "Raw I/O is unavailable because PrivateDevices is enabled and CAP_SYS_RAWIO is absent, so an additional group filter is inapplicable."
+    },
+    {
+      "assessment": "SystemCallFilter=~@reboot",
+      "reason": "Reboot syscalls are unavailable to the locked service without CAP_SYS_BOOT, so an additional group filter is inapplicable."
+    },
+    {
+      "assessment": "SystemCallFilter=~@resources",
+      "reason": "Resource escalation is unavailable without CAP_SYS_RESOURCE, while MemoryMax, TasksMax, and LimitNOFILE bound the service; a broader filter is deferred for ordinary runtime resource calls."
+    },
+    {
+      "assessment": "SystemCallFilter=~@swap",
+      "reason": "Swap control is unavailable to the non-root service without CAP_SYS_ADMIN, so an additional group filter is inapplicable."
+    },
+    {
+      "assessment": "IPAddressDeny=",
+      "reason": "A fixed IP allowlist cannot cover hostname-selected MUD endpoints while retaining the required Caddy loopback hop; address families, capabilities, and target policy enforce the networking boundary instead."
+    }
+  ]
+}

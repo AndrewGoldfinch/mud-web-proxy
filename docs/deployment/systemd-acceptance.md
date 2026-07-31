@@ -133,6 +133,34 @@ explains whether it is required application networking, inapplicable to the
 locked non-root service, or a measured compatibility deferral. An unexplained
 residual blocks acceptance.
 
+### Recorded Ubuntu 26.04 measurement
+
+The completed clean-host measurement used systemd `259.5-0ubuntu3`. Its
+exposure was `2.8` in the `OK` band, so the checked-in regression maximum is
+`2.9`. The hostname-based `mwp-mud.test` session succeeded with
+`RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`; `AF_NETLINK` is not
+required.
+
+The 50-session workload sustained bidirectional traffic for at least 60
+seconds and every client observed close code 1001 with reason
+`Server restarting`. The resource capture was:
+
+| Property          | Measured value |
+| ----------------- | -------------- |
+| `MemoryCurrent`   | 36,569,088 B   |
+| `MemoryPeak`      | 37,359,616 B   |
+| `TasksCurrent`    | 6              |
+| `TasksMax`        | 128            |
+| `FileDescriptors` | 116            |
+| `LimitNOFILE`     | 1,024          |
+
+The unit-before, parent-before, load, and terminal parent `memory.events`
+captures all recorded `low=0`, `high=0`, `max=0`, `oom=0`, `oom_kill=0`,
+`oom_group_kill=0`, and `sock_throttled=0`. No counter incremented during the
+workload or graceful shutdown. The 37,359,616-byte peak leaves substantially
+more than 20% headroom below `MemoryMax=512M`, so the measured profile does
+not require a resource-limit revision.
+
 ## Final run: verify the recorded threshold
 
 Measurement changes the first VM. Create a new clean `ubuntu-26-04-x64`
