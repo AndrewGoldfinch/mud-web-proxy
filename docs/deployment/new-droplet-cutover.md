@@ -112,7 +112,24 @@ Before a declared low-traffic window, the production owner must:
    system Bun.
 5. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
    according to `systemd.md`. Verify artifact checksum and provenance before
-   extraction, then follow its immutable-release and atomic-activation rules.
+   extraction, install the unit, and keep it inactive. Record the service
+   state and require it to be exactly `inactive`:
+
+   ```bash
+   PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
+   [[ "$PROXY_STATE" == "inactive" ]]
+   ```
+
+   Run only `Atomic current-link activation`. After the link swap, record the
+   service state again and require it to be exactly `inactive`:
+
+   ```bash
+   PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
+   [[ "$PROXY_STATE" == "inactive" ]]
+   ```
+
+   `Apply an activated release` is forbidden until the final App Attest
+   transfer gate.
 6. Semantically migrate the environment and referenced non-TLS secret files
    as described in the transfer inventory.
 7. Resolve the legacy App Attest path, take the validated pre-stop safety
