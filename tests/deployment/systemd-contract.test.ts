@@ -44,7 +44,15 @@ describe('native systemd identity and process contract', () => {
       'ExecStart',
       '/opt/mud-web-proxy/current/runtime/bin/bun /opt/mud-web-proxy/current/dist/wsproxy.js',
     );
-    expect(unit).not.toMatch(/^ExecStop=/m);
+    for (const name of [
+      'ExecStop',
+      'PrivateNetwork',
+      'IPAddressDeny',
+      'MemoryDenyWriteExecute',
+      'SystemCallFilter',
+    ]) {
+      expect(directiveValues(unit, name)).toEqual([]);
+    }
   });
 
   test('applies the approved state, sandbox, and capability boundary', () => {
@@ -79,9 +87,6 @@ describe('native systemd identity and process contract', () => {
     }
     requireDirective(unit, 'CapabilityBoundingSet', '');
     requireDirective(unit, 'AmbientCapabilities', '');
-    expect(unit).not.toContain('DynamicUser=yes');
-    expect(unit).not.toContain('PrivateNetwork=true');
-    expect(unit).not.toContain('MemoryDenyWriteExecute=true');
   });
 
   test('bounds restart, shutdown, memory, tasks, and descriptors', () => {
