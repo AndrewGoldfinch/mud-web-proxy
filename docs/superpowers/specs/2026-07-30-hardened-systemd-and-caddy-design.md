@@ -235,6 +235,13 @@ Acceptance must show that SIGTERM with a real WebSocket/MUD session:
 5. exits before `TimeoutStopSec`; and
 6. is not recorded as a timeout or SIGKILL.
 
+The deployed service and synthetic release remain Bun-only. The acceptance
+runner builds the two TypeScript clients for Node, leaves the actual npm `ws`
+implementation external, and runs them with checksum-verified Node 22.21.1
+outside `/opt/mud-web-proxy`. This test-only runtime is required because Bun
+1.3.14 reports a wire-level close code 1001 as callback code 1000; the Node
+clients must directly observe code 1001 and reason `Server restarting`.
+
 ## State and filesystem boundary
 
 The unit sets:

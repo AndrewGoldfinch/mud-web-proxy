@@ -1,5 +1,23 @@
 #!/usr/bin/env bash
 
+archive_matches_sha256_manifest() {
+  [[ "$#" -eq 2 ]] || return 1
+
+  local archive="$2"
+  local manifest="$1"
+  local -a checksums
+
+  [[ -f "${manifest}" && -f "${archive}" ]] || return 1
+  mapfile -t checksums < <(
+    awk -v archive="$(basename "${archive}")" \
+      '$2 == archive { print $1 }' "${manifest}"
+  )
+  [[ "${#checksums[@]}" -eq 1 && "${checksums[0]}" =~ ^[0-9a-f]{64}$ ]] ||
+    return 1
+  printf '%s  %s\n' "${checksums[0]}" "${archive}" |
+    sha256sum --check --status
+}
+
 tree_has_no_writable_files_or_directories() {
   local writable
 

@@ -23,6 +23,12 @@ test "$(uname -m)" = x86_64
 test "$(awk '/MemTotal/ {print ($2 >= 900000 && $2 <= 1200000)}' /proc/meminfo)" = 1
 ```
 
+The install phase downloads Node 22.21.1 from the official Node distribution,
+verifies its archive against the official `SHASUMS256.txt`, and extracts it
+under `/root` solely to run the two acceptance clients. Node is not installed
+in a system path, copied into the synthetic release, or used by the systemd
+unit. The application release and service remain pinned to Bun 1.3.14.
+
 The install phase refuses to run if any of these production-shaped paths
 exists. The acknowledgement cannot override this check:
 
@@ -163,6 +169,8 @@ Copy the evidence directory off the Droplet before cleanup. Review
 JSON; `resources.txt`, all `memory-events-*.txt` files,
 `memory-events-cgroups.txt`, `port-6200.txt`, `mock-mud-firewall.txt`, and
 `mock-mud.log`, `mount-boundary.txt`, and `caddy-local-root.crt`; the
+`node-acceptance-runtime.txt`, `node-SHASUMS256.txt`, and
+`node-client-build.json`; the
 `acceptance-client.log`, `load-client.log`, and `restart-wss-client.log`; the
 `spoof-probe-journal.txt`, `mud-web-proxy-journal.txt`, and
 `system-journal.txt`; and `pre-reboot-status.txt`, `pre-reboot-journal.txt`,

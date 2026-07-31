@@ -15,6 +15,11 @@ readonly ACCEPTANCE_PHASE="${MWP_ACCEPTANCE_PHASE:-install}"
 readonly EVIDENCE_DIR="/root/mwp-105-evidence-$(date -u +%Y%m%dT%H%M%SZ)"
 readonly RESUME_FILE=/root/mwp-105-acceptance-resume
 readonly BUN_VERSION=1.3.14
+readonly NODE_ACCEPTANCE_VERSION=22.21.1
+readonly NODE_ACCEPTANCE_ARCHIVE="node-v${NODE_ACCEPTANCE_VERSION}-linux-x64.tar.gz"
+readonly NODE_ACCEPTANCE_DIST_URL="https://nodejs.org/dist/v${NODE_ACCEPTANCE_VERSION}"
+readonly NODE_ACCEPTANCE_RUNTIME_ROOT="/root/mwp-105-node-${NODE_ACCEPTANCE_VERSION}"
+readonly NODE_ACCEPTANCE_CLIENT_ROOT="${REPO_ROOT}/node_modules/.cache/mwp-105-systemd-clients"
 readonly RELEASE_VERSION=systemd-acceptance
 readonly RUN_STARTED="$(date --iso-8601=seconds)"
 
@@ -27,6 +32,7 @@ load_client_pid=
 test_address=
 hosts_line=
 firewall_table_created=
+acceptance_node_bin=
 
 fail() {
   echo "systemd-acceptance: $*" >&2
@@ -112,6 +118,76 @@ install_caddy() {
     fail 'Caddy remained active after package installation'
   ! systemctl is-enabled --quiet caddy.service ||
     fail 'Caddy remained enabled after package installation'
+}
+
+install_node_acceptance_runtime() {
+  local archive
+  local archive_checksum
+  local download_root
+  local manifest
+  local source_bun
+  local ws_version
+
+  [[ ! -e "${NODE_ACCEPTANCE_RUNTIME_ROOT}" ]] ||
+    fail 'Node acceptance runtime path already exists'
+  [[ ! -e "${NODE_ACCEPTANCE_CLIENT_ROOT}" ]] ||
+    fail 'Node acceptance client build path already exists'
+  source_bun="$(command -v bun)" || fail 'Bun is not on PATH'
+  [[ "$("${source_bun}" --version)" == "${BUN_VERSION}" ]] ||
+    fail "Bun ${BUN_VERSION} is required"
+
+  download_root="$(mktemp -d /tmp/mwp-105-node.XXXXXX)"
+  manifest="${download_root}/SHASUMS256.txt"
+  archive="${download_root}/${NODE_ACCEPTANCE_ARCHIVE}"
+  curl --proto '=https' --tlsv1.2 --fail --location \
+    --silent --show-error --output "${manifest}" \
+    "${NODE_ACCEPTANCE_DIST_URL}/SHASUMS256.txt"
+  curl --proto '=https' --tlsv1.2 --fail --location \
+    --silent --show-error --output "${archive}" \
+    "${NODE_ACCEPTANCE_DIST_URL}/${NODE_ACCEPTANCE_ARCHIVE}"
+  archive_matches_sha256_manifest "${manifest}" "${archive}" ||
+    fail 'Node archive does not match the official SHA-256 manifest'
+  archive_checksum="$(sha256sum "${archive}" | awk '{ print $1 }')"
+
+  install -d -o root -g root -m 0700 "${NODE_ACCEPTANCE_RUNTIME_ROOT}"
+  tar --extract --gzip --file "${archive}" \
+    --directory "${NODE_ACCEPTANCE_RUNTIME_ROOT}" --strip-components=1
+  acceptance_node_bin="${NODE_ACCEPTANCE_RUNTIME_ROOT}/bin/node"
+  [[ "$("${acceptance_node_bin}" --version)" == \
+    "v${NODE_ACCEPTANCE_VERSION}" ]] ||
+    fail 'Node acceptance runtime has the wrong version'
+  ws_version="$(
+    cd "${REPO_ROOT}"
+    "${acceptance_node_bin}" -e \
+      'process.stdout.write(require("ws/package.json").version)'
+  )"
+
+  BUN_BIN="${source_bun}" bash \
+    "${REPO_ROOT}/tests/deployment/build-systemd-acceptance-clients.sh" \
+    "${NODE_ACCEPTANCE_CLIENT_ROOT}" \
+    "${EVIDENCE_DIR}/node-client-build.json"
+  "${acceptance_node_bin}" --check \
+    "${NODE_ACCEPTANCE_CLIENT_ROOT}/systemd-acceptance-client.js"
+  "${acceptance_node_bin}" --check \
+    "${NODE_ACCEPTANCE_CLIENT_ROOT}/systemd-load-client.js"
+
+  [[ ! -e "${INSTALL_ROOT}/current/runtime/bin/node" ]] ||
+    fail 'Node was copied into the synthetic release runtime'
+  install -o root -g root -m 0600 "${manifest}" \
+    "${EVIDENCE_DIR}/node-SHASUMS256.txt"
+  {
+    printf 'node-version=v%s\n' "${NODE_ACCEPTANCE_VERSION}"
+    printf 'node-archive=%s\n' "${NODE_ACCEPTANCE_ARCHIVE}"
+    printf 'node-archive-sha256=%s\n' "${archive_checksum}"
+    printf 'node-distribution=%s\n' "${NODE_ACCEPTANCE_DIST_URL}"
+    printf 'node-runtime-root=%s\n' "${NODE_ACCEPTANCE_RUNTIME_ROOT}"
+    printf 'client-build-root=%s\n' "${NODE_ACCEPTANCE_CLIENT_ROOT}"
+    printf 'ws-version=%s\n' "${ws_version}"
+  } >"${EVIDENCE_DIR}/node-acceptance-runtime.txt"
+  chmod 0600 "${EVIDENCE_DIR}/node-acceptance-runtime.txt"
+
+  find "${download_root}" -type f -delete
+  rmdir "${download_root}"
 }
 
 install_identity_and_unit() {
@@ -809,8 +885,8 @@ run_acceptance_client() {
     CADDY_CA_PATH="${EVIDENCE_DIR}/caddy-local-root.crt" \
     MUD_HOST="${TEST_MUD_NAME}" \
     MUD_PORT="${TEST_MUD_PORT}" \
-    "${INSTALL_ROOT}/current/runtime/bin/bun" \
-    "${REPO_ROOT}/tests/deployment/systemd-acceptance-client.ts" \
+    "${acceptance_node_bin}" \
+    "${NODE_ACCEPTANCE_CLIENT_ROOT}/systemd-acceptance-client.js" \
     >"${log_file}" 2>&1 &
   acceptance_client_pid=$!
 }
@@ -853,6 +929,7 @@ chown root:root "${EVIDENCE_DIR}"
 install_caddy
 install_identity_and_unit
 install_test_release
+install_node_acceptance_runtime
 install_test_state
 render_test_environment
 render_caddy
@@ -919,8 +996,8 @@ env \
   CADDY_CA_PATH="${EVIDENCE_DIR}/caddy-local-root.crt" \
   MUD_HOST="${TEST_MUD_NAME}" \
   MUD_PORT="${TEST_MUD_PORT}" \
-  "${INSTALL_ROOT}/current/runtime/bin/bun" \
-  "${REPO_ROOT}/tests/deployment/systemd-load-client.ts" \
+  "${acceptance_node_bin}" \
+  "${NODE_ACCEPTANCE_CLIENT_ROOT}/systemd-load-client.js" \
   >"${EVIDENCE_DIR}/load-client.log" 2>&1 &
 load_client_pid=$!
 wait_for_marker "${EVIDENCE_DIR}/load-client.log" \

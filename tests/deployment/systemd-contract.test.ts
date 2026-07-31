@@ -1,4 +1,5 @@
 import { describe, expect, test } from 'bun:test';
+import { createHash } from 'crypto';
 import {
   chmodSync,
   existsSync,
@@ -262,7 +263,123 @@ describe('Ubuntu acceptance preflight behavior', () => {
   });
 });
 
+interface BuildInput {
+  imports: Array<{ path: string; external?: boolean }>;
+}
+
+interface BuildOutput {
+  inputs: Record<string, { bytesInOutput: number }>;
+}
+
+interface BuildMetafile {
+  inputs: Record<string, BuildInput>;
+  outputs: Record<string, BuildOutput>;
+}
+
+describe('Node acceptance client build boundary', () => {
+  test('bundles local helpers but leaves npm ws for Node to load', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-node-clients-'),
+    );
+    const outputDirectory = path.join(directory, 'out');
+    const metafile = path.join(directory, 'metafile.json');
+    try {
+      const result = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/build-systemd-acceptance-clients.sh',
+          outputDirectory,
+          metafile,
+        ],
+        cwd: repoRoot,
+        env: { ...process.env, BUN_BIN: process.execPath },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode).toBe(0);
+
+      const metadata = JSON.parse(
+        readFileSync(metafile, 'utf8'),
+      ) as BuildMetafile;
+      const clientInputs = Object.entries(metadata.inputs).filter(([name]) =>
+        /systemd-(?:acceptance|load)-client\.ts$/.test(name),
+      );
+      expect(clientInputs).toHaveLength(2);
+      for (const [, input] of clientInputs) {
+        expect(
+          input.imports.some(
+            (dependency) =>
+              dependency.path === 'ws' && dependency.external === true,
+          ),
+        ).toBe(true);
+      }
+
+      const loadOutput = Object.entries(metadata.outputs).find(([name]) =>
+        name.endsWith('systemd-load-client.js'),
+      )?.[1];
+      expect(loadOutput).toBeDefined();
+      expect(
+        Object.entries(loadOutput?.inputs ?? {}).some(
+          ([name, input]) =>
+            name.endsWith('systemd-load-activity.ts') &&
+            input.bytesInOutput > 0,
+        ),
+      ).toBe(true);
+      expect(
+        existsSync(path.join(outputDirectory, 'systemd-acceptance-client.js')),
+      ).toBe(true);
+      expect(
+        existsSync(path.join(outputDirectory, 'systemd-load-client.js')),
+      ).toBe(true);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('systemd shutdown evidence predicates', () => {
+  test('accepts only one matching archive checksum from a manifest', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-node-manifest-'),
+    );
+    const archive = path.join(directory, 'node-v22.21.1-linux-x64.tar.gz');
+    const manifest = path.join(directory, 'SHASUMS256.txt');
+    const archiveBody = 'node acceptance archive\n';
+    const checksum = createHash('sha256').update(archiveBody).digest('hex');
+    const entry = `${checksum}  ${path.basename(archive)}\n`;
+    try {
+      writeFileSync(archive, archiveBody);
+      writeFileSync(manifest, entry);
+      expect(
+        runEvidenceFunction(
+          'archive_matches_sha256_manifest',
+          manifest,
+          archive,
+        ).exitCode,
+      ).toBe(0);
+
+      writeFileSync(manifest, entry.replace(checksum, '0'.repeat(64)));
+      expect(
+        runEvidenceFunction(
+          'archive_matches_sha256_manifest',
+          manifest,
+          archive,
+        ).exitCode,
+      ).not.toBe(0);
+
+      writeFileSync(manifest, entry + entry);
+      expect(
+        runEvidenceFunction(
+          'archive_matches_sha256_manifest',
+          manifest,
+          archive,
+        ).exitCode,
+      ).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('ignores symlink mode bits in an immutable tree', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-immutable-'),
