@@ -1,0 +1,30 @@
+# App Attest state overlay.
+#
+#   docker compose -f compose.yaml -f compose.appattest.yaml up -d
+#
+# Layer this only when App Attest is configured. The base stack deliberately
+# runs with no writable state, because the feature is off unless
+# APPATTEST_BUNDLE_ID and APPATTEST_TEAM_ID are set, and a service that needs
+# no persistent state should not be given a volume it will never write.
+
+services:
+  proxy:
+    volumes:
+      # The DIRECTORY, never /var/lib/mud-web-proxy/attested-keys.json.
+      # Persistence writes a sibling staging file and renames it into place,
+      # so a file-only mount fails on every write — and it fails at write
+      # time, not at start, so the stack looks healthy until the first
+      # registration is silently lost.
+      #
+      # Ownership is not set here and does not need to be. The image creates
+      # /var/lib/mud-web-proxy owned by 10001:10001 (Dockerfile), and Docker
+      # seeds an empty named volume from the image path it covers, including
+      # its ownership. A bind mount would NOT do this — the host directory
+      # arrives root-owned and the non-root process cannot write it, which is
+      # why the example uses a named volume.
+      #
+      # This mount stays writable despite `read_only: true` on the service.
+      - attested_keys:/var/lib/mud-web-proxy
+
+volumes:
+  attested_keys:

@@ -47,7 +47,26 @@ services:
     security_opt:
       - no-new-privileges:true
     depends_on:
-      - proxy
+      proxy:
+        condition: service_healthy
+    # Caddy's admin API listens on loopback:2019 by default and the Caddyfile
+    # does not disable it. Probing it proves the server is actually running
+    # its configuration, which `caddy version` would not.
+    healthcheck:
+      test:
+        ['CMD', 'wget', '--quiet', '--spider', 'http://127.0.0.1:2019/config/']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    # The default json-file driver keeps every byte forever. Filling the host
+    # disk with logs is the most common way a small self-hosted deployment
+    # dies, and it does so months after anyone last touched the stack.
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
 
   proxy:
     # Builds locally by default. Once MWP-102 publishes to GHCR, set
@@ -106,18 +125,47 @@ services:
     security_opt:
       - no-new-privileges:true
 
-    # App Attest state, when enabled, mounts HERE:
+    # Probed with bun rather than curl or wget: neither is guaranteed in the
+    # runtime image, but bun is the entrypoint, so it is certainly present.
+    # HTTP, not HTTPS, because this topology selects INBOUND_TLS_MODE=off.
     #
-    #   volumes:
-    #     - attested_keys:/var/lib/mud-web-proxy
+    # A draining proxy answers 503 {"status":"draining"} and is correctly
+    # reported unhealthy — it is not ready to serve. That does not restart
+    # it: Compose's restart policy responds to the container *exiting*, not
+    # to health status. In any case 3 x 30s of failures outlasts
+    # SHUTDOWN_DEADLINE_MS (15s), so the process exits before it could ever
+    # be marked unhealthy during a normal shutdown.
+    healthcheck:
+      test:
+        [
+          'CMD',
+          'bun',
+          '-e',
+          'const r = await fetch("http://127.0.0.1:6200/health"); process.exit(r.ok ? 0 : 1)',
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # Generous enough to cover dependency load and listener bind without
+      # reporting a false failure on a slow host.
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '5'
+
+    # App Attest state is NOT mounted here. The feature is off unless
+    # configured, and with it off the proxy needs no writable state at all —
+    # so the default stack runs with a read-only root and no state volume.
     #
-    # The target is the DIRECTORY, never the attested-keys.json file inside
-    # it. Persistence writes a sibling staging file and renames it into
-    # place, so a file-only mount makes every write fail. A volume mounted
-    # over this path stays writable despite read_only above.
+    # To enable it, layer the override, which adds the volume:
     #
-    # The volume itself, and making it writable by 10001:10001, belong to
-    # MWP-101. Nothing here should be uncommented without that work.
+    #   docker compose -f compose.yaml -f compose.appattest.yaml up -d
+    #
+    # An override is used rather than a commented block because a comment
+    # cannot be tested and drifts silently; the override file is real
+    # configuration that `docker compose config` validates.
 
 networks:
   edge:
