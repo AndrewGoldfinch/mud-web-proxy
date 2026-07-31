@@ -622,6 +622,35 @@ must record representative production `MemoryCurrent`, `MemoryPeak`, task,
 descriptor, and `memory.events` measurements before these values are treated
 as production sizing.
 
+#### Steady-state memory observation
+
+`MemoryCurrent` on its own cannot distinguish a service resting well under
+its ceiling from one being reclaimed at it repeatedly. The cgroup event
+counters are what separate the two:
+
+```bash
+systemctl show mud-web-proxy \
+  -p MemoryCurrent -p MemoryPeak -p TasksCurrent -p LimitNOFILE
+cat /sys/fs/cgroup/system.slice/mud-web-proxy.service/memory.events
+```
+
+| Event increments            | Meaning                                                                |
+| --------------------------- | ---------------------------------------------------------------------- |
+| `oom`, `oom_kill`, or `max` | The hard ceiling is being reached. Sessions are being dropped; resize. |
+| `high`                      | `MemoryHigh` throttled allocation. Review before it becomes an `oom`.  |
+| none                        | Operating inside the envelope.                                         |
+
+During a cutover this is a gate rather than a diagnostic: an `oom`,
+`oom_kill`, or `max` increment blocks native-deployment acceptance outright,
+and a `high` increment requires explicit review. See
+[Production resource observation](new-droplet-cutover.md#production-resource-observation)
+for the 24-hour schedule and the fail-closed recovery.
+
+Change these limits through the MWP-105 resource design, not the unit alone.
+They are one set: `LimitNOFILE=1024` is budgeted against
+`MAX_SESSIONS_GLOBAL=200`, so raising the session cap without the descriptor
+limit exhausts descriptors before the cap is reached.
+
 The unit deliberately permits only `AF_UNIX`, `AF_INET`, and `AF_INET6`.
 `AF_NETLINK` is not a speculative allowance. The Ubuntu acceptance test uses
 the hostname `mwp-mud.test` rather than an IP literal, so its WSS/session

@@ -11,6 +11,14 @@ bun.lock
 # .git/info/exclude, so it must be told separately.
 .claude/
 
+# The same applies to the other two agent-owned trees. `.worktrees/` holds
+# linked worktrees — separate checkouts of this repository — and
+# `.superpowers/` is an agent workspace that self-ignores through its own
+# .gitignore. Both are invisible to git here but not to prettier, so
+# `bun run format` fails locally on files CI never sees.
+.worktrees/
+.superpowers/
+
 # Runtime state the app writes, not source. The shutdown flush (MWP-96) creates
 # this on every clean exit, so without this entry anyone who starts and stops the
 # server locally fails `bun run format`. Gitignored, but prettier does not read

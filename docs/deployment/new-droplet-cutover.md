@@ -588,6 +588,64 @@ following before accepting the cutover:
 Record acceptance evidence, the final checksum/count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
 
+## Production resource observation
+
+The MWP-105 limits were measured on a clean single-vCPU Ubuntu 26.04 host
+under synthetic load, not under production traffic. Accepting them without
+observing real traffic assumes the two match; this gate is what makes that
+an observation rather than an assumption.
+
+It runs inside the already-approved old-Droplet retention window and does
+not extend it. Deleting the old Droplet before this completes removes the
+rollback target for the failure this gate exists to detect.
+
+Record these five values at three points — immediately after routing, after
+representative traffic, and at 24 hours:
+
+```bash
+systemctl show mud-web-proxy \
+  -p MemoryCurrent -p MemoryPeak -p TasksCurrent -p LimitNOFILE
+cat /sys/fs/cgroup/system.slice/mud-web-proxy.service/memory.events
+```
+
+Retain both outputs with the acceptance evidence. `memory.events` is the
+decisive one: `MemoryCurrent` alone cannot distinguish a service sitting
+comfortably under its ceiling from one being repeatedly reclaimed at it.
+
+### Interpreting the result
+
+| Event increments              | Meaning                                                              |
+| ----------------------------- | -------------------------------------------------------------------- |
+| `oom`, `oom_kill`, or `max`   | **Blocks acceptance.** Abort and run the fail-closed recovery below. |
+| `high`                        | Requires explicit review before acceptance.                          |
+| none, peaks below the profile | Accepted.                                                            |
+
+An `oom`, `oom_kill`, or `max` increment means `MemoryMax=512M` is being
+reached under real traffic. That is a sizing error, not a transient: the
+service is being killed or stalled while serving. Abort acceptance and
+execute the existing fail-closed recovery — the old Droplet is still the
+rollback target precisely because this window has not closed.
+
+A `high` increment means `MemoryHigh=384M` throttled allocation without
+reaching the hard ceiling. The service survives, so this does not block
+automatically, but it must be reviewed rather than waved through: it is the
+signal that appears before an `oom` on the next traffic peak.
+
+Compare the observed peaks against the Task 5 clean-host profile in
+`tests/deployment/systemd-security-baseline.json` and the sampled figures in
+[Systemd acceptance](systemd-acceptance.md). A production peak materially
+above the clean-host profile means the synthetic load under-represented real
+traffic, and the profile — not just the limit — needs revisiting.
+
+### Changing a limit
+
+Update the MWP-105 resource design first, then the unit. `MemoryHigh`,
+`MemoryMax`, `TasksMax`, and `LimitNOFILE` are a set, not independent knobs:
+`LimitNOFILE=1024` is budgeted against `MAX_SESSIONS_GLOBAL=200`, so raising
+the session cap without raising the descriptor limit exhausts descriptors
+before the session cap is ever reached. Editing the unit alone leaves the
+design describing a system that no longer exists.
+
 ## Infrastructure rollback
 
 The old Droplet is a rollback target only while it remains functional and the
