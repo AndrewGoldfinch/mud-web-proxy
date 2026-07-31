@@ -113,23 +113,33 @@ Before a declared low-traffic window, the production owner must:
 5. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
    according to `systemd.md`. Verify artifact checksum and provenance before
    extraction, install the unit, and keep both the proxy and Caddy inactive.
-   Record both service states and require each to be exactly `inactive`:
+   On the new host, run this as root to record both service states and require
+   both to be exactly `inactive`:
 
    ```bash
+   NEW_HOST=production-new
+   : "${NEW_HOST:?}"
+   ssh "$NEW_HOST" 'sudo bash -s' <<'EOF'
+   set -euo pipefail
    PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
-   [[ "$PROXY_STATE" == "inactive" ]]
    CADDY_STATE="$(systemctl is-active caddy || true)"
-   [[ "$CADDY_STATE" == "inactive" ]]
+   [[ "$PROXY_STATE" == "inactive" && "$CADDY_STATE" == "inactive" ]]
+   EOF
    ```
 
-   Run only `Atomic current-link activation`. After the link swap, record both
-   service states again and require each to be exactly `inactive`:
+   As root on the new host, run only `Atomic current-link activation`. After
+   the link swap, again run this as root on the new host to record both service
+   states and require both to be exactly `inactive`:
 
    ```bash
+   NEW_HOST=production-new
+   : "${NEW_HOST:?}"
+   ssh "$NEW_HOST" 'sudo bash -s' <<'EOF'
+   set -euo pipefail
    PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
-   [[ "$PROXY_STATE" == "inactive" ]]
    CADDY_STATE="$(systemctl is-active caddy || true)"
-   [[ "$CADDY_STATE" == "inactive" ]]
+   [[ "$PROXY_STATE" == "inactive" && "$CADDY_STATE" == "inactive" ]]
+   EOF
    ```
 
    `Apply an activated release` is forbidden until the final App Attest
@@ -582,18 +592,29 @@ timestamp. Start the old-Droplet retention clock only after acceptance.
 
 The old Droplet is a rollback target only while it remains functional and the
 reversal commands remain available in the private record. If acceptance fails
-before new public traffic is served, stop the new services, run the recorded
-routing reverse command if it was applied, restart the old service with its
-recorded command, restore old ingress, and verify old-host health and a
-complete client session.
+before new public traffic is served, first run this authoritative gate. It
+must exit zero before any old-host mutation, old-service restart, ingress
+restoration, or routing reversal:
+
+```bash
+: "${NEW_HOST:?}"
+ssh "$NEW_HOST" \
+  'sudo systemctl stop mud-web-proxy caddy &&
+   ! systemctl is-active --quiet mud-web-proxy &&
+   ! systemctl is-active --quiet caddy'
+```
+
+Only then run the recorded routing reverse command if it was applied, restart
+the old service with its recorded command, restore old ingress, and verify
+old-host health and a complete client session.
 
 If the new host has served public traffic, its App Attest store may contain
 new registrations or higher assertion counters. Use this complete reverse
 transfer before restarting the old service or reversing routing. It stops the
-new proxy and waits for exit, records and validates the new store, then uses a
-mode-`0600` unique temporary file in the old path's directory and the original
-recorded numeric destination owner and mode. A partial transfer cannot replace
-the old live file:
+new proxy and Caddy and verifies both are inactive, records and validates the
+new store, then uses a mode-`0600` unique temporary file in the old path's
+directory and the original recorded numeric destination owner and mode. A
+partial transfer cannot replace the old live file:
 
 ```bash
 set -euo pipefail
@@ -609,8 +630,9 @@ OLD_KEYS_DIR="$(dirname -- "$OLD_KEYS_PATH")"
 OLD_STAT_RECORD="$STAGING_DIR/attested-keys.pre-stop.stat"
 
 ssh "$NEW_HOST" \
-  'sudo systemctl stop mud-web-proxy &&
-   if sudo systemctl is-active --quiet mud-web-proxy; then exit 1; fi'
+  'sudo systemctl stop mud-web-proxy caddy &&
+   ! systemctl is-active --quiet mud-web-proxy &&
+   ! systemctl is-active --quiet caddy'
 
 REVERSE_LOCAL_TEMP=
 REMOTE_REVERSE_TEMP=

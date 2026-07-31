@@ -410,8 +410,9 @@ Rollback:
    direct-child path validation;
 3. creates a unique same-filesystem temporary symlink with trap cleanup and
    atomically renames it over `current`;
-4. restarts `mud-web-proxy.service`; and
-5. repeats health, WSS, and mock-MUD validation.
+4. ends the current-link procedure after the rename; then
+5. runs the separate `Apply an activated release` phase, which restarts
+   `mud-web-proxy.service` and repeats health, WSS, and mock-MUD validation.
 
 No download, dependency installation, package-manager resolution, or DNS
 lookup for artifacts occurs during rollback.

@@ -280,7 +280,7 @@ Rollback performs no download, dependency installation, or package-manager resol
 Run this procedure as root. It reads the persistent record, rejects an empty or
 malformed target, repeats the complete release/runtime validation, creates a
 unique temporary symlink under the installation root, atomically reverses
-`current`, and restarts only after the rename succeeds:
+`current`, and ends after the rename succeeds:
 
 ```bash
 set -euo pipefail
@@ -361,11 +361,11 @@ ln -s "$PREVIOUS_TARGET" "$LINK_TEMP_DIR/current"
 mv -Tf -- "$LINK_TEMP_DIR/current" "$CURRENT"
 rmdir -- "$LINK_TEMP_DIR"
 LINK_TEMP_DIR=
-
-systemctl restart mud-web-proxy
 ```
 
-Validate `/health`, WSS, and a mock-MUD session after rollback.
+After the current-link procedure exits zero, run the separate
+`Apply an activated release` phase, then validate `/health`, WSS, and a
+mock-MUD session.
 
 ## Retention and pruning
 

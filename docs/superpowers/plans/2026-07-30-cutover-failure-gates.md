@@ -69,7 +69,10 @@ PRE_STAGE="$(
 [[ -n "$SYSTEMD_LINK_PHASE" ]]
 ! grep -Eq 'systemctl (start|stop|restart)' <<<"$SYSTEMD_LINK_PHASE"
 grep -Fq 'Atomic current-link activation' <<<"$PRE_STAGE"
-grep -Fq 'systemctl is-active' <<<"$PRE_STAGE"
+grep -Fq "sudo bash -s" <<<"$PRE_STAGE"
+grep -Fq 'CADDY_STATE' <<<"$PRE_STAGE"
+grep -Fq '[[ "$PROXY_STATE" == "inactive" && "$CADDY_STATE" == "inactive" ]]' \
+  <<<"$PRE_STAGE"
 ```
 
 Expected: FAIL because the merged guide has only the monolithic
@@ -119,18 +122,22 @@ Replace step 5 under `Pre-stage the new host` with requirements that:
 
 - the verified release and MWP-105 files are installed;
 - the unit is installed but inactive;
-- the operator records
-  `systemctl is-active mud-web-proxy || true` and requires exactly `inactive`;
+- both before/after state checks run as root on the new host, start with
+  `set -euo pipefail`, capture proxy and Caddy states, and use one combined
+  final assertion requiring both to be exactly `inactive`;
 - only `Atomic current-link activation` is run;
-- the same state check after the link swap again requires `inactive`; and
+- the same combined state check after the link swap again requires both to be
+  exactly `inactive`; and
 - `Apply an activated release` is forbidden until the final App Attest
   transfer gate.
 
-Use this exact state check in the prose:
+Use this exact state check in both pre-stage blocks:
 
 ```bash
+set -euo pipefail
 PROXY_STATE="$(systemctl is-active mud-web-proxy || true)"
-[[ "$PROXY_STATE" == "inactive" ]]
+CADDY_STATE="$(systemctl is-active caddy || true)"
+[[ "$PROXY_STATE" == "inactive" && "$CADDY_STATE" == "inactive" ]]
 ```
 
 - [ ] **Step 4: Run the green semantic audit**
