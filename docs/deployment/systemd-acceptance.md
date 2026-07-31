@@ -81,18 +81,40 @@ both health paths, and a loopback-only proxy socket. It writes
 
 ## Convert measurement to a checked-in baseline
 
-Retain the complete first-run evidence. Create
-`tests/deployment/systemd-security-baseline.json` from exactly one retained
-`systemd-security.txt`; capture the package and score rather than
-transcribing them:
+Retain the complete first-run evidence. Set `EVIDENCE_DIR` to the one
+directory printed by the measurement run. Create
+`tests/deployment/systemd-security-baseline.json` from its captured
+`systemd-security-measurement.json`; do not re-query a mutable live package or
+score after the run. The retained `systemd-security.txt` corroborates the
+captured score and supplies the residual assessments.
 
 ```bash
-systemd_package="$(dpkg-query -W -f='${Version}\n' systemd)"
-security_report="$(find /root -maxdepth 2 -type f -path '/root/mwp-105-evidence-*/systemd-security.txt' -print)"
-test "$(printf '%s\n' "${security_report}" | wc -l)" -eq 1
-measured_exposure="$(sed -nE 's/.*Overall exposure level for mud-web-proxy.service: ([0-9]+\.[0-9]+).*/\1/p' "${security_report}")"
-test "$(printf '%s\n' "${measured_exposure}" | wc -l)" -eq 1
+set -euo pipefail
+: "${EVIDENCE_DIR:?set this to the measurement evidence directory}"
+[[ "$EVIDENCE_DIR" == /root/mwp-105-evidence-* ]]
+[[ -d "$EVIDENCE_DIR" && ! -L "$EVIDENCE_DIR" ]]
+measurement_json="$EVIDENCE_DIR/systemd-security-measurement.json"
+security_report="$EVIDENCE_DIR/systemd-security.txt"
+[[ -f "$measurement_json" && ! -L "$measurement_json" && -s "$measurement_json" ]]
+[[ -f "$security_report" && ! -L "$security_report" && -s "$security_report" ]]
+measurement_fields="$(MEASUREMENT_JSON="$measurement_json" bun -e '
+  const value = await Bun.file(Bun.env.MEASUREMENT_JSON).json();
+  if (value.image !== "ubuntu-26-04-x64" || value.osVersion !== "26.04" ||
+      value.architecture !== "x86_64" ||
+      typeof value.systemdPackage !== "string" ||
+      !/^[0-9]/.test(value.systemdPackage) ||
+      !Number.isFinite(value.measuredExposure) ||
+      !Number.isInteger(value.measuredExposure * 10)) {
+    throw new Error("invalid captured security measurement");
+  }
+  process.stdout.write([value.systemdPackage, value.measuredExposure].join("\t"));
+')"
+IFS=$'\t' read -r systemd_package measured_exposure extra <<<"$measurement_fields"
+[[ -n "$systemd_package" && "$measured_exposure" =~ ^[0-9]+\.[0-9]$ && -z "${extra:-}" ]]
+report_exposure="$(sed -nE 's/.*Overall exposure level for mud-web-proxy.service: ([0-9]+\.[0-9]+).*/\1/p' "$security_report")"
+[[ "$report_exposure" == "$measured_exposure" ]]
 maximum_exposure="$(awk -v score="${measured_exposure}" 'BEGIN { printf "%.1f", score + 0.1 }')"
+[[ "$maximum_exposure" =~ ^[0-9]+\.[0-9]$ ]]
 ```
 
 The JSON records literal `image: "ubuntu-26-04-x64"`, `osVersion: "26.04"`,
@@ -118,10 +140,16 @@ sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' M
 Verification rejects a missing baseline, host or systemd package mismatch, a
 non-`OK` assessment, or a score above the recorded maximum. It runs
 `systemd-analyze security --threshold=<maximumExposure>`; it does not derive a
-new threshold. On success, reboot, reconnect, and complete the second phase:
+new threshold. On success, reboot from the current SSH or console session:
 
 ```bash
 sudo systemctl reboot
+```
+
+After the Droplet reconnects, return to the same checkout and run the
+post-reboot phase. Do not paste this command into the pre-reboot shell block:
+
+```bash
 sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' MWP_SECURITY_MODE=verify MWP_ACCEPTANCE_PHASE=post-reboot bash tests/deployment/run-systemd-acceptance.sh
 ```
 

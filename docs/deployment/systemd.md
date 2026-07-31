@@ -170,13 +170,25 @@ install -D -o root -g root -m 0644 \
   deploy/sysusers.d/mud-web-proxy.conf \
   /usr/local/lib/sysusers.d/mud-web-proxy.conf
 systemd-sysusers mud-web-proxy.conf
-getent group mud-web-proxy
-getent passwd mud-web-proxy
-passwd -S mud-web-proxy
+service_group_gid="$(
+  getent group mud-web-proxy | awk -F: '
+    $1 == "mud-web-proxy" { print $3; found = 1 }
+    END { exit !found }
+  '
+)"
+[[ "$service_group_gid" =~ ^[0-9]+$ ]]
 getent passwd mud-web-proxy | awk -F: \
-  '$1 == "mud-web-proxy" && $4 == $3 &&
-   $6 == "/var/lib/mud-web-proxy" && $7 == "/usr/sbin/nologin"'
-passwd -S mud-web-proxy | awk '$2 == "L"'
+  -v group_gid="$service_group_gid" '
+    $1 == "mud-web-proxy" && $4 == group_gid &&
+    $6 == "/var/lib/mud-web-proxy" && $7 == "/usr/sbin/nologin" {
+      found = 1
+    }
+    END { exit !found }
+  '
+passwd -S mud-web-proxy | awk '
+  $1 == "mud-web-proxy" && $2 == "L" { found = 1 }
+  END { exit !found }
+'
 ```
 
 Install the unit and prepare a root-owned staging copy of the environment.
@@ -190,12 +202,6 @@ application is plaintext only on loopback and Caddy owns inbound TLS.
 install -D -o root -g root -m 0644 \
   deploy/systemd/mud-web-proxy.service \
   /etc/systemd/system/mud-web-proxy.service
-install -o root -g root -m 0600 \
-  config/mud-web-proxy.env.systemd.example \
-  /root/mud-web-proxy.env.staging
-# Edit /root/mud-web-proxy.env.staging with the approved production values.
-install -o root -g mud-web-proxy -m 0640 \
-  /root/mud-web-proxy.env.staging /etc/mud-web-proxy.env
 systemctl daemon-reload
 systemd-analyze verify /etc/systemd/system/mud-web-proxy.service
 ```
@@ -208,28 +214,39 @@ firewall rule for port 6200.
 
 ```bash
 set -euo pipefail
+umask 077
 : "${PROXY_HOSTNAME:?set the public proxy hostname}"
 : "${MUD_HOSTNAME:?set the fixed MUD target hostname}"
+: "${EDITOR:?set EDITOR to a root-safe editor}"
 [[ "$PROXY_HOSTNAME" =~ ^[A-Za-z0-9.-]+$ ]]
 [[ "$MUD_HOSTNAME" =~ ^[A-Za-z0-9.-]+$ ]]
 
-staging="$(mktemp /etc/caddy/.Caddyfile.XXXXXX)"
-trap 'rm -f "$staging"' EXIT
+environment_staging="$(mktemp /root/.mud-web-proxy.env.staging.XXXXXX)"
+environment_rendered="$(mktemp /root/.mud-web-proxy.env.rendered.XXXXXX)"
+caddy_staging="$(mktemp /etc/caddy/.Caddyfile.XXXXXX)"
+cleanup() {
+  rm -f "$environment_staging" "$environment_rendered" "$caddy_staging"
+}
+trap cleanup EXIT
+install -o root -g root -m 0600 \
+  config/mud-web-proxy.env.systemd.example "$environment_staging"
+# Set every approved production value; do not add the forbidden TLS variables.
+"$EDITOR" "$environment_staging"
 sed \
   -e "s|proxy\\.example\\.com|$PROXY_HOSTNAME|g" \
   -e "s|mud\\.example\\.com|$MUD_HOSTNAME|g" \
-  /root/mud-web-proxy.env.staging >"/root/mud-web-proxy.env.rendered"
+  "$environment_staging" >"$environment_rendered"
 sed "s|proxy\\.example\\.com|$PROXY_HOSTNAME|g" \
-  deploy/caddy/Caddyfile.example >"$staging"
+  deploy/caddy/Caddyfile.example >"$caddy_staging"
 if grep -Eq \
   'proxy\.example\.com|mud\.example\.com|https://proxy\.example\.com' \
-  /root/mud-web-proxy.env.rendered "$staging"; then
+  "$environment_rendered" "$caddy_staging"; then
   echo 'unrendered deployment placeholder remains' >&2
   exit 1
 fi
 install -o root -g mud-web-proxy -m 0640 \
-  /root/mud-web-proxy.env.rendered /etc/mud-web-proxy.env
-install -o root -g root -m 0644 "$staging" /etc/caddy/Caddyfile
+  "$environment_rendered" /etc/mud-web-proxy.env
+install -o root -g root -m 0644 "$caddy_staging" /etc/caddy/Caddyfile
 caddy fmt --overwrite /etc/caddy/Caddyfile
 caddy validate --config /etc/caddy/Caddyfile
 systemctl stop caddy.service
@@ -531,7 +548,8 @@ and [backup guidance](https://docs.digitalocean.com/support/how-do-i-manually-ba
 
 Do not enable or start either service before the MWP-104 final App Attest
 transfer gate. At that gate, start the loopback proxy first, prove its health,
-then start Caddy and prove the HTTPS endpoint. If a gate fails, follow the
+then start Caddy and prove that its service is active. The linked post-routing
+gate proves public HTTPS/WSS. If a gate fails, follow the
 [cutover runbook's rollback procedure](new-droplet-cutover.md), which requires
 both new services to be inactive before restoring the old host.
 
@@ -540,8 +558,12 @@ systemctl enable mud-web-proxy.service caddy.service
 systemctl start mud-web-proxy.service
 curl --fail --silent --show-error http://127.0.0.1:6200/health
 systemctl start caddy.service
-curl --fail --silent --show-error "https://${PROXY_HOSTNAME}/health"
+systemctl is-active --quiet caddy.service
 ```
+
+The linked post-routing MWP-104 gate owns the public HTTPS/WSS probe. Do not
+use a public hostname curl here: before routing changes, it can reach the old
+host rather than this prepared host.
 
 For routine operation, use systemd directly. PM2 is unsupported and must not
 supervise `mud-web-proxy.service`; there must be one systemd-managed process,
@@ -554,6 +576,7 @@ systemctl status mud-web-proxy.service caddy.service --no-pager
 journalctl -u mud-web-proxy.service -u caddy.service -n 200 --no-pager
 journalctl -u mud-web-proxy.service --since '1 hour ago' --no-pager
 curl --fail --silent --show-error http://127.0.0.1:6200/health
+: "${PROXY_HOSTNAME:?set the public proxy hostname}"
 curl --fail --silent --show-error "https://${PROXY_HOSTNAME}/health"
 ss -ltnp 'sport = :6200'
 systemctl show mud-web-proxy.service \
