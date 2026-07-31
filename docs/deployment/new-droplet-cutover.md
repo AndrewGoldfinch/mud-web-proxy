@@ -362,10 +362,17 @@ ssh "$NEW_HOST" \
   == "700 mud-web-proxy:mud-web-proxy" ]]
 
 REMOTE_INSTALL_TEMP=
+NEW_SERVICES_MAY_BE_RUNNING=0
 cleanup() {
+  status=$?
   if [[ -n "$REMOTE_INSTALL_TEMP" ]]; then
     ssh "$NEW_HOST" "sudo rm -f -- '$REMOTE_INSTALL_TEMP'" || true
   fi
+  if ((status != 0 && NEW_SERVICES_MAY_BE_RUNNING == 1)); then
+    ssh "$NEW_HOST" \
+      'sudo systemctl stop mud-web-proxy caddy' || true
+  fi
+  return "$status"
 }
 trap cleanup EXIT
 
@@ -416,6 +423,7 @@ REMOTE_FINAL_STAT="$(
 [[ "$REMOTE_FINAL_SHA256" == "$LOCAL_FINAL_SHA256" ]]
 [[ "$REMOTE_FINAL_STAT" == "600 mud-web-proxy:mud-web-proxy" ]]
 
+NEW_SERVICES_MAY_BE_RUNNING=1
 ssh "$NEW_HOST" 'sudo systemctl start mud-web-proxy caddy'
 ssh "$NEW_HOST" \
   'curl --fail --silent --show-error http://127.0.0.1:6200/health >/dev/null'
@@ -425,12 +433,16 @@ POST_START_COUNT="$(
 )"
 [[ "$POST_START_COUNT" =~ ^[0-9]+$ ]]
 [[ "$POST_START_COUNT" == "$LOCAL_FINAL_COUNT" ]]
+NEW_SERVICES_MAY_BE_RUNNING=0
+trap - EXIT
 ```
 
 Do not execute the recorded routing-forward command unless this entire block
 exits zero. Thus a failed JSON, numeric-count, checksum, ownership, mode,
 service-start, loopback-health, or post-start count gate cannot be masked by a
-later command.
+later command. A nonzero service-start or later gate automatically attempts to
+stop both new services; the explicit recovery precondition remains
+authoritative.
 
 ## Failure before routing changes
 
@@ -441,13 +453,23 @@ temporary file, applies the recorded numeric owner and mode, atomically
 renames it over the configured path, and verifies the final destination.
 An interrupted SSH transfer leaves the live old-host store untouched:
 
+The procedure first stops and verifies inactivity of both new-host services.
+Failure of that precondition aborts recovery before any old-host mutation,
+restart, ingress restoration, or routing reversal.
+
 ```bash
 set -euo pipefail
 umask 077
 
+NEW_HOST=production-new
+: "${NEW_HOST:?}"
 : "${OLD_HOST:?}"
 : "${OLD_KEYS_PATH:?}"
 : "${STAGING_DIR:?}"
+ssh "$NEW_HOST" \
+  'sudo systemctl stop mud-web-proxy caddy &&
+   ! systemctl is-active --quiet mud-web-proxy &&
+   ! systemctl is-active --quiet caddy'
 SAFETY_STORE="$STAGING_DIR/attested-keys.pre-stop.json"
 SAFETY_COUNT_RECORD="$STAGING_DIR/attested-keys.pre-stop.count"
 SAFETY_SHA_RECORD="$STAGING_DIR/attested-keys.pre-stop.sha256"
