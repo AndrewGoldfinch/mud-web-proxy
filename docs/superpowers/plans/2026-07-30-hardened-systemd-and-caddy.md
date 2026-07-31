@@ -493,15 +493,14 @@ Run:
 ```bash
 bun test tests/deployment/systemd-contract.test.ts
 bun run check:config-docs
-bunx prettier --check \
-  config/mud-web-proxy.env.systemd.example \
-  deploy/caddy/Caddyfile.example \
-  deploy/systemd/mud-web-proxy.service \
-  tests/deployment/systemd-contract.test.ts
+bunx prettier --check tests/deployment/systemd-contract.test.ts
 git diff --check
 ```
 
-Expected: all commands PASS.
+Expected: all commands PASS. The semantic contract test and
+`check:config-docs` validate the deployment templates; this repository does
+not configure Prettier parsers for systemd units, Caddyfiles, or dotenv
+examples.
 
 - [ ] **Step 6: Commit**
 
