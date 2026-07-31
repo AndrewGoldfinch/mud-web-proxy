@@ -134,6 +134,7 @@ Before a declared low-traffic window, the production owner must:
 
    `Apply an activated release` is forbidden until the final App Attest
    transfer gate.
+
 6. Semantically migrate the environment and referenced non-TLS secret files
    as described in the transfer inventory.
 7. Resolve the legacy App Attest path, take the validated pre-stop safety
