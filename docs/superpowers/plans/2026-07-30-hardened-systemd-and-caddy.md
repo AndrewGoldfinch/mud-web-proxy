@@ -537,50 +537,53 @@ git commit -m "feat: add native Caddy and environment templates"
   - `systemd-load-client: graceful-close-observed`
   - evidence under a root-only directory printed by the shell runner.
 
-- [ ] **Step 1: Add failing source contracts for acceptance safety and
-      coverage**
+- [ ] **Step 1: Add failing behavioral contracts for acceptance preflight**
 
-Append:
+Import `existsSync` from `fs`, then append:
 
 ```typescript
-describe('Ubuntu acceptance harness contract', () => {
-  test('refuses existing installations even with the disposable ack', () => {
-    const script = readArtifact('tests/deployment/run-systemd-acceptance.sh');
-    expect(script).toContain('MWP_DISPOSABLE_VM_ACK');
-    for (const existing of [
+const runAcceptance = (
+  environment: Record<string, string>,
+): ReturnType<typeof Bun.spawnSync> =>
+  Bun.spawnSync({
+    cmd: ['bash', 'tests/deployment/run-systemd-acceptance.sh'],
+    cwd: repoRoot,
+    env: { ...process.env, ...environment },
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
+describe('Ubuntu acceptance preflight behavior', () => {
+  test('rejects an unsupported phase before mutating the host', () => {
+    const protectedPaths = [
       '/opt/mud-web-proxy',
       '/etc/mud-web-proxy.env',
       '/var/lib/mud-web-proxy',
       '/var/lib/mud-web-proxy-deploy',
-    ]) {
-      expect(script).toContain(existing);
-    }
-    expect(script).toContain('refusing non-clean host');
+    ];
+    const before = protectedPaths.map((candidate) => existsSync(candidate));
+    const result = runAcceptance({
+      MWP_ACCEPTANCE_PHASE: 'unsupported',
+      MWP_DISPOSABLE_VM_ACK: 'ERASE THIS CLEAN UBUNTU 26.04 VM',
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(
+      'unsupported MWP_ACCEPTANCE_PHASE: unsupported',
+    );
+    expect(protectedPaths.map((candidate) => existsSync(candidate))).toEqual(
+      before,
+    );
   });
 
-  test('tests hostname resolution, load, writes, drain, and reboot', () => {
-    const script = readArtifact('tests/deployment/run-systemd-acceptance.sh');
-    for (const marker of [
-      'mwp-mud.test',
-      'MAX_SESSIONS_PER_IP=100',
-      'SESSION_COUNT=50',
-      'memory.events',
-      'LimitNOFILE',
-      'nsenter',
-      'shutdown: completed',
-      'MWP_ACCEPTANCE_PHASE',
-      'post-reboot',
-    ]) {
-      expect(script).toContain(marker);
-    }
-    expect(script).not.toMatch(/TN_HOST=[0-9]/);
-  });
-
-  test('has one cleanup trap for every started helper and service', () => {
-    const script = readArtifact('tests/deployment/run-systemd-acceptance.sh');
-    expect(script).toContain('trap cleanup EXIT');
-    expect(script).toContain('systemctl stop mud-web-proxy caddy');
-    expect(script).toContain('kill \"${mock_mud_pid}\"');
+  test('requires the exact disposable-host acknowledgement', () => {
+    const result = runAcceptance({
+      MWP_ACCEPTANCE_PHASE: 'install',
+      MWP_DISPOSABLE_VM_ACK: '',
+    });
+    expect(result.exitCode).not.toBe(0);
+    expect(result.stderr.toString()).toContain(
+      'set the exact disposable VM acknowledgement',
+    );
   });
 });
 ```
@@ -600,8 +603,8 @@ Run:
 bun run test:systemd
 ```
 
-Expected: FAIL with `ENOENT` for
-`tests/deployment/run-systemd-acceptance.sh`.
+Expected: FAIL because the missing runner exits with Bash's file-not-found
+diagnostic instead of the required preflight diagnostics.
 
 - [ ] **Step 3: Create the single-session acceptance client**
 
@@ -760,10 +763,21 @@ cleanup() {
     kill "${mock_mud_pid}" >/dev/null 2>&1 || true
   fi
 }
+```
+
+Validate `MWP_ACCEPTANCE_PHASE` before every host or privilege check. In the
+`install` phase, call `require_disposable_host` before registering any trap;
+only a host that passes the complete clean-host gate may install:
+
+```bash
 trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 ```
+
+This ordering makes unsupported-phase, missing-acknowledgement, and
+existing-installation failures observable without stopping services or
+changing files.
 
 Implement the following functions with the stated fail-closed behavior:
 
@@ -977,7 +991,6 @@ git commit -m "test: add systemd host acceptance harness"
 - Modify: `docs/deployment/systemd.md`
 - Create: `docs/deployment/systemd-acceptance.md`
 - Modify: `README.md`
-- Modify: `tests/deployment/systemd-contract.test.ts`
 
 **Interfaces:**
 
@@ -986,50 +999,25 @@ git commit -m "test: add systemd host acceptance harness"
 - Produces: public installation/operations instructions and the clean-VM
   evidence checklist used in Task 5.
 
-- [ ] **Step 1: Add failing documentation contracts**
+- [ ] **Step 1: Record the documentation review checklist**
 
-Append one test that reads `docs/deployment/systemd.md`,
-`docs/deployment/systemd-acceptance.md`, and `README.md`, then requires:
+Before editing, record in the task report that the current guide still uses
+the future-tense MWP-105 handoff and that
+`docs/deployment/systemd-acceptance.md` is absent. The review checklist is:
 
-```typescript
-for (const required of [
-  'deploy/systemd/mud-web-proxy.service',
-  'deploy/sysusers.d/mud-web-proxy.conf',
-  'deploy/caddy/Caddyfile.example',
-  'config/mud-web-proxy.env.systemd.example',
-  'systemd-sysusers mud-web-proxy.conf',
-  'caddy validate --config /etc/caddy/Caddyfile',
-  'systemd-analyze verify',
-  'DynamicUser=yes',
-  'MAX_SESSIONS_GLOBAL=200',
-  'LimitNOFILE=1024',
-]) {
-  expect(systemdGuide).toContain(required);
-}
-expect(systemdGuide).not.toContain('MWP-105 supplies the systemd/Caddy files');
-expect(acceptanceGuide).toContain('ERASE THIS CLEAN UBUNTU 26.04 VM');
-expect(acceptanceGuide).toContain('MWP_SECURITY_MODE=measure');
-expect(acceptanceGuide).toContain('MWP_SECURITY_MODE=verify');
-expect(readme).not.toContain(
-  'The systemd unit and native release bundle land in MWP-105',
-);
-```
+- all four shipped artifact paths and their exact install commands;
+- `systemd-analyze verify` and Caddy validation;
+- the `DynamicUser=yes` prohibition;
+- the 200-session and 1024-descriptor limits;
+- the 512 MiB availability trade;
+- the measured security threshold plus 0.1; and
+- both acceptance modes and the exact disposable-host acknowledgement.
 
-Require the guides to describe `MemoryMax=512M` as an availability trade and
-the score threshold as measured plus 0.1.
+These are human-facing instructions, so do not add substring tests that
+merely freeze prose. The task reviewer and final whole-branch reviewer verify
+the checklist against the rendered documents.
 
-- [ ] **Step 2: Run the focused test and prove the future-tense handoff fails**
-
-Run:
-
-```bash
-bun run test:systemd
-```
-
-Expected: FAIL because `docs/deployment/systemd-acceptance.md` is absent or
-the existing guide still says MWP-105 will supply the files.
-
-- [ ] **Step 3: Update the native installation and operations guide**
+- [ ] **Step 2: Update the native installation and operations guide**
 
 In `docs/deployment/systemd.md`:
 
@@ -1077,7 +1065,7 @@ In `docs/deployment/systemd.md`:
 Do not duplicate the full new-Droplet cutover runbook. Link its state-transfer
 and rollback gates.
 
-- [ ] **Step 4: Write the clean-host acceptance guide**
+- [ ] **Step 3: Write the clean-host acceptance guide**
 
 Create `docs/deployment/systemd-acceptance.md` with:
 
@@ -1098,7 +1086,7 @@ Create `docs/deployment/systemd-acceptance.md` with:
 - a warning that production configuration and App Attest keys never enter the
   disposable test.
 
-- [ ] **Step 5: Update the README entry point**
+- [ ] **Step 4: Update the README entry point**
 
 Replace the native systemd future tense with:
 
@@ -1112,7 +1100,7 @@ validate changes on a disposable Ubuntu 26.04 host with
 
 Keep the separate MWP-103 release-bundle and MWP-104 cutover references.
 
-- [ ] **Step 6: Run documentation and repository checks**
+- [ ] **Step 5: Run documentation and repository checks**
 
 Run:
 
@@ -1126,7 +1114,7 @@ git diff --check
 
 Expected: all commands PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add README.md docs/deployment \
@@ -1196,6 +1184,13 @@ sudo env \
 Expected: the command runs the complete pre-reboot acceptance workload and
 unthresholded security measurement, then prints the evidence directory and
 `systemd-acceptance: reboot required`.
+
+Before rebooting, run the identical install-phase command a second time.
+Expected: it exits nonzero with `refusing non-clean host`, creates no new
+evidence directory, leaves `/root/mwp-105-acceptance-resume` unchanged, and
+does not stop or restart either enabled service. Retain this output as the
+behavioral proof that even the exact acknowledgement cannot bypass the
+existing-installation gate.
 
 Run:
 
@@ -1405,7 +1400,6 @@ Only paths changed by measured evidence appear in the commit.
 
 - Modify: `docs/deployment/new-droplet-cutover.md`
 - Modify: `docs/deployment/systemd.md`
-- Modify: `tests/deployment/systemd-contract.test.ts`
 
 **Interfaces:**
 
@@ -1413,9 +1407,10 @@ Only paths changed by measured evidence appear in the commit.
 - Produces: an explicit MWP-106 post-routing measurement gate and a fully
   verified MWP-105 branch.
 
-- [ ] **Step 1: Add a failing MWP-106 handoff assertion**
+- [ ] **Step 1: Record the MWP-106 handoff review checklist**
 
-Add a contract test requiring both deployment guides to contain all of:
+Before editing, record in the task report that the production guides do not
+yet require the 24-hour observation. Review the finished guides for all of:
 
 ```text
 MemoryCurrent
@@ -1427,21 +1422,12 @@ memory.events
 MAX_SESSIONS_GLOBAL=200
 ```
 
-Require the cutover guide to state that an `oom`, `oom_kill`, or `max` event
-blocks native-deployment acceptance and that a `high` event requires explicit
-review.
+The cutover guide must state that an `oom`, `oom_kill`, or `max` event blocks
+native-deployment acceptance and that a `high` event requires explicit
+review. Do not add automated substring tests for this human-facing prose;
+the task reviewer and final whole-branch reviewer perform the checklist.
 
-- [ ] **Step 2: Run the focused test and prove the production gate is absent**
-
-Run:
-
-```bash
-bun run test:systemd
-```
-
-Expected: FAIL on the missing 24-hour production measurement language.
-
-- [ ] **Step 3: Add the production observation gate**
+- [ ] **Step 2: Add the production observation gate**
 
 In `docs/deployment/new-droplet-cutover.md`, after public routing and before
 old-Droplet deletion:
@@ -1461,13 +1447,13 @@ already approved retention window and its owner/deletion date rules.
 Mirror the steady-state commands and interpretation in
 `docs/deployment/systemd.md`.
 
-- [ ] **Step 4: Update MWP-106 in Linear**
+- [ ] **Step 3: Update MWP-106 in Linear**
 
 Add a top-level MWP-106 comment containing the exact 24-hour measurement
 gate, the five values, and the event interpretation above. Do not rely only
 on a cross-reference to repository prose.
 
-- [ ] **Step 5: Run the complete pinned-runtime verification matrix**
+- [ ] **Step 4: Run the complete pinned-runtime verification matrix**
 
 Use Bun 1.3.14 on `PATH`, then run:
 
@@ -1498,7 +1484,7 @@ Expected:
 Do not rerun the destructive VM acceptance on the development host. Task 5's
 fresh VM evidence is the host verification.
 
-- [ ] **Step 6: Commit the handoff**
+- [ ] **Step 5: Commit the handoff**
 
 ```bash
 git add docs/deployment/new-droplet-cutover.md \
@@ -1507,7 +1493,7 @@ git add docs/deployment/new-droplet-cutover.md \
 git commit -m "docs: gate production systemd resource sizing"
 ```
 
-- [ ] **Step 7: Review the final diff against the specification**
+- [ ] **Step 6: Review the final diff against the specification**
 
 Run:
 
