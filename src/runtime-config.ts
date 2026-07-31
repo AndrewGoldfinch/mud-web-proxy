@@ -685,16 +685,6 @@ export const parseRuntimeConfig = (
 
   // ---- Cross-field validation ----
 
-  // TARGET_MODE=arbitrary requires enforced authentication. The client names
-  // the host, so an unauthenticated arbitrary mode is an open SSRF relay.
-  // Reserved-network rejection is applied on the connect path (MWP-88).
-  if (targetMode === 'arbitrary' && authMode === 'none') {
-    errors.push(
-      'TARGET_MODE=arbitrary requires AUTH_MODE=shared-secret. Without it, ' +
-        'any client could direct the proxy to connect to any host.',
-    );
-  }
-
   // TARGET_MODE=allowlist requires a non-empty, parseable ALLOWED_TARGETS.
   // An empty list must be a startup error, never a permissive fallback.
   if (targetMode === 'allowlist') {
@@ -921,6 +911,20 @@ export const parseRuntimeConfig = (
     errors.push(
       'REQUIRE_APP_AUTH=true requires App Attest to be configured. Set ' +
         'APPATTEST_BUNDLE_ID and APPATTEST_TEAM_ID, or unset REQUIRE_APP_AUTH.',
+    );
+  }
+
+  // TARGET_MODE=arbitrary requires enforced authentication. The client names
+  // the host, so an unauthenticated arbitrary mode is an open SSRF relay.
+  // Either a shared secret or a required, verified App Attest assertion
+  // satisfies this — both reject the upgrade before the client can name a
+  // target. Reserved-network rejection is applied on the connect path
+  // (MWP-88) regardless of which authentication path is used.
+  if (targetMode === 'arbitrary' && authMode === 'none' && !requireAppAuth) {
+    errors.push(
+      'TARGET_MODE=arbitrary requires AUTH_MODE=shared-secret or ' +
+        'REQUIRE_APP_AUTH=true. Without one of them, any client could ' +
+        'direct the proxy to connect to any host.',
     );
   }
 

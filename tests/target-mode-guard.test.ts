@@ -56,6 +56,37 @@ describe('arbitrary mode requires enforced authentication', () => {
       }),
     ).toThrow(/ARBITRARY_ALLOWED_PORTS/);
   });
+
+  test('starts with REQUIRE_APP_AUTH=true and no shared secret', () => {
+    // App Attest rejects the upgrade before the client can name a target,
+    // the same guarantee AUTH_MODE=shared-secret provides. Requiring a
+    // shared secret as well would be redundant, not safer.
+    expect(() =>
+      getRuntimeConfig({
+        ...base,
+        TARGET_MODE: 'arbitrary',
+        AUTH_MODE: 'none',
+        ARBITRARY_ALLOWED_PORTS: '23,4000-4100',
+        REQUIRE_APP_AUTH: 'true',
+        APPATTEST_BUNDLE_ID: 'com.example.app',
+        APPATTEST_TEAM_ID: 'ABCDE12345',
+      }),
+    ).not.toThrow();
+  });
+
+  test('refuses with AUTH_MODE=none and REQUIRE_APP_AUTH unset', () => {
+    // Neither authentication path is enforced; must still refuse.
+    expect(() =>
+      getRuntimeConfig({
+        ...base,
+        TARGET_MODE: 'arbitrary',
+        AUTH_MODE: 'none',
+        ARBITRARY_ALLOWED_PORTS: '23',
+        APPATTEST_BUNDLE_ID: 'com.example.app',
+        APPATTEST_TEAM_ID: 'ABCDE12345',
+      }),
+    ).toThrow(/AUTH_MODE|REQUIRE_APP_AUTH/);
+  });
 });
 
 describe('the supported modes still start', () => {
