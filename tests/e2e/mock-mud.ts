@@ -375,6 +375,14 @@ export class MockMUDServer extends EventEmitter {
     const cmd = data[offset + 1];
     const opt = data[offset + 2];
 
+    // Only WILL/WONT/DO/DONT carry an option byte. Everything else — SE,
+    // NOP, GA, AYT, and the IAC IAC escape for a literal 0xff — is two
+    // bytes. Consuming three for those ate the byte that followed, which
+    // is how a password arrived as "\xff\xf0ass".
+    if (cmd !== SB && (cmd < WILL || cmd > DONT)) {
+      return 2;
+    }
+
     console.log(`[MockMUD] Telnet: ${cmd.toString(16)} ${opt.toString(16)}`);
 
     if (cmd === DO) {

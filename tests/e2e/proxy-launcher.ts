@@ -25,6 +25,8 @@ export interface ProxyConfig {
   MUD_TLS_MODE?: string;
   AUTH_MODE?: string;
   PROXY_SHARED_SECRET?: string;
+  MAX_MESSAGES_PER_SECOND?: string;
+  MAX_MESSAGES_PER_SECOND_PER_IP?: string;
 }
 
 export async function startTestProxy(
@@ -54,6 +56,15 @@ export async function startTestProxy(
         // into the next suite ("Is port NNNN in use?").
         SHUTDOWN_GRACE_MS: '100',
         SHUTDOWN_DEADLINE_MS: '2000',
+        ...(extraEnv?.MAX_MESSAGES_PER_SECOND
+          ? { MAX_MESSAGES_PER_SECOND: extraEnv.MAX_MESSAGES_PER_SECOND }
+          : {}),
+        ...(extraEnv?.MAX_MESSAGES_PER_SECOND_PER_IP
+          ? {
+              MAX_MESSAGES_PER_SECOND_PER_IP:
+                extraEnv.MAX_MESSAGES_PER_SECOND_PER_IP,
+            }
+          : {}),
         AUTH_MODE: extraEnv?.AUTH_MODE || 'none',
         ...(extraEnv?.PROXY_SHARED_SECRET
           ? { PROXY_SHARED_SECRET: extraEnv.PROXY_SHARED_SECRET }

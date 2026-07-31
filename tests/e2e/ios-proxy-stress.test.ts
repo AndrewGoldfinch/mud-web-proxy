@@ -93,6 +93,13 @@ describe('Stress Tests', () => {
     const proxy = await startTestProxy(STRESS_PROXY_PORT + 1, {
       TN_HOST: 'localhost',
       TN_PORT: (STRESS_MUD_PORT + 1).toString(),
+      // This measures command throughput, not rate limiting. At the default
+      // 60/s a 100-command burst has ~40 frames silently dropped and they
+      // are never resent, so the test could only ever observe ~60 — close
+      // enough to its own >50 threshold to pass or fail on scheduling luck.
+      // Rate limiting has dedicated coverage in tests/message-rate-limit.ts.
+      MAX_MESSAGES_PER_SECOND: '1000',
+      MAX_MESSAGES_PER_SECOND_PER_IP: '4000',
     });
 
     const conn = new E2EConnection(makeConfig(STRESS_MUD_PORT + 1, 30000));
@@ -115,8 +122,6 @@ describe('Stress Tests', () => {
       }
 
       // Poll until all 100 land rather than betting they fit in a fixed 5s.
-      // Under a full suite run they intermittently did not, which made this
-      // the flakiest test in the repo.
       const deadline = Date.now() + 20000;
       while (
         Date.now() < deadline &&
@@ -127,9 +132,13 @@ describe('Stress Tests', () => {
       }
 
       const received = mock.getReceivedCommands();
-      // Should have received most commands (some may be batched)
+      // Every command must arrive, in order and unmerged. The previous >50
+      // bar was set around the rate limiter silently dropping ~40 of them,
+      // so it passed while nearly half the input was lost.
       const matchingCmds = received.filter((c) => c.startsWith('cmd_'));
-      expect(matchingCmds.length).toBeGreaterThan(50);
+      expect(matchingCmds.length).toBe(100);
+      expect(matchingCmds[0]).toBe('cmd_0');
+      expect(matchingCmds[99]).toBe('cmd_99');
 
       // Should have received echo responses
       const dataMessages = conn.getMessages().filter((m) => m.type === 'data');
