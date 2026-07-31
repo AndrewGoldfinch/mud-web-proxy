@@ -28,6 +28,18 @@ for ((sample = 1; sample <= sample_limit; sample += 1)); do
     "${systemctl_bin}" show -p TasksCurrent --value "${service}" \
       2>/dev/null || true
   )"
+  if [[ "${state}" == active || "${state}" == activating ]]; then
+    if [[ ! "${main_pid}" =~ ^[1-9][0-9]*$ ||
+      ! -d "/proc/${main_pid}" || ! "${tasks}" =~ ^[0-9]+$ ]]; then
+      state="$(
+        "${systemctl_bin}" is-active "${service}" 2>/dev/null || true
+      )"
+      case "${state}" in
+        active | activating | deactivating | inactive) ;;
+        *) exit 65 ;;
+      esac
+    fi
+  fi
   if [[ ! "${main_pid}" =~ ^[1-9][0-9]*$ || ! -d "/proc/${main_pid}" ]]; then
     [[ "${state}" == inactive || "${state}" == deactivating ]] || exit 65
     main_pid=0

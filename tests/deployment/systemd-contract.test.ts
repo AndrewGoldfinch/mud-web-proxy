@@ -460,6 +460,68 @@ exit 1
     }
   });
 
+  test('rechecks service state when the main process exits between reads', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-resource-state-race-'),
+    );
+    const fakeSystemctl = path.join(directory, 'systemctl');
+    const stateReads = path.join(directory, 'state-reads');
+    const stopFile = path.join(directory, 'stop');
+    try {
+      writeFileSync(
+        fakeSystemctl,
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == is-active ]]; then
+  reads=0
+  [[ ! -e "\${FAKE_STATE_READS}" ]] || reads="$(<"\${FAKE_STATE_READS}")"
+  reads=$((reads + 1))
+  printf '%s\n' "\${reads}" >"\${FAKE_STATE_READS}"
+  if ((reads == 1)); then
+    printf 'active\n'
+  else
+    printf 'inactive\n'
+  fi
+  exit 0
+fi
+if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
+  case "$3" in
+    MainPID) printf '0\n' ;;
+    TasksCurrent) printf '[not set]\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(stopFile, 'stop\n');
+      const result = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/systemd-resource-sampler.sh',
+          'mud-web-proxy.service',
+          stopFile,
+        ],
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          FAKE_STATE_READS: stateReads,
+          SYSTEMCTL_BIN: fakeSystemctl,
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim().split('\n')[1]).toMatch(
+        /^1\t[0-9]+\tinactive\t0\t0\t0$/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('derives task and descriptor peaks from a complete sample series', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-resource-peaks-'),
