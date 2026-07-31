@@ -20,6 +20,7 @@ readonly NODE_ACCEPTANCE_ARCHIVE="node-v${NODE_ACCEPTANCE_VERSION}-linux-x64.tar
 readonly NODE_ACCEPTANCE_DIST_URL="https://nodejs.org/dist/v${NODE_ACCEPTANCE_VERSION}"
 readonly NODE_ACCEPTANCE_RUNTIME_ROOT="/root/mwp-105-node-${NODE_ACCEPTANCE_VERSION}"
 readonly NODE_ACCEPTANCE_CLIENT_ROOT="${REPO_ROOT}/node_modules/.cache/mwp-105-systemd-clients"
+readonly PROVIDER_EVIDENCE_PATH="${MWP_DIGITALOCEAN_EVIDENCE_PATH:-}"
 readonly RELEASE_VERSION=systemd-acceptance
 readonly RUN_STARTED="$(date --iso-8601=seconds)"
 
@@ -29,6 +30,8 @@ source "${REPO_ROOT}/tests/deployment/systemd-evidence.sh"
 mock_mud_pid=
 acceptance_client_pid=
 load_client_pid=
+resource_sampler_pid=
+resource_sampler_stop=
 test_address=
 hosts_line=
 firewall_table_created=
@@ -59,6 +62,13 @@ cleanup() {
   if [[ -n "${load_client_pid}" ]]; then
     kill "${load_client_pid}" >/dev/null 2>&1 || true
   fi
+  if [[ -n "${resource_sampler_pid}" ]]; then
+    kill "${resource_sampler_pid}" >/dev/null 2>&1 || true
+    wait "${resource_sampler_pid}" >/dev/null 2>&1 || true
+  fi
+  if [[ -n "${resource_sampler_stop}" ]]; then
+    rm -f "${resource_sampler_stop}"
+  fi
   if [[ -n "${mock_mud_pid}" ]]; then
     kill "${mock_mud_pid}" >/dev/null 2>&1 || true
   fi
@@ -71,6 +81,7 @@ cleanup() {
 
 require_disposable_host() {
   local path
+  local source_bun
 
   [[ "${EUID}" -eq 0 ]] || fail 'must run as root'
   [[ "${MWP_DISPOSABLE_VM_ACK:-}" == \
@@ -90,6 +101,21 @@ require_disposable_host() {
   [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 26.04 ]] ||
     fail 'requires Ubuntu 26.04'
   [[ "$(uname -m)" == x86_64 ]] || fail 'requires x86_64'
+  host_shape_matches /proc/meminfo "$(nproc)" ||
+    fail 'requires one logical CPU and 900000-1200000 KiB of memory'
+  [[ -f "${PROVIDER_EVIDENCE_PATH}" &&
+    ! -L "${PROVIDER_EVIDENCE_PATH}" ]] ||
+    fail 'DigitalOcean control-plane evidence is missing'
+  [[ "$(stat -c '%a %U:%G' "${PROVIDER_EVIDENCE_PATH}")" == \
+    '600 root:root' ]] ||
+    fail 'DigitalOcean control-plane evidence owner or mode is wrong'
+  source_bun="$(command -v bun)" || fail 'Bun is not on PATH'
+  [[ "$("${source_bun}" --version)" == "${BUN_VERSION}" ]] ||
+    fail "Bun ${BUN_VERSION} is required"
+  "${source_bun}" \
+    "${REPO_ROOT}/tests/deployment/digitalocean-evidence.ts" \
+    "${PROVIDER_EVIDENCE_PATH}" >/dev/null ||
+    fail 'DigitalOcean control-plane evidence does not match the host shape'
 }
 
 install_caddy() {
@@ -527,7 +553,6 @@ wait_for_https_health() {
 
 capture_resource_evidence() {
   local control_group
-  local fd_count
   local main_pid
   local memory_events
 
@@ -540,26 +565,57 @@ capture_resource_evidence() {
   [[ "${control_group}" == /* ]] || fail 'service has no control group'
   memory_events="/sys/fs/cgroup${control_group}/memory.events"
   [[ -f "${memory_events}" ]] || fail 'service memory.events is unavailable'
-  fd_count="$(
-    find "/proc/${main_pid}/fd" -mindepth 1 -maxdepth 1 | wc -l
-  )"
-
   systemctl show mud-web-proxy.service \
     -p MemoryCurrent \
     -p MemoryPeak \
-    -p TasksCurrent \
     -p TasksMax \
     -p LimitNOFILE \
     -p MainPID \
     -p ControlGroup >"${EVIDENCE_DIR}/resources.txt"
-  printf 'FileDescriptors=%s\n' "${fd_count}" \
-    >>"${EVIDENCE_DIR}/resources.txt"
   cp "${memory_events}" "${EVIDENCE_DIR}/memory-events-load.txt"
+}
 
-  [[ "${fd_count}" -lt 1024 ]] ||
-    fail 'file-descriptor count reached LimitNOFILE'
-  [[ "$(systemctl show -p TasksCurrent --value mud-web-proxy.service)" \
-    -lt 128 ]] || fail 'task count reached TasksMax'
+start_resource_sampler() {
+  resource_sampler_stop="${EVIDENCE_DIR}/.resource-sampler-stop"
+  [[ ! -e "${resource_sampler_stop}" ]] ||
+    fail 'resource sampler stop file already exists'
+  bash "${REPO_ROOT}/tests/deployment/systemd-resource-sampler.sh" \
+    mud-web-proxy.service "${resource_sampler_stop}" \
+    >"${EVIDENCE_DIR}/resource-samples.tsv" \
+    2>"${EVIDENCE_DIR}/resource-sampler.log" &
+  resource_sampler_pid=$!
+}
+
+stop_resource_sampler() {
+  local descriptor_limit
+  local task_limit
+
+  [[ "${resource_sampler_pid}" =~ ^[1-9][0-9]*$ ]] ||
+    fail 'resource sampler is not running'
+  touch "${resource_sampler_stop}"
+  if ! wait "${resource_sampler_pid}"; then
+    resource_sampler_pid=
+    fail 'resource sampler failed or reached its time bound'
+  fi
+  resource_sampler_pid=
+  rm -f "${resource_sampler_stop}"
+  resource_sampler_stop=
+
+  task_limit="$(
+    systemctl show -p TasksMax --value mud-web-proxy.service
+  )"
+  descriptor_limit="$(
+    systemctl show -p LimitNOFILE --value mud-web-proxy.service
+  )"
+  [[ "${task_limit}" == 128 && "${descriptor_limit}" == 1024 ]] ||
+    fail 'runtime task or descriptor limit does not match the unit contract'
+  resource_sample_peaks \
+    "${EVIDENCE_DIR}/resource-samples.tsv" \
+    "${EVIDENCE_DIR}/resource-peaks.txt" \
+    "${task_limit}" "${descriptor_limit}" ||
+    fail 'resource samples are malformed or reached a configured limit'
+  cat "${EVIDENCE_DIR}/resource-peaks.txt" \
+    >>"${EVIDENCE_DIR}/resources.txt"
 }
 
 verify_mount_boundary() {
@@ -670,6 +726,13 @@ verify_security() {
     "--threshold=${maximum_exposure_percentage}" --no-pager \
     mud-web-proxy.service >"${report}"
   require_ok_security_assessment "${report}"
+  if ! "${INSTALL_ROOT}/current/runtime/bin/bun" \
+    "${REPO_ROOT}/tests/deployment/systemd-security-residuals.ts" \
+    "${report}" "${baseline}" \
+    "${EVIDENCE_DIR}/systemd-security-residuals.json"; then
+    fail 'live systemd residuals do not exactly match the baseline'
+  fi
+  chmod 0600 "${EVIDENCE_DIR}/systemd-security-residuals.json"
 }
 
 verify_logs() {
@@ -861,6 +924,11 @@ verify_post_reboot() {
     fail 'boot ID evidence is invalid'
   [[ "${install_boot_id}" != "${current_boot_id}" ]] ||
     fail 'post-reboot phase requires a different boot ID'
+  record_boot_id_pair \
+    "${install_boot_id}" "${current_boot_id}" \
+    "${resume_evidence}/boot-ids.txt" ||
+    fail 'could not retain distinct boot ID evidence'
+  chmod 0600 "${resume_evidence}/boot-ids.txt"
 
   systemctl is-enabled --quiet mud-web-proxy.service
   systemctl is-enabled --quiet caddy.service
@@ -927,10 +995,18 @@ trap 'exit 143' TERM
 
 mkdir -m 0700 "${EVIDENCE_DIR}"
 chown root:root "${EVIDENCE_DIR}"
+source_bun="$(command -v bun)" || fail 'Bun is not on PATH'
+"${source_bun}" \
+  "${REPO_ROOT}/tests/deployment/digitalocean-evidence.ts" \
+  "${PROVIDER_EVIDENCE_PATH}" \
+  "${EVIDENCE_DIR}/digitalocean-control-plane.json"
+chmod 0600 "${EVIDENCE_DIR}/digitalocean-control-plane.json"
 {
   printf 'run-started=%s\n' "${RUN_STARTED}"
   printf 'architecture=%s\n' "$(uname -m)"
   printf 'kernel=%s\n' "$(uname -r)"
+  printf 'memory-kib=%s\n' "$(awk '$1 == "MemTotal:" { print $2 }' /proc/meminfo)"
+  printf 'logical-cpus=%s\n' "$(nproc)"
   printf 'os-release=%s\n' "$(< /etc/os-release)"
 } >"${EVIDENCE_DIR}/host.txt"
 
@@ -997,6 +1073,7 @@ cp "${parent_memory_events}" "${EVIDENCE_DIR}/memory-events-before.txt"
 printf 'unit=%s\nparent=%s\n' "${control_group}" "${parent_control_group}" \
   >"${EVIDENCE_DIR}/memory-events-cgroups.txt"
 
+start_resource_sampler
 env \
   SESSION_COUNT="${SESSION_COUNT}" \
   SUSTAIN_MS="${SUSTAIN_MS}" \
@@ -1028,6 +1105,7 @@ wait_for_background_client "${load_client_pid}" \
 load_client_pid=
 wait_for_inactive mud-web-proxy.service "${drain_deadline_ms}"
 require_before_deadline "${drain_deadline_ms}" 'drain assertions'
+stop_resource_sampler
 capture_terminal_memory_events
 grep -Fq 'systemd-acceptance-client: ca-loaded' \
   "${EVIDENCE_DIR}/acceptance-client.log"

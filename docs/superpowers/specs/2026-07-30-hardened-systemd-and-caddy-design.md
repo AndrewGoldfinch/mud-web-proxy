@@ -414,8 +414,10 @@ The acceptance workload records:
 - idle `MemoryCurrent`;
 - peak `MemoryCurrent`;
 - `MemoryPeak`;
-- current task count; and
-- file-descriptor count;
+- bounded 100 ms task-count samples from active load through inactive drain;
+- the maximum task count across that complete sample series;
+- bounded 100 ms main-process descriptor samples across the same interval;
+- the maximum descriptor count across that complete sample series;
 - `memory.events`; and
 - whether either memory boundary was crossed.
 
@@ -657,8 +659,9 @@ The test:
     spoofed value;
 15. sustains at least 50 simultaneous WSS-to-mock-MUD sessions with periodic
     bidirectional traffic for at least 60 seconds;
-16. records memory, task, descriptor, and `memory.events` metrics during that
-    profile;
+16. runs a bounded sampler from before the load client starts until the
+    service reaches inactive after drain, retains every task/descriptor
+    sample, and derives fail-closed peaks below `TasksMax` and `LimitNOFILE`;
 17. enters the service mount namespace as the service user and proves a write
     below the active release fails while a state-directory write succeeds;
 18. sends SIGTERM with sessions active and proves the graceful shutdown
@@ -670,9 +673,11 @@ The test:
 21. explicitly stops and restarts each of `mud-web-proxy.service` and
     `caddy.service`, requiring the expected inactive and healthy states after
     each operation;
-22. reboots the VM and proves both enabled services return healthy; and
-23. captures service status, journal excerpts, security analysis, socket
-    state, memory peak, and task peak as review evidence.
+22. reboots the VM, persists both distinct boot IDs, and proves both enabled
+    services return healthy; and
+23. captures sanitized provider shape, service status, journal excerpts,
+    security analysis and residual comparison, socket state, memory peak,
+    task peak, and descriptor peak as review evidence.
 
 The test does not mount repository source or tests into the installed
 release. Test helpers run outside the service filesystem boundary.
@@ -685,6 +690,13 @@ services, both health paths, and the loopback socket. The runner does not
 reboot its own SSH session and mistake a lost connection for a test result.
 The post-reboot phase skips the clean-host path check only after validating
 the root-only pointer created by the install phase.
+
+Before host mutation, acceptance also requires sanitized DigitalOcean
+control-plane evidence for the exact image slug, size slug, region, memory,
+vCPU count, disk size, and active state. Network fields are never retained.
+The host independently verifies Ubuntu 26.04 x86_64, one logical CPU, and
+900,000-1,200,000 KiB of visible memory, so provider metadata is not the sole
+shape gate.
 
 ### Security score
 
@@ -723,6 +735,11 @@ The acceptance script refuses a missing baseline, a host release or systemd
 version that differs from the recorded baseline, or a current score above
 the recorded maximum. It never derives the threshold from the current run;
 doing that would create a gate that cannot detect regression.
+
+Verification parses every failed-assessment identifier from the live report,
+rejects unparseable or duplicate identifiers, and compares the sorted unique
+set exactly with the baseline residual identifiers. Missing or additional
+residuals block acceptance, and the complete comparison is retained as JSON.
 
 The measured score must be in systemd's `OK` assessment band or better. A
 threshold is a regression gate, not proof that the service is secure.
@@ -814,7 +831,8 @@ MWP-105 is complete when:
    `/var/lib/mud-web-proxy`.
 5. The unit carries no Linux capability and applies the approved sandbox.
 6. The 1 GiB provisional resource limits survive the 50-session clean-host
-   profile, and MWP-106 owns the representative production measurement gate.
+   profile with sampled task and descriptor peaks below their limits, and
+   MWP-106 owns the representative production measurement gate.
 7. Shutdown drains the real session and exits before 30 seconds without
    SIGKILL.
 8. The proxy listens only on `127.0.0.1:6200`.
@@ -824,8 +842,8 @@ MWP-105 is complete when:
     owner, mode, and JSON shape.
 12. `systemd-analyze verify` passes.
 13. The measured systemd security score is `OK` or better, the checked-in
-    threshold is exactly 0.1 above it, the threshold rerun passes, and every
-    residual is explained.
+    threshold is exactly 0.1 above it, the threshold rerun passes, and the
+    live failed-assessment set exactly matches the explained residual set.
 14. Both services stop and restart cleanly, and both enabled services return
     healthy after reboot.
 15. Contract tests, repository quality gates, and the Ubuntu 26.04

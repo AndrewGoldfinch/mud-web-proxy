@@ -229,6 +229,17 @@ const runEvidenceFunction = (
     stderr: 'pipe',
   });
 
+const runDeploymentBunScript = (
+  script: string,
+  ...args: string[]
+): ReturnType<typeof Bun.spawnSync> =>
+  Bun.spawnSync({
+    cmd: [process.execPath, path.join(repoRoot, script), ...args],
+    cwd: repoRoot,
+    stdout: 'pipe',
+    stderr: 'pipe',
+  });
+
 describe('Ubuntu acceptance preflight behavior', () => {
   test('rejects an unsupported phase before mutating the host', () => {
     const protectedPaths = [
@@ -338,6 +349,245 @@ describe('Node acceptance client build boundary', () => {
 });
 
 describe('systemd shutdown evidence predicates', () => {
+  test('bounds the live resource sampler even without a stop signal', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-resource-sampler-'),
+    );
+    const fakeSystemctl = path.join(directory, 'systemctl');
+    const stopFile = path.join(directory, 'stop');
+    try {
+      writeFileSync(
+        fakeSystemctl,
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == is-active ]]; then
+  printf 'active\\n'
+  exit 0
+fi
+if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
+  case "$3" in
+    MainPID) printf '%s\\n' "\${FAKE_MAIN_PID}" ;;
+    TasksCurrent) printf '3\\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`,
+        { mode: 0o755 },
+      );
+      const result = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/systemd-resource-sampler.sh',
+          'mud-web-proxy.service',
+          stopFile,
+        ],
+        cwd: repoRoot,
+        env: {
+          ...process.env,
+          SYSTEMCTL_BIN: fakeSystemctl,
+          FAKE_MAIN_PID: String(process.pid),
+          MWP_RESOURCE_SAMPLE_LIMIT: '1',
+          MWP_RESOURCE_SAMPLE_INTERVAL: '0.001',
+        },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode).not.toBe(0);
+      const lines = result.stdout.toString().trim().split('\n');
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toBe(
+        'sample\tmonotonic_ms\tstate\tmain_pid\ttasks\tfile_descriptors',
+      );
+      expect(lines[1]).toMatch(
+        /^1\t[0-9]+\tactive\t[1-9][0-9]*\t3\t[1-9][0-9]*$/,
+      );
+      expect(result.stderr.toString()).toContain(
+        'resource sampler reached its sample limit',
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('samples a normal drain after the main process exits', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-resource-drain-'),
+    );
+    const fakeSystemctl = path.join(directory, 'systemctl');
+    const stopFile = path.join(directory, 'stop');
+    try {
+      writeFileSync(
+        fakeSystemctl,
+        `#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == is-active ]]; then
+  printf 'deactivating\\n'
+  exit 0
+fi
+if [[ "$1" == show && "$2" == -p && "$4" == --value ]]; then
+  case "$3" in
+    MainPID) printf '0\\n' ;;
+    TasksCurrent) printf '[not set]\\n' ;;
+    *) exit 1 ;;
+  esac
+  exit 0
+fi
+exit 1
+`,
+        { mode: 0o755 },
+      );
+      writeFileSync(stopFile, 'stop\n');
+      const result = Bun.spawnSync({
+        cmd: [
+          'bash',
+          'tests/deployment/systemd-resource-sampler.sh',
+          'mud-web-proxy.service',
+          stopFile,
+        ],
+        cwd: repoRoot,
+        env: { ...process.env, SYSTEMCTL_BIN: fakeSystemctl },
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      expect(result.exitCode).toBe(0);
+      expect(result.stdout.toString().trim().split('\n')[1]).toMatch(
+        /^1\t[0-9]+\tdeactivating\t0\t0\t0$/,
+      );
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('derives task and descriptor peaks from a complete sample series', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-resource-peaks-'),
+    );
+    const samples = path.join(directory, 'samples.tsv');
+    const peaks = path.join(directory, 'peaks.txt');
+    try {
+      writeFileSync(
+        samples,
+        [
+          'sample\tmonotonic_ms\tstate\tmain_pid\ttasks\tfile_descriptors',
+          '1\t1000\tactive\t42\t4\t100',
+          '2\t1100\tactive\t42\t6\t117',
+          '3\t1200\tdeactivating\t42\t5\t80',
+          '4\t1300\tinactive\t0\t0\t0',
+          '',
+        ].join('\n'),
+      );
+      expect(
+        runEvidenceFunction(
+          'resource_sample_peaks',
+          samples,
+          peaks,
+          '128',
+          '1024',
+        ).exitCode,
+      ).toBe(0);
+      expect(readFileSync(peaks, 'utf8')).toBe(
+        'Samples=4\nFirstMonotonicMs=1000\nLastMonotonicMs=1300\nTaskPeak=6\nFileDescriptorPeak=117\n',
+      );
+
+      writeFileSync(
+        samples,
+        readFileSync(samples, 'utf8').replace(
+          '2\t1100\tactive\t42\t6\t117',
+          '2\t1100\tactive\t42\t128\t117',
+        ),
+      );
+      expect(
+        runEvidenceFunction(
+          'resource_sample_peaks',
+          samples,
+          peaks,
+          '128',
+          '1024',
+        ).exitCode,
+      ).not.toBe(0);
+
+      writeFileSync(
+        samples,
+        readFileSync(samples, 'utf8').replace(
+          '2\t1100\tactive\t42\t128\t117',
+          '2\t1100\tactive\t42\t6\t1024',
+        ),
+      );
+      expect(
+        runEvidenceFunction(
+          'resource_sample_peaks',
+          samples,
+          peaks,
+          '128',
+          '1024',
+        ).exitCode,
+      ).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('requires one-GiB memory and one logical CPU in host preflight', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-host-shape-'),
+    );
+    const meminfo = path.join(directory, 'meminfo');
+    try {
+      writeFileSync(meminfo, 'MemTotal:         979308 kB\n');
+      expect(
+        runEvidenceFunction('host_shape_matches', meminfo, '1').exitCode,
+      ).toBe(0);
+
+      for (const [memory, cpus] of [
+        ['899999', '1'],
+        ['1200001', '1'],
+        ['979308', '2'],
+        ['not-a-number', '1'],
+      ]) {
+        writeFileSync(meminfo, `MemTotal:         ${memory} kB\n`);
+        expect(
+          runEvidenceFunction('host_shape_matches', meminfo, cpus).exitCode,
+        ).not.toBe(0);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('records two valid and different boot IDs in copied evidence', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-boot-ids-'),
+    );
+    const output = path.join(directory, 'boot-ids.txt');
+    const install = '11111111-1111-4111-8111-111111111111';
+    const postReboot = '22222222-2222-4222-8222-222222222222';
+    try {
+      expect(
+        runEvidenceFunction('record_boot_id_pair', install, postReboot, output)
+          .exitCode,
+      ).toBe(0);
+      expect(readFileSync(output, 'utf8')).toBe(
+        `install-boot-id=${install}\npost-reboot-boot-id=${postReboot}\n`,
+      );
+      expect(
+        runEvidenceFunction('record_boot_id_pair', install, install, output)
+          .exitCode,
+      ).not.toBe(0);
+      expect(
+        runEvidenceFunction(
+          'record_boot_id_pair',
+          'invalid',
+          postReboot,
+          output,
+        ).exitCode,
+      ).not.toBe(0);
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test('accepts only one matching archive checksum from a manifest', () => {
     const directory = mkdtempSync(
       path.join(tmpdir(), 'mwp-systemd-node-manifest-'),
@@ -505,6 +755,203 @@ describe('systemd shutdown evidence predicates', () => {
   });
 });
 
+describe('systemd security residual comparison', () => {
+  const baseline = {
+    residuals: [
+      { assessment: 'RootDirectory=/RootImage=', reason: 'required fixture' },
+      {
+        assessment: 'MemoryDenyWriteExecute=',
+        reason: 'required fixture',
+      },
+    ],
+  };
+
+  test('retains an exact sorted live-to-baseline residual match', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-security-residuals-'),
+    );
+    const report = path.join(directory, 'report.txt');
+    const baselineFile = path.join(directory, 'baseline.json');
+    const comparison = path.join(directory, 'comparison.json');
+    try {
+      writeFileSync(baselineFile, `${JSON.stringify(baseline)}\n`);
+      writeFileSync(
+        report,
+        [
+          '  NAME                            DESCRIPTION             EXPOSURE',
+          '✗ MemoryDenyWriteExecute=         Writable executable         0.1',
+          '✗ RootDirectory=/RootImage=       Host root                   0.1',
+          '',
+          '→ Overall exposure level for mud-web-proxy.service: 2.8 OK',
+          '',
+        ].join('\n'),
+      );
+      const result = runDeploymentBunScript(
+        'tests/deployment/systemd-security-residuals.ts',
+        report,
+        baselineFile,
+        comparison,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(comparison, 'utf8'))).toEqual({
+        status: 'match',
+        baselineIdentifiers: [
+          'MemoryDenyWriteExecute=',
+          'RootDirectory=/RootImage=',
+        ],
+        liveIdentifiers: [
+          'MemoryDenyWriteExecute=',
+          'RootDirectory=/RootImage=',
+        ],
+        missing: [],
+        extra: [],
+        baselineDuplicates: [],
+        liveDuplicates: [],
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test('rejects missing, extra, and duplicate live residuals', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-security-residuals-'),
+    );
+    const report = path.join(directory, 'report.txt');
+    const baselineFile = path.join(directory, 'baseline.json');
+    const comparison = path.join(directory, 'comparison.json');
+    try {
+      writeFileSync(baselineFile, `${JSON.stringify(baseline)}\n`);
+      for (const [body, expected] of [
+        [
+          '✗ RootDirectory=/RootImage=       Host root          0.1\n',
+          {
+            missing: ['MemoryDenyWriteExecute='],
+            extra: [],
+            liveDuplicates: [],
+          },
+        ],
+        [
+          '✗ RootDirectory=/RootImage=       Host root          0.1\n' +
+            '✗ MemoryDenyWriteExecute=       JIT memory         0.1\n' +
+            '✗ PrivateNetwork=               Host network       0.5\n',
+          {
+            missing: [],
+            extra: ['PrivateNetwork='],
+            liveDuplicates: [],
+          },
+        ],
+        [
+          '✗ RootDirectory=/RootImage=       Host root          0.1\n' +
+            '✗ RootDirectory=/RootImage=     Host root again    0.1\n' +
+            '✗ MemoryDenyWriteExecute=       JIT memory         0.1\n',
+          {
+            missing: [],
+            extra: [],
+            liveDuplicates: ['RootDirectory=/RootImage='],
+          },
+        ],
+      ] as const) {
+        writeFileSync(report, body);
+        const result = runDeploymentBunScript(
+          'tests/deployment/systemd-security-residuals.ts',
+          report,
+          baselineFile,
+          comparison,
+        );
+        expect(result.exitCode).not.toBe(0);
+        expect(JSON.parse(readFileSync(comparison, 'utf8'))).toMatchObject({
+          status: 'mismatch',
+          ...expected,
+        });
+      }
+
+      rmSync(comparison, { force: true });
+      writeFileSync(report, '✗ malformed-assessment-line\n');
+      expect(
+        runDeploymentBunScript(
+          'tests/deployment/systemd-security-residuals.ts',
+          report,
+          baselineFile,
+          comparison,
+        ).exitCode,
+      ).not.toBe(0);
+      expect(JSON.parse(readFileSync(comparison, 'utf8'))).toEqual({
+        status: 'invalid',
+        error: 'unparseable failed systemd assessment',
+      });
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('DigitalOcean acceptance evidence', () => {
+  test('normalizes the exact provider shape without retaining extra fields', () => {
+    const directory = mkdtempSync(
+      path.join(tmpdir(), 'mwp-systemd-provider-evidence-'),
+    );
+    const input = path.join(directory, 'input.json');
+    const output = path.join(directory, 'output.json');
+    const valid = {
+      dropletId: 123,
+      name: 'mwp-105-acceptance-verify-fixture',
+      regionSlug: 'nyc3',
+      imageSlug: 'ubuntu-26-04-x64',
+      sizeSlug: 's-1vcpu-1gb',
+      memoryMiB: 1024,
+      vcpus: 1,
+      diskGiB: 25,
+      status: 'active',
+      capturedAt: '2026-07-31T15:00:00Z',
+      networks: 'must-not-be-retained',
+    };
+    try {
+      writeFileSync(input, `${JSON.stringify(valid)}\n`);
+      const result = runDeploymentBunScript(
+        'tests/deployment/digitalocean-evidence.ts',
+        input,
+        output,
+      );
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(readFileSync(output, 'utf8'))).toEqual({
+        dropletId: 123,
+        name: 'mwp-105-acceptance-verify-fixture',
+        regionSlug: 'nyc3',
+        imageSlug: 'ubuntu-26-04-x64',
+        sizeSlug: 's-1vcpu-1gb',
+        memoryMiB: 1024,
+        vcpus: 1,
+        diskGiB: 25,
+        status: 'active',
+        capturedAt: '2026-07-31T15:00:00Z',
+      });
+
+      for (const invalid of [
+        { ...valid, imageSlug: 'ubuntu-other' },
+        { ...valid, sizeSlug: 's-2vcpu-2gb' },
+        { ...valid, regionSlug: '' },
+        { ...valid, memoryMiB: 2048 },
+        { ...valid, vcpus: 2 },
+        { ...valid, diskGiB: 50 },
+        { ...valid, status: 'off' },
+        { ...valid, name: 'production' },
+      ]) {
+        writeFileSync(input, `${JSON.stringify(invalid)}\n`);
+        expect(
+          runDeploymentBunScript(
+            'tests/deployment/digitalocean-evidence.ts',
+            input,
+            output,
+          ).exitCode,
+        ).not.toBe(0);
+      }
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('systemd load activity evidence', () => {
   test('requires matching traffic near both ends of the sustained interval', () => {
     expect(
@@ -603,13 +1050,6 @@ test('converts one-decimal exposure scores to strict CLI percentages', async () 
   ]) {
     expect((await convertSystemdThreshold(exposure)).status).not.toBe(0);
   }
-
-  const runner = readArtifact('tests/deployment/run-systemd-acceptance.sh');
-  expect(runner).toContain(
-    'bash "${REPO_ROOT}/tests/deployment/systemd-exposure-threshold.sh"',
-  );
-  expect(runner).toContain('"--threshold=${maximum_exposure_percentage}"');
-  expect(runner).not.toContain('"--threshold=${maximum_exposure}"');
 });
 
 test('pins a measured Ubuntu security regression baseline', async () => {

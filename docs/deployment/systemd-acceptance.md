@@ -21,7 +21,36 @@ test "${ID}" = ubuntu
 test "${VERSION_ID}" = 26.04
 test "$(uname -m)" = x86_64
 test "$(awk '/MemTotal/ {print ($2 >= 900000 && $2 <= 1200000)}' /proc/meminfo)" = 1
+test "$(nproc)" = 1
 ```
+
+On the control-plane machine, retain only the non-network fields from the
+exact Droplet response, then copy that JSON to the test host as a root-owned
+mode-0600 file. Do not retain the raw response because it contains network
+addresses:
+
+```bash
+doctl compute droplet get "$DROPLET_ID" --output json |
+  jq --arg capturedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '.[0] | {
+      dropletId: .id,
+      name,
+      regionSlug: .region.slug,
+      imageSlug: .image.slug,
+      sizeSlug: .size_slug,
+      memoryMiB: .memory,
+      vcpus,
+      diskGiB: .disk,
+      status,
+      capturedAt: $capturedAt
+    }' >digitalocean-control-plane.json
+```
+
+Copy it to `/root/mwp-105-digitalocean-control-plane.json` on the disposable
+host and set `MWP_DIGITALOCEAN_EVIDENCE_PATH` to that path. The runner rejects
+anything except the exact `ubuntu-26-04-x64`, `s-1vcpu-1gb`, 1,024 MiB,
+one-vCPU, 25 GiB active acceptance shape, and it independently checks the
+host's visible CPU and memory.
 
 The install phase downloads Node 22.21.1 from the official Node distribution,
 verifies its archive against the official `SHASUMS256.txt`, and extracts it
@@ -56,7 +85,13 @@ systemd security result in the `OK` band, saves the unthresholded report, and
 does not claim that a baseline gate passed.
 
 ```bash
-sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' MWP_SECURITY_MODE=measure MWP_ACCEPTANCE_PHASE=install bash tests/deployment/run-systemd-acceptance.sh
+sudo env \
+  PATH="$PATH" \
+  MWP_DIGITALOCEAN_EVIDENCE_PATH=/root/mwp-105-digitalocean-control-plane.json \
+  MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' \
+  MWP_SECURITY_MODE=measure \
+  MWP_ACCEPTANCE_PHASE=install \
+  bash tests/deployment/run-systemd-acceptance.sh
 ```
 
 This phase runs `systemd-analyze verify`, formats and validates Caddy, then
@@ -145,14 +180,16 @@ The 50-session workload sustained bidirectional traffic for at least 60
 seconds and every client observed close code 1001 with reason
 `Server restarting`. The resource capture was:
 
-| Property          | Measured value |
-| ----------------- | -------------- |
-| `MemoryCurrent`   | 36,569,088 B   |
-| `MemoryPeak`      | 37,359,616 B   |
-| `TasksCurrent`    | 6              |
-| `TasksMax`        | 128            |
-| `FileDescriptors` | 116            |
-| `LimitNOFILE`     | 1,024          |
+| Property        | Measured value |
+| --------------- | -------------- |
+| `MemoryCurrent` | 36,569,088 B   |
+| `MemoryPeak`    | 37,359,616 B   |
+
+The original task and descriptor values were single post-sustain snapshots,
+not peaks, so they are not load-bearing acceptance evidence. The fix-round
+verification uses a bounded 100 ms sampler from before load launch through
+the inactive drain state and records `TaskPeak` and `FileDescriptorPeak` from
+the complete retained sample series.
 
 The unit-before, parent-before, load, and terminal parent `memory.events`
 captures all recorded `low=0`, `high=0`, `max=0`, `oom=0`, `oom_kill=0`,
@@ -168,7 +205,13 @@ Droplet, or rebuild the first Droplet from that image after copying evidence
 and committing the baseline. Then run:
 
 ```bash
-sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' MWP_SECURITY_MODE=verify MWP_ACCEPTANCE_PHASE=install bash tests/deployment/run-systemd-acceptance.sh
+sudo env \
+  PATH="$PATH" \
+  MWP_DIGITALOCEAN_EVIDENCE_PATH=/root/mwp-105-digitalocean-control-plane.json \
+  MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' \
+  MWP_SECURITY_MODE=verify \
+  MWP_ACCEPTANCE_PHASE=install \
+  bash tests/deployment/run-systemd-acceptance.sh
 ```
 
 Verification rejects a missing baseline, host or systemd package mismatch, a
@@ -177,8 +220,10 @@ non-`OK` assessment, or a score above the recorded maximum. It runs
 --threshold=<maximumExposure-times-10-as-an-integer>`. The JSON remains on
 systemd's human-readable 0-10 scale; only the CLI boundary converts the strict
 one-decimal value to systemd 259's integer percentage (`2.9` becomes `29`). It
-does not derive a new maximum. On success, reboot from the current SSH or
-console session:
+does not derive a new maximum. It also parses every live failed-assessment
+identifier and requires exact sorted equality with the baseline: duplicates,
+missing identifiers, extras, or an unparseable failure line block acceptance.
+On success, reboot from the current SSH or console session:
 
 ```bash
 sudo systemctl reboot
@@ -198,7 +243,9 @@ evidence directory contains `evidence-complete`.
 
 Copy the evidence directory off the Droplet before cleanup. Review
 `host.txt`, `systemd-verify.txt`, `systemd-security.txt`, and the measurement
-JSON; `resources.txt`, all `memory-events-*.txt` files,
+JSON; `digitalocean-control-plane.json`,
+`systemd-security-residuals.json`, `resources.txt`, `resource-samples.tsv`,
+`resource-peaks.txt`, `resource-sampler.log`, all `memory-events-*.txt` files,
 `memory-events-cgroups.txt`, `port-6200.txt`, `mock-mud-firewall.txt`, and
 `mock-mud.log`, `mount-boundary.txt`, and `caddy-local-root.crt`; the
 `node-acceptance-runtime.txt`, `node-SHASUMS256.txt`, and
@@ -207,15 +254,17 @@ JSON; `resources.txt`, all `memory-events-*.txt` files,
 `spoof-probe-journal.txt`, `mud-web-proxy-journal.txt`, and
 `system-journal.txt`; and `pre-reboot-status.txt`, `pre-reboot-journal.txt`,
 `post-reboot-status.txt`, `post-reboot-journal.txt`, `post-reboot-sockets.txt`,
-`install-boot-id`, and `evidence-complete`. The journals must include
+`install-boot-id`, `boot-ids.txt`, and `evidence-complete`. The boot-ID pair
+must contain distinct valid install and post-reboot IDs. The journals must include
 `shutdown: completed` and must not show read-only filesystem, timeout,
 deadline, SIGKILL, OOM, or state-flush failures.
 
 The load client must record `50 sessions ready`, `sustained`, and graceful
 close. It has periodic bidirectional WebSocket-to-mock-MUD traffic for at
 least 60 seconds: a repeatable lower bound, not proof of the 200-session cap.
-Require descriptors below 1024, tasks below 128, and no `max`, `oom`, or
-`oom_kill` `memory.events` increment. A `high` increment or less than 20%
+Require `FileDescriptorPeak` below 1024, `TaskPeak` below 128, a sample series
+that begins while active and ends inactive, and no `max`, `oom`, or `oom_kill`
+`memory.events` increment. A `high` increment or less than 20%
 observed headroom below 512 MiB requires resource-design review; do not merely
 raise the limit.
 
