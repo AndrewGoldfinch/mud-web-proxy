@@ -82,7 +82,7 @@ The manifest list should name both `linux/amd64` and `linux/arm64`. Entries
 with platform `unknown/unknown` are the attestation manifests, not missing
 architectures.
 
-## Pinning by digest in Compose
+## Pinning by digest
 
 Resolve the digest for the version you intend to run:
 
@@ -92,14 +92,7 @@ docker buildx imagetools inspect \
   --format '{{ .Manifest.Digest }}'
 ```
 
-Then set it in `.env` — the Compose stack reads `MWP_IMAGE` and skips
-building from source when it is present:
-
-```
-MWP_IMAGE=ghcr.io/andrewgoldfinch/mud-web-proxy@sha256:<digest>
-```
-
-Verify the digest before pinning it, not after:
+Verify it before pinning it, not after:
 
 ```bash
 gh attestation verify \
@@ -107,12 +100,40 @@ gh attestation verify \
   --owner AndrewGoldfinch
 ```
 
+Then run that exact image:
+
+```bash
+docker run --rm \
+  --read-only --cap-drop=ALL --security-opt=no-new-privileges \
+  --publish 127.0.0.1:6200:6200 \
+  --env BIND_HOST=0.0.0.0 \
+  --env INBOUND_TLS_MODE=off \
+  --env ALLOW_INSECURE_INBOUND_NO_TLS=true \
+  --env TN_HOST=mud.example.com \
+  --env TN_PORT=4000 \
+  ghcr.io/andrewgoldfinch/mud-web-proxy@sha256:<digest>
+```
+
 A digest reference still resolves per-platform through the manifest list, so
 one pinned value works on both architectures.
+
+### With the Compose stack
+
+> Requires the Compose stack from MWP-100 — `compose.yaml` in the repository
+> root. If your checkout does not contain it, that work has not landed yet
+> and the commands in this subsection have nothing to load.
+
+That stack reads `MWP_IMAGE` and skips building from source when it is set,
+so pinning is one line in `.env`:
+
+```
+MWP_IMAGE=ghcr.io/andrewgoldfinch/mud-web-proxy@sha256:<digest>
+```
 
 ## Upgrading a pinned deployment
 
 Pinning by digest makes upgrades deliberate: resolve the new digest, verify
-it, change `MWP_IMAGE`, then `docker compose up -d`. Rolling back is the
-same operation with the previous digest, which is worth recording somewhere
-durable — a digest you cannot remember is a rollback you cannot perform.
+it, then restart against it — `docker compose up -d` with the stack above,
+or re-running the container otherwise. Rolling back is the same operation
+with the previous digest, which is worth recording somewhere durable: a
+digest you cannot remember is a rollback you cannot perform.
