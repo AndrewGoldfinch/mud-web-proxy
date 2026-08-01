@@ -23,9 +23,36 @@ legacy supervisor commands in this repository.
 - v3.1.0 debounces saves for exactly two seconds.
 - v3.1.0 accepts and re-serializes the additive v4 `lastUsedAt` field.
 
-App Attest is not optional for this cutover. Established clients retain their
-`keyId`; an empty or lost store causes them to fail with `Unknown key` rather
-than automatically register again.
+App Attest state must be transferred, but the cost of getting it wrong is
+narrower than an earlier draft of this runbook implied. Correcting that
+matters: an operator who believes the store is irreplaceable makes different
+decisions under time pressure than one who knows the true failure mode.
+
+Losing the store is **not** a permanent lockout. Three things establish that:
+
+- The server keeps `/attest/challenge` and `/attest/register` registered
+  whenever App Attest is enabled (`wsproxy.ts`). An unknown key rejects the
+  _upgrade_; it does not close registration.
+- The iOS client rotates automatically. On any registration failure it clears
+  the stored key, generates a fresh Secure Enclave key, attests, and registers
+  (`ProxyAppAttestManager.registerIfNeeded`).
+- Unknown-key rejection is already routine: the 90-day inactivity TTL reclaims
+  keys in normal operation, so clients must handle it or they would break
+  every 90 days regardless. See `docs/ios-client-integration.md`.
+
+What losing the store actually costs:
+
+- **A visible blip for app processes already running.** The client caches
+  "registration verified" in memory, so a running app keeps asserting against
+  a key the new host has never seen and fails until it is relaunched.
+  Recovery on next launch is automatic.
+- **A thundering herd of re-attestation.** Every device re-attests at once,
+  against Apple's per-device attestation rate limits. Recovery is slowed, not
+  prevented.
+
+That is why the checksum and key-count floor below are still required — they
+turn a silent, staggered degradation into a check that either passes or stops
+the cutover. Treat a shortfall as a stop condition, not as a catastrophe.
 
 ## Transfer inventory
 
@@ -584,6 +611,13 @@ following before accepting the cutover:
   count after service start; and
 - an assertion from an already-registered production client succeeds. This is
   mandatory; a newly registered client does not satisfy the preservation test.
+
+That last one is the only check that can detect a lost store, and it is worth
+understanding why. Registration stays open on the new host whether or not the
+transfer worked, so a freshly installed client registers and connects happily
+against an empty store — it would report success for the exact failure this
+gate exists to catch. Only a device whose key predates the cutover can
+distinguish "the state moved" from "the server accepts new devices".
 
 Record acceptance evidence, the final checksum/count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
