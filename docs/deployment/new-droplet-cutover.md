@@ -14,18 +14,67 @@ legacy supervisor commands in this repository.
 
 ## Known production facts
 
-- The current production health endpoint reported v3.1.0 during the
-  2026-07-30 design review.
-- App Attest is enabled in the current production deployment because
-  `/attest/challenge` returned 200.
+These describe the **source host** and must be re-checked at the window, not
+assumed. They changed materially on 2026-08-01 and the earlier set is kept
+below because the rollback reasoning still depends on it.
+
+Current, as of 2026-08-01:
+
+- Production runs **4.0.0-rc.8** on Bun 1.3.14, deployed via PM2 from a git
+  checkout at `/opt/mud-proxy`.
+- `TARGET_MODE=arbitrary`. The service fronts many MUDs; see
+  [the target policy section](#carry-the-target-policy-across-unchanged).
+- App Attest is enabled and `REQUIRE_APP_AUTH=true`. It is the authentication
+  that makes arbitrary mode safe, not an optional extra.
+- The key store held **5,172** entries in ~3.2 MB at
+  `/opt/mud-proxy/config/attested-keys.json` and grows continuously.
+  Re-measure at the window; this figure is a scale indicator, not the floor.
+- rc.8 writes the store **atomically** — a staging directory, fsync, then
+  rename — so a copy taken from a running service is far less likely to be
+  torn than under v3.1.0.
+
+The pre-v4 facts, which still govern rollback because the rollback target may
+predate this deployment:
+
 - v3.1.0 writes its key store non-atomically: it truncates and rewrites the
   live file.
 - v3.1.0 debounces saves for exactly two seconds.
 - v3.1.0 accepts and re-serializes the additive v4 `lastUsedAt` field.
 
-App Attest is not optional for this cutover. Established clients retain their
-`keyId`; an empty or lost store causes them to fail with `Unknown key` rather
-than automatically register again.
+The atomic-write improvement does **not** license copying a live store. Stop
+the service first regardless: atomicity protects against a torn file, not
+against a write landing between the copy and the stop.
+
+App Attest state must be transferred, but the cost of getting it wrong is
+narrower than an earlier draft of this runbook implied. Correcting that
+matters: an operator who believes the store is irreplaceable makes different
+decisions under time pressure than one who knows the true failure mode.
+
+Losing the store is **not** a permanent lockout. Three things establish that:
+
+- The server keeps `/attest/challenge` and `/attest/register` registered
+  whenever App Attest is enabled (`wsproxy.ts`). An unknown key rejects the
+  _upgrade_; it does not close registration.
+- The iOS client rotates automatically. On any registration failure it clears
+  the stored key, generates a fresh Secure Enclave key, attests, and registers
+  (`ProxyAppAttestManager.registerIfNeeded`).
+- Unknown-key rejection is already routine: the 90-day inactivity TTL reclaims
+  keys in normal operation, so clients must handle it or they would break
+  every 90 days regardless. See `docs/ios-client-integration.md`.
+
+What losing the store actually costs:
+
+- **A visible blip for app processes already running.** The client caches
+  "registration verified" in memory, so a running app keeps asserting against
+  a key the new host has never seen and fails until it is relaunched.
+  Recovery on next launch is automatic.
+- **A thundering herd of re-attestation.** Every device re-attests at once,
+  against Apple's per-device attestation rate limits. Recovery is slowed, not
+  prevented.
+
+That is why the checksum and key-count floor below are still required — they
+turn a silent, staggered degradation into a check that either passes or stops
+the cutover. Treat a shortfall as a stop condition, not as a catastrophe.
 
 ## Transfer inventory
 
@@ -45,13 +94,43 @@ the required production values while applying the native boundary from
 BIND_HOST=127.0.0.1
 WS_PORT=6200
 INBOUND_TLS_MODE=off
-TARGET_MODE=fixed
 ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
 ```
 
 `ALLOW_INSECURE_INBOUND_NO_TLS`, `TLS_CERT_PATH`, and `TLS_KEY_PATH` must be
 absent. Caddy owns inbound TLS. Place `/etc/mud-web-proxy.env` and any
 referenced APNS key in the ownership and modes required by `systemd.md`.
+
+### Carry the target policy across unchanged
+
+**`TARGET_MODE` is deliberately absent from the boundary above.** It is not a
+host-topology value; it is the service's contract with its users, and it must
+be migrated from the old environment rather than defaulted.
+
+Production serves many MUDs and runs `TARGET_MODE=arbitrary`. Taking the
+default (`fixed`) would restrict every client to a single target and reject
+everyone else with "This proxy only allows connections to …" — a silent,
+total regression for most users that looks like a healthy service. Read the
+old environment; do not infer this value.
+
+`arbitrary` carries mandatory companions, and the proxy refuses to start
+without them rather than falling back to something permissive:
+
+- `ARBITRARY_ALLOWED_PORTS` — the ports clients may reach.
+- Enforced authentication — either `AUTH_MODE=shared-secret` with a ≥32-byte
+  `PROXY_SHARED_SECRET`, or `REQUIRE_APP_AUTH=true` with App Attest
+  configured. Production uses the App Attest path, which is why App Attest is
+  not optional for this deployment: it is what keeps arbitrary mode from
+  being an open relay.
+
+Verify the migrated environment before the window, against the release being
+deployed, rather than discovering a rejected value at service start:
+
+```bash
+cd /path/to/verified/release
+set -a; source /etc/mud-web-proxy.env; set +a
+bun -e 'import{getRuntimeConfig}from"./src/runtime-config.ts";getRuntimeConfig(process.env);console.log("config OK")'
+```
 
 ## Deliberately excluded data
 
@@ -61,7 +140,14 @@ Do not transfer or restore as application state:
 - the old `node_modules`;
 - PM2 state, process dumps, and `ecosystem.config.cjs`;
 - the old Bun installation;
-- Bun's global package-download cache;
+- Bun's package-download cache. **Note where this lives on the new host.**
+  `deploy/sysusers.d/mud-web-proxy.conf` sets the service user's home to
+  `/var/lib/mud-web-proxy`, the same directory as the App Attest state, so
+  Bun writes `~/.bun` there at runtime (292 KiB observed on a rehearsal
+  host, 2026-08-01). Transfer the **file** `attested-keys.json`, never the
+  directory — copying the directory carries this cache along, contradicting
+  this exclusion, and on a reverse copy would overwrite the new host's cache
+  with the old host's;
 - repository-root `cert.pem` and `privkey.pem`;
 - Certbot or other old-host ACME state;
 - runtime logs;
@@ -107,10 +193,27 @@ Before a declared low-traffic window, the production owner must:
    administrative sources, and no public rule for 6200.
 3. Install and verify the monitoring agent and notified CPU, memory, disk,
    and load alerts.
-4. Install the exact versioned Bun runtime, Bun 1.3.14, and verify the
+4. Install the host prerequisites. A clean Ubuntu 26.04 image has **neither**,
+   and both are needed by steps this runbook already requires:
+
+   ```bash
+   apt-get update && apt-get install -y unzip gh
+   ```
+
+   - `unzip` — the Bun installer aborts without it (`error: unzip is required
+to install bun`), so step 5 fails outright rather than degrading.
+   - `gh` — needed to verify the release attestation before extraction. If it
+     is unavailable in your environment, treat the checksum as the minimum
+     bar and record that provenance was not verified, rather than skipping
+     the step silently.
+
+   Verified on a disposable Ubuntu 26.04 host on 2026-08-01: both were
+   missing on a fresh image.
+
+5. Install the exact versioned Bun runtime, Bun 1.3.14, and verify the
    release-local runtime reports that exact version. Do not use an unversioned
    system Bun.
-5. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
+6. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
    according to `systemd.md`. Verify artifact checksum and provenance before
    extraction, install the unit, and keep both the proxy and Caddy inactive.
    On the new host, run this as root to record both service states and require
@@ -145,12 +248,12 @@ Before a declared low-traffic window, the production owner must:
    `Apply an activated release` is forbidden until the final App Attest
    transfer gate.
 
-6. Semantically migrate the environment and referenced non-TLS secret files
+7. Semantically migrate the environment and referenced non-TLS secret files
    as described in the transfer inventory.
-7. Resolve the legacy App Attest path, take the validated pre-stop safety
+8. Resolve the legacy App Attest path, take the validated pre-stop safety
    copy, and record the required metadata. Defer the final copy until the old
    service is quiescent.
-8. Validate the systemd and Caddy configuration while keeping the production
+9. Validate the systemd and Caddy configuration while keeping the production
    systemd service stopped. Any pre-window application-health check must use
    an isolated foreground verification process and configuration with a
    disposable App Attest state path. It must not use or mutate production App
@@ -584,6 +687,13 @@ following before accepting the cutover:
   count after service start; and
 - an assertion from an already-registered production client succeeds. This is
   mandatory; a newly registered client does not satisfy the preservation test.
+
+That last one is the only check that can detect a lost store, and it is worth
+understanding why. Registration stays open on the new host whether or not the
+transfer worked, so a freshly installed client registers and connects happily
+against an empty store — it would report success for the exact failure this
+gate exists to catch. Only a device whose key predates the cutover can
+distinguish "the state moved" from "the server accepts new devices".
 
 Record acceptance evidence, the final checksum/count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
