@@ -14,14 +14,36 @@ legacy supervisor commands in this repository.
 
 ## Known production facts
 
-- The current production health endpoint reported v3.1.0 during the
-  2026-07-30 design review.
-- App Attest is enabled in the current production deployment because
-  `/attest/challenge` returned 200.
+These describe the **source host** and must be re-checked at the window, not
+assumed. They changed materially on 2026-08-01 and the earlier set is kept
+below because the rollback reasoning still depends on it.
+
+Current, as of 2026-08-01:
+
+- Production runs **4.0.0-rc.8** on Bun 1.3.14, deployed via PM2 from a git
+  checkout at `/opt/mud-proxy`.
+- `TARGET_MODE=arbitrary`. The service fronts many MUDs; see
+  [the target policy section](#carry-the-target-policy-across-unchanged).
+- App Attest is enabled and `REQUIRE_APP_AUTH=true`. It is the authentication
+  that makes arbitrary mode safe, not an optional extra.
+- The key store held **5,172** entries in ~3.2 MB at
+  `/opt/mud-proxy/config/attested-keys.json` and grows continuously.
+  Re-measure at the window; this figure is a scale indicator, not the floor.
+- rc.8 writes the store **atomically** — a staging directory, fsync, then
+  rename — so a copy taken from a running service is far less likely to be
+  torn than under v3.1.0.
+
+The pre-v4 facts, which still govern rollback because the rollback target may
+predate this deployment:
+
 - v3.1.0 writes its key store non-atomically: it truncates and rewrites the
   live file.
 - v3.1.0 debounces saves for exactly two seconds.
 - v3.1.0 accepts and re-serializes the additive v4 `lastUsedAt` field.
+
+The atomic-write improvement does **not** license copying a live store. Stop
+the service first regardless: atomicity protects against a torn file, not
+against a write landing between the copy and the stop.
 
 App Attest state must be transferred, but the cost of getting it wrong is
 narrower than an earlier draft of this runbook implied. Correcting that
@@ -72,13 +94,43 @@ the required production values while applying the native boundary from
 BIND_HOST=127.0.0.1
 WS_PORT=6200
 INBOUND_TLS_MODE=off
-TARGET_MODE=fixed
 ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
 ```
 
 `ALLOW_INSECURE_INBOUND_NO_TLS`, `TLS_CERT_PATH`, and `TLS_KEY_PATH` must be
 absent. Caddy owns inbound TLS. Place `/etc/mud-web-proxy.env` and any
 referenced APNS key in the ownership and modes required by `systemd.md`.
+
+### Carry the target policy across unchanged
+
+**`TARGET_MODE` is deliberately absent from the boundary above.** It is not a
+host-topology value; it is the service's contract with its users, and it must
+be migrated from the old environment rather than defaulted.
+
+Production serves many MUDs and runs `TARGET_MODE=arbitrary`. Taking the
+default (`fixed`) would restrict every client to a single target and reject
+everyone else with "This proxy only allows connections to …" — a silent,
+total regression for most users that looks like a healthy service. Read the
+old environment; do not infer this value.
+
+`arbitrary` carries mandatory companions, and the proxy refuses to start
+without them rather than falling back to something permissive:
+
+- `ARBITRARY_ALLOWED_PORTS` — the ports clients may reach.
+- Enforced authentication — either `AUTH_MODE=shared-secret` with a ≥32-byte
+  `PROXY_SHARED_SECRET`, or `REQUIRE_APP_AUTH=true` with App Attest
+  configured. Production uses the App Attest path, which is why App Attest is
+  not optional for this deployment: it is what keeps arbitrary mode from
+  being an open relay.
+
+Verify the migrated environment before the window, against the release being
+deployed, rather than discovering a rejected value at service start:
+
+```bash
+cd /path/to/verified/release
+set -a; source /etc/mud-web-proxy.env; set +a
+bun -e 'import{getRuntimeConfig}from"./src/runtime-config.ts";getRuntimeConfig(process.env);console.log("config OK")'
+```
 
 ## Deliberately excluded data
 
