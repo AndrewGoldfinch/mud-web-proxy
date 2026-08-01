@@ -266,6 +266,22 @@ stat -c '%a %U:%G %n' \
 
 ## Installing a release
 
+### Host prerequisites
+
+A clean Ubuntu 26.04 image ships with neither of the tools this section
+requires. Install them before anything else:
+
+```bash
+apt-get update && apt-get install -y unzip gh
+```
+
+`unzip` is not optional — the Bun installer aborts with `error: unzip is
+required to install bun`, so the runtime install below fails outright rather
+than degrading. `gh` is needed for the attestation check; without it the
+provenance step cannot run at all.
+
+Both were confirmed missing on a fresh Ubuntu 26.04 Droplet on 2026-08-01.
+
 ### Obtain and verify the bundle
 
 Releases publish `mud-web-proxy-<version>.tar.gz`, `SHA256SUMS`, and an SPDX

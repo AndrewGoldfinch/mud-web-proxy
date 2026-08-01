@@ -140,7 +140,14 @@ Do not transfer or restore as application state:
 - the old `node_modules`;
 - PM2 state, process dumps, and `ecosystem.config.cjs`;
 - the old Bun installation;
-- Bun's global package-download cache;
+- Bun's package-download cache. **Note where this lives on the new host.**
+  `deploy/sysusers.d/mud-web-proxy.conf` sets the service user's home to
+  `/var/lib/mud-web-proxy`, the same directory as the App Attest state, so
+  Bun writes `~/.bun` there at runtime (292 KiB observed on a rehearsal
+  host, 2026-08-01). Transfer the **file** `attested-keys.json`, never the
+  directory — copying the directory carries this cache along, contradicting
+  this exclusion, and on a reverse copy would overwrite the new host's cache
+  with the old host's;
 - repository-root `cert.pem` and `privkey.pem`;
 - Certbot or other old-host ACME state;
 - runtime logs;
@@ -186,10 +193,27 @@ Before a declared low-traffic window, the production owner must:
    administrative sources, and no public rule for 6200.
 3. Install and verify the monitoring agent and notified CPU, memory, disk,
    and load alerts.
-4. Install the exact versioned Bun runtime, Bun 1.3.14, and verify the
+4. Install the host prerequisites. A clean Ubuntu 26.04 image has **neither**,
+   and both are needed by steps this runbook already requires:
+
+   ```bash
+   apt-get update && apt-get install -y unzip gh
+   ```
+
+   - `unzip` — the Bun installer aborts without it (`error: unzip is required
+to install bun`), so step 5 fails outright rather than degrading.
+   - `gh` — needed to verify the release attestation before extraction. If it
+     is unavailable in your environment, treat the checksum as the minimum
+     bar and record that provenance was not verified, rather than skipping
+     the step silently.
+
+   Verified on a disposable Ubuntu 26.04 host on 2026-08-01: both were
+   missing on a fresh image.
+
+5. Install the exact versioned Bun runtime, Bun 1.3.14, and verify the
    release-local runtime reports that exact version. Do not use an unversioned
    system Bun.
-5. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
+6. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
    according to `systemd.md`. Verify artifact checksum and provenance before
    extraction, install the unit, and keep both the proxy and Caddy inactive.
    On the new host, run this as root to record both service states and require
@@ -224,12 +248,12 @@ Before a declared low-traffic window, the production owner must:
    `Apply an activated release` is forbidden until the final App Attest
    transfer gate.
 
-6. Semantically migrate the environment and referenced non-TLS secret files
+7. Semantically migrate the environment and referenced non-TLS secret files
    as described in the transfer inventory.
-7. Resolve the legacy App Attest path, take the validated pre-stop safety
+8. Resolve the legacy App Attest path, take the validated pre-stop safety
    copy, and record the required metadata. Defer the final copy until the old
    service is quiescent.
-8. Validate the systemd and Caddy configuration while keeping the production
+9. Validate the systemd and Caddy configuration while keeping the production
    systemd service stopped. Any pre-window application-health check must use
    an isolated foreground verification process and configuration with a
    disposable App Attest state path. It must not use or mutate production App
