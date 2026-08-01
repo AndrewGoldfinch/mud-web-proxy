@@ -102,10 +102,34 @@ jobs:
           # hides what a scanner should look at.
           file: release/mud-web-proxy-${{ steps.rel.outputs.version }}.tar.gz
           format: spdx-json
+          # Pinned because the default is too old to read bun.lock. Syft
+          # 1.42.3, which sbom-action v0.24.0 installs by default, catalogued
+          # exactly one package — the archive itself — and still exited zero,
+          # so v4.0.0-rc.7 published a green, empty SBOM. 1.50.0 catalogues
+          # the 50 packages the lockfile declares.
+          syft-version: v1.50.0
           artifact-name: mud-web-proxy-${{ steps.rel.outputs.version }}.spdx.json
           output-file: release/mud-web-proxy-${{ steps.rel.outputs.version }}.spdx.json
           upload-artifact: false
           upload-release-assets: false
+
+      - name: Refuse an empty SBOM
+        # The generator exits zero whether or not it understood the input, so
+        # rc.7 published a green, single-entry SBOM listing only the archive.
+        # An SBOM nobody can rely on is worse than none: it looks like
+        # coverage. Assert the artefact, not that the step ran.
+        env:
+          SBOM: release/mud-web-proxy-${{ steps.rel.outputs.version }}.spdx.json
+        run: |
+          set -euo pipefail
+          count=$(node -p "JSON.parse(require('fs').readFileSync(process.env.SBOM,'utf8')).packages.length")
+          echo "SBOM catalogued $count packages"
+          # The bundle declares its dependencies in bun.lock; a correct scan
+          # finds dozens. One means the scanner saw only the archive itself.
+          if [[ "$count" -lt 10 ]]; then
+            echo "::error::SBOM catalogued only $count package(s) — the scanner did not read bun.lock"
+            exit 1
+          fi
 
       - uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
       - uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
