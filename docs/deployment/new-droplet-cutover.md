@@ -700,15 +700,55 @@ following before accepting the cutover:
 - forwarded client attribution is correct;
 - the App Attest store remains a JSON object with the unchanged final key
   count after service start; and
-- an assertion from an already-registered production client succeeds. This is
-  mandatory; a newly registered client does not satisfy the preservation test.
+- the store-preservation evidence below.
 
-That last one is the only check that can detect a lost store, and it is worth
-understanding why. Registration stays open on the new host whether or not the
-transfer worked, so a freshly installed client registers and connects happily
-against an empty store — it would report success for the exact failure this
-gate exists to catch. Only a device whose key predates the cutover can
-distinguish "the state moved" from "the server accepts new devices".
+### Proving the store actually moved
+
+Registration stays open on the new host whether or not the transfer worked, so
+a freshly installed client registers and connects happily against an empty
+store — it would report success for the exact failure this gate exists to
+catch. Something must distinguish "the state moved" from "the server accepts
+new devices".
+
+**Do not wait for an assertion from a key whose registration predates the
+cutover.** An earlier revision of this runbook made that the mandatory gate.
+It is unsatisfiable in practice, and the 2026-08-02 cutover sat blocked on it:
+
+- the iOS client re-registers on reconnect rather than asserting with its
+  stored key — on the old host, 107 registrations against 141 upgrades;
+- re-registration rewrites `registeredAt` and resets `signCount`, so the
+  entry no longer looks transferred; and
+- the cutover's own outage disconnects every client, forcing all of them
+  through exactly that path.
+
+Use this instead. Compare the live store against the snapshot you installed
+and count devices that re-registered a keyId **already present in the
+snapshot**, whose `publicKey` is byte-identical to the transferred value:
+
+```bash
+jq -n --slurpfile s "$FINAL_STORE" --slurpfile l live-store.json '
+  ($s[0]) as $S | ($l[0]) as $L
+  | [ $L | to_entries[]
+      | select($S[.key] != null)
+      | select(.value.registeredAt != $S[.key].registeredAt) ] as $r
+  | { rereg: ($r | length),
+      identical: ([ $r[] | select(.value.publicKey == $S[.key].publicKey) ] | length),
+      mismatched: ([ $r[] | select(.value.publicKey != $S[.key].publicKey) ] | length) }'
+```
+
+A freshly seeded store cannot produce identical public keys for real devices,
+so `identical > 0` with `mismatched == 0` establishes that the transferred
+material was correct. Pair it with two facts from the journal:
+
+- **zero `Unknown key` rejections** — no client presented a keyId the store
+  could not resolve; and
+- **successful assertions with zero failures** — the verification path works
+  against stored entries.
+
+Together those answer both halves of the question. Beware timestamp-based
+checks: `lastUsedAt` is bulk-rewritten at load, so "used since cutover" is
+meaningless — in one production store 4,974 of 5,230 entries shared a single
+load-time timestamp.
 
 Record acceptance evidence, the final checksum/count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
