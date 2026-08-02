@@ -32,6 +32,32 @@ function makeAssertion(
   return Buffer.from(encode({ signature, authenticatorData }));
 }
 
+/**
+ * Apple signs the assertion nonce, not the concatenation directly:
+ * nonce = SHA256(authenticatorData || clientDataHash), then
+ * ECDSA-SHA256 over that nonce. That is a double hash, and it is the one
+ * shape the verifier could only reach through its null-digest branch —
+ * which OpenSSL silently treated as SHA-256 and BoringSSL rejects outright.
+ */
+function makeAppleStyleAssertion(
+  privateKey: KeyObject,
+  nonce: string,
+  bundleId: string,
+  signCount: number,
+): Buffer {
+  const authenticatorData = makeAuthData(bundleId, signCount);
+  const clientDataHash = createHash('sha256')
+    .update(Buffer.from(nonce, 'hex'))
+    .digest();
+  const assertionNonce = createHash('sha256')
+    .update(Buffer.concat([authenticatorData, clientDataHash]))
+    .digest();
+  const signer = createSign('SHA256');
+  signer.update(assertionNonce);
+  const signature = signer.sign({ key: privateKey, dsaEncoding: 'der' });
+  return Buffer.from(encode({ signature, authenticatorData }));
+}
+
 describe('verifyAssertion', () => {
   const { privateKey, publicKey } = generateKeyPairSync('ec', {
     namedCurve: 'P-256',
@@ -51,6 +77,43 @@ describe('verifyAssertion', () => {
       storedSignCount: 0,
     });
     expect(result.newSignCount).toBe(1);
+  });
+
+  test('verifies an Apple-style assertion signed over the nonce', async () => {
+    const nonce = 'e'.repeat(64);
+    const assertionBuffer = makeAppleStyleAssertion(
+      privateKey,
+      nonce,
+      BUNDLE_ID,
+      1,
+    );
+    const result = await verifyAssertion({
+      assertionBuffer,
+      nonce,
+      bundleId: BUNDLE_ID,
+      storedPublicKey: publicKeyPem,
+      storedSignCount: 0,
+    });
+    expect(result.newSignCount).toBe(1);
+  });
+
+  test('rejects an Apple-style assertion with a tampered nonce', async () => {
+    const nonce = 'f'.repeat(64);
+    const assertionBuffer = makeAppleStyleAssertion(
+      privateKey,
+      nonce,
+      BUNDLE_ID,
+      1,
+    );
+    await expect(
+      verifyAssertion({
+        assertionBuffer,
+        nonce: '0'.repeat(64), // different nonce → signature must not verify
+        bundleId: BUNDLE_ID,
+        storedPublicKey: publicKeyPem,
+        storedSignCount: 0,
+      }),
+    ).rejects.toThrow();
   });
 
   test('rejects replayed signCount', async () => {

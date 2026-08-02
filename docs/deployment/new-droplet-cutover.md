@@ -20,8 +20,14 @@ below because the rollback reasoning still depends on it.
 
 Current, as of 2026-08-01:
 
-- Production runs **4.0.0-rc.8** on Bun 1.3.14, deployed via PM2 from a git
-  checkout at `/opt/mud-proxy`.
+- Production runs **4.0.0-rc.8** on **Node.js 20.x**, deployed via PM2 from a
+  git checkout at `/opt/mud-proxy`. It is **not** Bun. An earlier revision of
+  this runbook claimed Bun 1.3.14; that was wrong, and the error had
+  consequences. Because the cutover was not recognised as a runtime change,
+  no rehearsal exercised App Attest under Bun, and the 2026-08-02 attempt was
+  rolled back when every existing device failed to assert (see below).
+  Re-verify the interpreter at the window with `readlink -f /proc/<pid>/exe`
+  rather than trusting `ps`, which reports the configured interpreter name.
 - `TARGET_MODE=arbitrary`. The service fronts many MUDs; see
   [the target policy section](#carry-the-target-policy-across-unchanged).
 - App Attest is enabled and `REQUIRE_APP_AUTH=true`. It is the authentication
@@ -32,6 +38,15 @@ Current, as of 2026-08-01:
 - rc.8 writes the store **atomically** — a staging directory, fsync, then
   rename — so a copy taken from a running service is far less likely to be
   torn than under v3.1.0.
+
+Moving to the native host is therefore **also a runtime migration**, Node to
+Bun. Treat runtime-sensitive code paths — anything touching crypto, TLS, or
+native bindings — as unverified until exercised under Bun with
+production-shaped data. Bun links BoringSSL where Node links OpenSSL, and the
+two differ in behaviour, not merely in performance. App Attest assertion
+verification is the worked example: it relied on an OpenSSL default-digest
+behaviour BoringSSL removed, passed every rehearsal because registration is
+unaffected, and failed for every existing device in production.
 
 The pre-v4 facts, which still govern rollback because the rollback target may
 predate this deployment:

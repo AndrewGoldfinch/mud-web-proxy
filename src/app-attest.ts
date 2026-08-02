@@ -3,7 +3,6 @@ import {
   createHash,
   X509Certificate,
   createVerify,
-  verify as cryptoVerify,
   createPublicKey,
 } from 'crypto';
 import fs from 'fs';
@@ -828,20 +827,24 @@ export async function verifyAssertion(
     keyPem: string,
     dsaEncoding: 'der' | 'ieee-p1363',
     payload: Buffer,
-    mode: 'sha256' | 'raw',
   ): { ok: boolean; error?: string } => {
     try {
-      if (mode === 'raw') {
-        return {
-          ok: cryptoVerify(
-            null,
-            payload,
-            { key: keyPem, dsaEncoding },
-            signature,
-          ),
-        };
-      }
-
+      // Every payload is verified with an explicit SHA-256 digest.
+      //
+      // This branch used to call crypto.verify(null, ...) for 'raw', on the
+      // assumption that a null algorithm meant "the payload is already the
+      // digest". It does not. OpenSSL silently substitutes the key's default
+      // digest, which for EC keys is SHA-256, so crypto.verify(null, payload)
+      // was always identical to createVerify('SHA256').update(payload) —
+      // verified over 1200 signatures across both DSA encodings.
+      //
+      // BoringSSL removed that implicit default, so under Bun every 'raw'
+      // attempt threw NO_DEFAULT_DIGEST instead of verifying. Existing keys
+      // could never assert, clients rotated and re-registered in a loop, and
+      // no user could open a session while /health stayed green.
+      //
+      // Every candidate payload therefore goes through this one explicit
+      // SHA-256 verifier; the payloads themselves are what differ.
       const verifier = createVerify('SHA256');
       verifier.update(payload);
       return {
@@ -857,34 +860,25 @@ export async function verifyAssertion(
 
   const buildPayloadVariants = (
     clientDataHash: Buffer,
-  ): Array<{ name: string; payload: Buffer; mode: 'sha256' | 'raw' }> => {
+  ): Array<{ name: string; payload: Buffer }> => {
     const authPlusClient = Buffer.concat([authenticatorData, clientDataHash]);
     const clientPlusAuth = Buffer.concat([clientDataHash, authenticatorData]);
+    // The former ':sha256'/':raw' pairs over the same payload were the same
+    // operation once the null-digest misconception above is removed, so only
+    // the distinct payloads remain. The pre-hashed pair is the one Apple
+    // actually uses: it signs SHA256(authenticatorData || clientDataHash).
     return [
+      { name: 'authPlusClient', payload: authPlusClient },
+      { name: 'clientPlusAuth', payload: clientPlusAuth },
       {
-        name: 'authPlusClient:sha256',
-        payload: authPlusClient,
-        mode: 'sha256',
-      },
-      {
-        name: 'clientPlusAuth:sha256',
-        payload: clientPlusAuth,
-        mode: 'sha256',
-      },
-      { name: 'authPlusClient:raw', payload: authPlusClient, mode: 'raw' },
-      { name: 'clientPlusAuth:raw', payload: clientPlusAuth, mode: 'raw' },
-      {
-        name: 'sha256(authPlusClient):raw',
+        name: 'sha256(authPlusClient)',
         payload: createHash('sha256').update(authPlusClient).digest(),
-        mode: 'raw',
       },
       {
-        name: 'sha256(clientPlusAuth):raw',
+        name: 'sha256(clientPlusAuth)',
         payload: createHash('sha256').update(clientPlusAuth).digest(),
-        mode: 'raw',
       },
-      { name: 'clientOnly:sha256', payload: clientDataHash, mode: 'sha256' },
-      { name: 'clientOnly:raw', payload: clientDataHash, mode: 'raw' },
+      { name: 'clientOnly', payload: clientDataHash },
     ];
   };
 
@@ -897,7 +891,6 @@ export async function verifyAssertion(
           keyCandidate.key,
           'der',
           payloadVariant.payload,
-          payloadVariant.mode,
         );
         attemptDetails.push(
           `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
@@ -911,7 +904,6 @@ export async function verifyAssertion(
           keyCandidate.key,
           'ieee-p1363',
           payloadVariant.payload,
-          payloadVariant.mode,
         );
         attemptDetails.push(
           `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
@@ -928,7 +920,6 @@ export async function verifyAssertion(
         keyCandidate.key,
         'der',
         Buffer.concat([authenticatorData, candidate.value]),
-        'sha256',
       );
       attemptDetails.push(
         `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
@@ -942,7 +933,6 @@ export async function verifyAssertion(
         keyCandidate.key,
         'ieee-p1363',
         Buffer.concat([authenticatorData, candidate.value]),
-        'sha256',
       );
       attemptDetails.push(
         `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,

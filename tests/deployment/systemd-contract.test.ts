@@ -180,7 +180,10 @@ describe('native environment contract', () => {
 describe('host Caddy template', () => {
   test('uses a reusable hostname and loopback-only upstream', () => {
     const caddy = readArtifact('deploy/caddy/Caddyfile.example');
-    expect(caddy).toMatch(/^proxy\.example\.com\s*\{/);
+    // Multiline: the site block need not be the first line of the file. What
+    // this guards is the reusable placeholder hostname and the loopback-only
+    // upstream, not the absence of a header comment explaining the policy.
+    expect(caddy).toMatch(/^proxy\.example\.com\s*\{/m);
     expect(caddy).toContain('reverse_proxy 127.0.0.1:6200');
     expect(caddy).not.toMatch(
       /reverse_proxy\s+(?:0\.0\.0\.0|\[?::\]?|localhost):6200/,
