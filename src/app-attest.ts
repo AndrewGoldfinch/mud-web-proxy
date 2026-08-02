@@ -522,9 +522,15 @@ export async function verifyAttestation(
     !credCert.subject.includes(teamId) ||
     !credCert.subject.includes(bundleId)
   ) {
+    // X509Certificate.subject is newline-separated between RDN components
+    // ("CN=…\nOU=…\nO=Apple Inc.\nST=California"), so interpolating it raw
+    // splits this warning across four journal entries and detaches the
+    // continuation lines from their context. Flatten to RFC 4514 style so one
+    // event is one line.
+    const flatSubject = credCert.subject.replace(/\r?\n/g, ', ');
     // eslint-disable-next-line no-console
     console.warn(
-      `[app-attest] Certificate subject mismatch; continuing. expected=${teamId}.${bundleId} subject=${credCert.subject}`,
+      `[app-attest] Certificate subject mismatch; continuing. expected=${teamId}.${bundleId} subject=${flatSubject}`,
     );
   }
 
