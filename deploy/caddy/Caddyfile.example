@@ -1,6 +1,76 @@
+# Public HTTPS/WSS edge for mud-web-proxy.
+#
+# This is an ALLOWLIST, not a catch-all reverse proxy. It mirrors the path
+# policy the previous nginx edge enforced; an earlier revision of this file
+# proxied every path to the application, which widened the exposed surface
+# and let commodity `.env` scanners reach the app and write a WARN line per
+# probe.
+#
+# The application does authenticate its own sensitive routes — /diagnostic
+# needs ENABLE_DIAGNOSTICS + ADMIN_TOKEN, /debug/apns/* needs
+# APNS_TEST_SECRET — so this file is defence in depth, not the only control.
+#
+# Replace proxy.example.com with the real public hostname.
+
 proxy.example.com {
-	reverse_proxy 127.0.0.1:6200 {
-		header_up X-Forwarded-For {remote_host}
-		header_up X-Real-IP {remote_host}
+	# Bound request bodies at the edge. The application caps them too; this
+	# stops oversized bodies being buffered before it gets a say.
+	request_body {
+		max_size 64KB
+	}
+
+	# Credential and VCS scanners: close the connection with no response,
+	# equivalent to nginx's `return 444`. These never reach the application
+	# and never produce an application log line.
+	@scanners path_regexp (?i)(^|/)\.(env|git|svn|hg)($|/)
+	handle @scanners {
+		abort
+	}
+	@devserver path /@fs/*
+	handle @devserver {
+		abort
+	}
+
+	# Allowlisted application routes. Anything absent here is answered below
+	# and never reaches the application. "/" is the WebSocket endpoint and is
+	# included unconditionally.
+	#
+	# The nginx edge additionally returned 426 for a non-upgrade GET /, using
+	# `if ($http_upgrade != "websocket")`. That is deliberately NOT reproduced
+	# here. Expressing it in Caddy needs a header matcher sitting in the path
+	# of every WebSocket connection, and a matcher that silently fails to
+	# match answers 426 to real clients and takes the whole service down — a
+	# failure an earlier draft of this file demonstrated under test. The
+	# upside was avoiding one "Unhandled HTTP request" log line for a plain
+	# GET /, which the application already answers with 404. Not worth the
+	# blast radius.
+	@app path / /health /attest/challenge /attest/register /attest/register/ /diagnostic /diagnostic/api /debug/apns/test /debug/apns/test/ /debug/apns/alert-test /debug/apns/alert-test/
+	handle @app {
+		reverse_proxy 127.0.0.1:6200 {
+			# Must OVERWRITE, never append. The application reads
+			# `.split(',')[0]`, so an appended value would leave the
+			# caller's own header at the head of the list and hand it
+			# control of client identity, per-IP limits, and every log
+			# line. Verified: a spoofed X-Forwarded-For / X-Real-IP from
+			# the client is discarded in favour of the real socket peer.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+		}
+	}
+
+	# Everything else stops here.
+	handle {
+		respond 404
 	}
 }
+
+# NOTE — no edge rate limiting.
+#
+# The nginx edge enforced `limit_req` zones (attest 10r/m burst 5, httpapi
+# 60r/m burst 20). Caddy has no native rate limiter; it requires an xcaddy
+# build with a third-party module, which conflicts with installing Caddy
+# from its official stable Ubuntu repository. The application rate-limits
+# /attest/challenge itself, but /health and /attest/register are unbounded
+# at the edge on this topology. Decide explicitly between a custom Caddy
+# build, application-side limits, or accepting it — do not let it pass
+# unnoticed because this file is silent about it.
