@@ -116,7 +116,11 @@ describe('store summary and assertion tracking', () => {
     // cannot answer "has this key ever asserted?" — in production 4,974 of
     // 5,230 entries shared one load-time timestamp. lastAssertedAt must stay
     // absent so that question remains answerable.
-    const file = path.join(os.tmpdir(), `attest-backfill-${Date.now()}.json`);
+    // mkdtempSync, not a predictable name in the shared temp dir: a
+    // guessable path in /tmp can be pre-created as a symlink by another
+    // local user. Same reason CodeQL flags js/insecure-temporary-file.
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'attest-backfill-'));
+    const file = path.join(dir, 'store.json');
     fs.writeFileSync(
       file,
       JSON.stringify({
@@ -136,7 +140,7 @@ describe('store summary and assertion tracking', () => {
       expect(loaded?.lastAssertedAt).toBeUndefined(); // never backfilled
       expect(attestedKeyStoreSummary().keysAsserted).toBe(0);
     } finally {
-      if (fs.existsSync(file)) fs.unlinkSync(file);
+      fs.rmSync(dir, { recursive: true, force: true });
     }
   });
 });
