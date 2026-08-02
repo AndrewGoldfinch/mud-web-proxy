@@ -117,6 +117,7 @@ import {
   validateAndConsumeNonce,
   verifyAttestation,
   loadAttestedKeys,
+  attestedKeyStoreSummary,
   debouncedSaveAttestedKeys,
   flushAttestedKeys,
   setAttestedKey,
@@ -124,6 +125,13 @@ import {
   getAttestedKey,
   updateSignCount,
 } from './src/app-attest';
+import type { AssertionVerificationError } from './src/app-attest';
+
+// Unhandled-request log rate limiting. Module-level: the counter must
+// survive across requests, and there is exactly one HTTP server per process.
+const UNHANDLED_LOG_INTERVAL_MS = 30_000;
+let unhandledRequestLogged = 0;
+let unhandledRequestSuppressed = 0;
 
 // Log levels enum
 
@@ -1151,6 +1159,17 @@ const srv: ServerConfig = {
     // than from a client that cannot authenticate.
     if (appAttestEnabled) {
       loadAttestedKeys(attestedKeysPath);
+      const storeSummary = attestedKeyStoreSummary();
+      srv.logInfo(
+        `App Attest store loaded keys=${storeSummary.totalKeys} ` +
+          `withSignCount=${storeSummary.keysWithSignCount} ` +
+          `asserted=${storeSummary.keysAsserted} ` +
+          `oldestRegistered=${storeSummary.oldestRegisteredAt ?? 'none'} ` +
+          `newestRegistered=${storeSummary.newestRegisteredAt ?? 'none'} ` +
+          `path=${attestedKeysPath}`,
+        undefined,
+        'auth',
+      );
       srv.logInfo(
         `App Attest ENABLED (EXPERIMENTAL): bundleId=${appAttestBundleId} ` +
           `teamId=${appAttestTeamId} keysPath=${attestedKeysPath} ` +
@@ -1732,11 +1751,25 @@ const srv: ServerConfig = {
           }
         })();
       } else {
-        srv.logWarn(
-          `Unhandled HTTP request method=${req.method || 'UNKNOWN'} path=${pathOnly || '<empty>'} peer=${requestPeer(req)}`,
-          undefined,
-          'init',
-        );
+        // Volume here is attacker-controlled: commodity scanners walk dozens
+        // of paths per second (`/.env`, `/config/.env`, `/wp-admin`), and one
+        // WARN each is a log-flooding vector. Emit at most one line per
+        // window and carry the suppressed count, so the signal survives
+        // without the flood.
+        const now = Date.now();
+        if (now - unhandledRequestLogged >= UNHANDLED_LOG_INTERVAL_MS) {
+          const suppressed = unhandledRequestSuppressed;
+          unhandledRequestSuppressed = 0;
+          unhandledRequestLogged = now;
+          srv.logWarn(
+            `Unhandled HTTP request method=${req.method || 'UNKNOWN'} path=${pathOnly || '<empty>'} peer=${requestPeer(req)}` +
+              (suppressed > 0 ? ` suppressed=${suppressed}` : ''),
+            undefined,
+            'init',
+          );
+        } else {
+          unhandledRequestSuppressed++;
+        }
         res.writeHead(404, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Not found' }));
       }
@@ -1928,8 +1961,22 @@ const srv: ServerConfig = {
               });
               updateSignCount(keyId, assertResult.newSignCount);
               debouncedSaveAttestedKeys(attestedKeysPath);
+              // keyRef is a prefix of the RAW keyId, which is what the store
+              // is keyed by. summarizeToken emits a hash, so a log line alone
+              // could not be joined to a store entry without re-hashing every
+              // key in the file. keyAgeDays distinguishes a device that was
+              // already registered from one that just enrolled — the question
+              // every state-transfer verification actually asks.
+              const keyAgeDays = Math.floor(
+                (Date.now() - Date.parse(storedKey.registeredAt)) / 86_400_000,
+              );
               srv.logInfo(
-                `App Attest verified keyId=${summarizeToken(keyId)} signCount=${previousSignCount}->${assertResult.newSignCount} peer=${requestPeer(req)}`,
+                `App Attest verified keyId=${summarizeToken(keyId)} ` +
+                  `keyRef=${keyId.slice(0, 10)} ` +
+                  `signCount=${previousSignCount}->${assertResult.newSignCount} ` +
+                  `variant=${assertResult.matchedVariant} ` +
+                  `keyAgeDays=${Number.isFinite(keyAgeDays) ? keyAgeDays : 'unknown'} ` +
+                  `peer=${requestPeer(req)}`,
                 undefined,
                 'auth',
               );
@@ -1945,6 +1992,19 @@ const srv: ServerConfig = {
                 undefined,
                 'auth',
               );
+              // The ~120-entry attempt matrix is debug-only: at WARN it is
+              // several KB of near-identical text per rejection, which is a
+              // log-flooding hazard on an unauthenticated path and hides the
+              // summary above.
+              const details = (err as AssertionVerificationError)
+                .attemptDetails;
+              if (details) {
+                srv.logDebug(
+                  'App Attest assertion attempts: ' + details.join('|'),
+                  undefined,
+                  'auth',
+                );
+              }
               rejectUpgrade(socket, 401, 'Assertion verification failed');
               return;
             }

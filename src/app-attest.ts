@@ -683,6 +683,29 @@ export interface AssertionInput {
 
 export interface AssertionResult {
   newSignCount: number;
+  /**
+   * Which of the candidate combinations actually verified, e.g.
+   * `stored:sha256NonceBytes:sha256(authPlusClient):der`.
+   *
+   * The verifier tries many shapes because Apple's assertion encoding has
+   * varied. Recording the winner is what makes "which code path does
+   * production depend on?" answerable: a runtime or client change that
+   * silently moves production onto a different variant shows up here rather
+   * than as an outage. Not logging it is why a Bun/BoringSSL incompatibility
+   * reached production in rc.8 — every rehearsal passed while depending on a
+   * variant that the new runtime could not execute.
+   */
+  matchedVariant: string;
+}
+
+/** Error thrown when no candidate verified. Carries the full attempt matrix. */
+export interface AssertionVerificationError extends Error {
+  /**
+   * Every attempt and its outcome. Deliberately not in `message`: it runs to
+   * ~120 entries, and repeating one error 120 times buries the single fact
+   * that matters. Callers log this only at debug level.
+   */
+  attemptDetails?: string[];
 }
 
 export async function verifyAssertion(
@@ -889,62 +912,71 @@ export async function verifyAssertion(
   };
 
   let valid = false;
+  let matchedVariant = '';
   const attemptDetails: string[] = [];
   for (const keyCandidate of keyCandidates) {
     for (const candidate of candidateClientDataHashes) {
       for (const payloadVariant of buildPayloadVariants(candidate.value)) {
+        const derLabel = `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:der`;
         const derResult = verifyWithEncodingAndPayload(
           keyCandidate.key,
           'der',
           payloadVariant.payload,
         );
         attemptDetails.push(
-          `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+          `${derLabel}=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
         );
         if (derResult.ok) {
           valid = true;
+          matchedVariant = derLabel;
           break;
         }
 
+        const p1363Label = `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:ieee-p1363`;
         const p1363Result = verifyWithEncodingAndPayload(
           keyCandidate.key,
           'ieee-p1363',
           payloadVariant.payload,
         );
         attemptDetails.push(
-          `${keyCandidate.name}:${candidate.name}:${payloadVariant.name}:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+          `${p1363Label}=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
         );
         if (p1363Result.ok) {
           valid = true;
+          matchedVariant = p1363Label;
           break;
         }
       }
       if (valid) {
         break;
       }
+      const legacyDerLabel = `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:der`;
       const derResult = verifyWithEncodingAndPayload(
         keyCandidate.key,
         'der',
         Buffer.concat([authenticatorData, candidate.value]),
       );
       attemptDetails.push(
-        `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:der=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
+        `${legacyDerLabel}=${derResult.ok ? 'ok' : derResult.error || 'fail'}`,
       );
       if (derResult.ok) {
         valid = true;
+        matchedVariant = legacyDerLabel;
         break;
       }
 
+      const legacyP1363Label = `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:ieee-p1363`;
       const p1363Result = verifyWithEncodingAndPayload(
         keyCandidate.key,
         'ieee-p1363',
         Buffer.concat([authenticatorData, candidate.value]),
       );
       attemptDetails.push(
-        `${keyCandidate.name}:${candidate.name}:legacyAuthPlusClient:ieee-p1363=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
+        `${legacyP1363Label}=${p1363Result.ok ? 'ok' : p1363Result.error || 'fail'}`,
       );
       if (p1363Result.ok) {
         valid = true;
+        matchedVariant = legacyP1363Label;
         break;
       }
     }
@@ -960,12 +992,34 @@ export async function verifyAssertion(
     // accepting one makes App Attest a decorative header check. There is
     // deliberately no flag, test hook, or environment variable that reaches
     // this branch — if you are adding one, you are removing the feature.
-    throw new Error(
-      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, keyIdMatchesCandidate=${keyIdMatchesAnyCandidate}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.join('|')})`,
+    // Summarise rather than enumerate. The full matrix is ~120 entries and
+    // the overwhelmingly common case is one error repeated for every one of
+    // them — a single BoringSSL rejection produced 120 identical copies in
+    // production, several KB on one line, burying the one distinct fact.
+    // Distinct classes with counts say the same thing in a line you can read.
+    const errorClasses = new Map<string, number>();
+    for (const detail of attemptDetails) {
+      const outcome = detail.slice(detail.indexOf('=') + 1);
+      const label = outcome.startsWith('verify-threw:')
+        ? (outcome.split(':').pop() ?? 'threw')
+        : outcome === 'fail'
+          ? 'sig-mismatch'
+          : outcome;
+      errorClasses.set(label, (errorClasses.get(label) ?? 0) + 1);
+    }
+    const errorSummary = [...errorClasses.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([label, count]) => `${label} x${count}`)
+      .join(',');
+
+    const error: AssertionVerificationError = new Error(
+      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, keyIdMatchesCandidate=${keyIdMatchesAnyCandidate}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.length}, errors=${errorSummary})`,
     );
+    error.attemptDetails = attemptDetails;
+    throw error;
   }
 
-  return { newSignCount: parsed.signCount };
+  return { newSignCount: parsed.signCount, matchedVariant };
 }
 
 // ---------- Attested keys store ----------
@@ -976,10 +1030,17 @@ export interface AttestedKeyEntry {
   signCount: number;
   registeredAt: string; // ISO timestamp
   /**
-   * ISO timestamp of the last successful assertion. Absent on entries
-   * written before MWP-95, which fall back to `registeredAt` for TTL.
+   * TTL clock. Advanced on a successful assertion, but ALSO backfilled at
+   * load for entries that predate the TTL, so it answers "should this key be
+   * reaped?" and not "has this key ever been used?".
    */
   lastUsedAt?: string;
+  /**
+   * ISO timestamp of the last successful assertion. Written only by
+   * `updateSignCount` and never backfilled, so unlike `lastUsedAt` its
+   * absence genuinely means "this key has not asserted".
+   */
+  lastAssertedAt?: string;
 }
 
 /**
@@ -1068,6 +1129,56 @@ export function updateSignCount(keyId: string, newCount: number): void {
   // This is the only "the device is still here" signal we get, and it is what
   // keeps an active key from aging out under the TTL.
   entry.lastUsedAt = new Date().toISOString();
+  // lastUsedAt is ALSO backfilled at load for entries that predate the TTL
+  // (see loadAttestedKeys), so in a mature store most entries share a handful
+  // of load-time timestamps and the field cannot answer "did this key
+  // actually assert?". In production 4,974 of 5,230 entries shared one
+  // timestamp. lastAssertedAt is written only here, on a real assertion, and
+  // is never backfilled — so it answers that question and lastUsedAt keeps
+  // its TTL meaning.
+  entry.lastAssertedAt = entry.lastUsedAt;
+}
+
+/** Counts for operator visibility. No key material, no keyIds. */
+export interface AttestedKeyStoreSummary {
+  totalKeys: number;
+  /** Keys that have completed at least one assertion. */
+  keysWithSignCount: number;
+  /** Keys that have asserted since `lastAssertedAt` was introduced. */
+  keysAsserted: number;
+  oldestRegisteredAt: string | null;
+  newestRegisteredAt: string | null;
+}
+
+/**
+ * Summarise the loaded store.
+ *
+ * Verifying a state transfer previously meant SSH plus `jq` over a multi-MB
+ * file. `keysWithSignCount` is the load-bearing figure: a total alone cannot
+ * distinguish a transferred store from a freshly seeded one, whereas a
+ * population carrying prior assertion history can.
+ */
+export function attestedKeyStoreSummary(): AttestedKeyStoreSummary {
+  let keysWithSignCount = 0;
+  let keysAsserted = 0;
+  let oldest: string | null = null;
+  let newest: string | null = null;
+  for (const entry of attestedKeys.values()) {
+    if (entry.signCount > 0) keysWithSignCount++;
+    if (entry.lastAssertedAt) keysAsserted++;
+    const registered = entry.registeredAt;
+    if (registered) {
+      if (oldest === null || registered < oldest) oldest = registered;
+      if (newest === null || registered > newest) newest = registered;
+    }
+  }
+  return {
+    totalKeys: attestedKeys.size,
+    keysWithSignCount,
+    keysAsserted,
+    oldestRegisteredAt: oldest,
+    newestRegisteredAt: newest,
+  };
 }
 
 export function loadAttestedKeys(filePath: string): void {

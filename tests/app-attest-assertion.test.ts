@@ -116,6 +116,62 @@ describe('verifyAssertion', () => {
     ).rejects.toThrow();
   });
 
+  test('names the variant that actually verified', async () => {
+    // Without this, "which code path does production depend on?" is
+    // unanswerable from logs — which is how a runtime incompatibility in that
+    // path reached production in rc.8 while every rehearsal passed.
+    const nonce = '1'.repeat(64);
+    const result = await verifyAssertion({
+      assertionBuffer: makeAppleStyleAssertion(
+        privateKey,
+        nonce,
+        BUNDLE_ID,
+        1,
+      ),
+      nonce,
+      bundleId: BUNDLE_ID,
+      storedPublicKey: publicKeyPem,
+      storedSignCount: 0,
+    });
+    expect(result.matchedVariant).toBeTruthy();
+    // key candidate : client-hash candidate : payload variant : encoding
+    expect(result.matchedVariant.split(':').length).toBeGreaterThanOrEqual(4);
+    expect(result.matchedVariant).toContain('der');
+  });
+
+  test('summarises failures instead of enumerating every attempt', async () => {
+    const nonce = '2'.repeat(64);
+    const assertionBuffer = makeAssertion(privateKey, nonce, BUNDLE_ID, 1);
+    const tampered = Buffer.from(assertionBuffer);
+    tampered[tampered.length - 1] ^= 0xff;
+
+    let caught: Error | undefined;
+    try {
+      await verifyAssertion({
+        assertionBuffer: tampered,
+        nonce,
+        bundleId: BUNDLE_ID,
+        storedPublicKey: publicKeyPem,
+        storedSignCount: 0,
+      });
+    } catch (err) {
+      caught = err as Error;
+    }
+
+    expect(caught).toBeDefined();
+    const message = caught!.message;
+    // A count and error classes, not the matrix itself. One production
+    // failure line repeated the same error 120 times across several KB.
+    expect(message).toMatch(/attempts=\d+/);
+    expect(message).toMatch(/errors=[^,]+ x\d+/);
+    expect(message).not.toContain('|');
+    expect(message.length).toBeLessThan(600);
+    // The full matrix is still available to callers, for debug-level logging.
+    const details = (caught as { attemptDetails?: string[] }).attemptDetails;
+    expect(Array.isArray(details)).toBe(true);
+    expect(details!.length).toBeGreaterThan(10);
+  });
+
   test('rejects replayed signCount', async () => {
     const nonce = 'b'.repeat(64);
     const assertionBuffer = makeAssertion(privateKey, nonce, BUNDLE_ID, 0);
