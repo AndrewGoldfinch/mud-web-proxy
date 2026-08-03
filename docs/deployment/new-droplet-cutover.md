@@ -700,15 +700,152 @@ following before accepting the cutover:
 - forwarded client attribution is correct;
 - the App Attest store remains a JSON object with the unchanged final key
   count after service start; and
-- an assertion from an already-registered production client succeeds. This is
-  mandatory; a newly registered client does not satisfy the preservation test.
+- the store-preservation evidence below.
 
-That last one is the only check that can detect a lost store, and it is worth
-understanding why. Registration stays open on the new host whether or not the
-transfer worked, so a freshly installed client registers and connects happily
-against an empty store — it would report success for the exact failure this
-gate exists to catch. Only a device whose key predates the cutover can
-distinguish "the state moved" from "the server accepts new devices".
+### Proving the store actually moved
+
+Registration stays open on the new host whether or not the transfer worked, so
+a freshly installed client registers and connects happily against an empty
+store — it would report success for the exact failure this gate exists to
+catch. Something must distinguish "the state moved" from "the server accepts
+new devices".
+
+**Do not wait for an assertion from a key whose registration predates the
+cutover.** An earlier revision of this runbook made that the mandatory gate.
+It is unsatisfiable in practice, and the 2026-08-02 cutover sat blocked on it:
+
+- the iOS client re-registers on reconnect rather than asserting with its
+  stored key — on the old host, 107 registrations against 141 upgrades;
+- re-registration rewrites `registeredAt` and resets `signCount`, so the
+  entry no longer looks transferred; and
+- the cutover's own outage disconnects every client, forcing all of them
+  through exactly that path.
+
+**And do not accept anything a returning device produces as evidence that the
+transfer worked.** The Secure Enclave key survives in the Keychain, so a
+re-registering device re-attests the _same_ key: same keyId, same `publicKey`,
+fresh `registeredAt`, overwriting in place. An empty store refilled by the
+fleet reconnecting therefore reproduces the snapshot's keyIds and its key
+material byte for byte, answers every subsequent assertion from an entry it
+wrote itself, and never logs an unknown key. Matching public keys, successful
+assertions, and zero unknown-key rejections all pass under the precise failure
+this gate exists to catch. Each is corroboration; none is proof.
+
+What re-registration cannot fabricate is a device that never came back. Twelve
+devices reconnected during the 2026-08-02 window; the store held 5,230
+entries. **That gap is the evidence.** Gate on it.
+
+#### Capture the live store and compare it to the snapshot
+
+The service rewrites the whole in-memory map on every registration and every
+successful assertion, so once traffic has flowed the file on the new host is
+the service's own output, not the file you installed. Set `CUTOVER_START` to
+the routing-forward moment.
+
+```bash
+set -euo pipefail
+umask 077
+
+: "${NEW_HOST:?}"
+: "${STAGING_DIR:?}"
+# Millisecond-zero, so the string comparison below is correct against the
+# ISO timestamps the service writes: date -u +%Y-%m-%dT%H:%M:%S.000Z
+: "${CUTOVER_START:?}"   # e.g. 2026-08-02T04:07:19.000Z
+CUTOVER_EPOCH="$(date -u -d "$CUTOVER_START" +%s)"
+
+FINAL_STORE="$STAGING_DIR/attested-keys.post-stop.json"
+LIVE_STORE="$STAGING_DIR/attested-keys.live.json"
+REMOTE_FINAL_STORE=/var/lib/mud-web-proxy/attested-keys.json
+
+ssh "$NEW_HOST" "sudo cat '$REMOTE_FINAL_STORE'" >"$LIVE_STORE"
+jq -e 'type == "object"' "$LIVE_STORE" >/dev/null
+
+# The service must have rewritten the file since install, or this compares
+# the installed snapshot against itself and passes for free.
+INSTALLED_SHA256="$(<"$STAGING_DIR/attested-keys.post-stop.sha256")"
+LIVE_SHA256="$(sha256sum "$LIVE_STORE" | awk '{print $1}')"
+[[ "$INSTALLED_SHA256" =~ ^[0-9a-f]{64}$ ]]
+[[ "$LIVE_SHA256" != "$INSTALLED_SHA256" ]]
+
+EVIDENCE="$(
+  jq -n --arg cut "$CUTOVER_START" \
+    --slurpfile s "$FINAL_STORE" --slurpfile l "$LIVE_STORE" '
+    ($s[0]) as $S | ($l[0]) as $L
+    | [ $L | to_entries[]
+        | select($S[.key] != null)
+        | select(.value.registeredAt != $S[.key].registeredAt) ] as $rereg
+    | { snapshot: ($S | length),
+        live: ($L | length),
+        missing: ([ $S | keys[] | select($L[.] == null) ] | length),
+        rereg: ($rereg | length),
+        mismatched:
+          ([ $rereg[] | select(.value.publicKey != $S[.key].publicKey) ]
+           | length),
+        asserted_untouched:
+          ([ $L | to_entries[]
+             | select($S[.key] != null)
+             | select(.value.registeredAt == $S[.key].registeredAt)
+             | select((.value.lastAssertedAt // "") > $cut) ] | length) }'
+)"
+printf '%s\n' "$EVIDENCE"
+MISSING="$(jq -er '.missing' <<<"$EVIDENCE")"
+MISMATCHED="$(jq -er '.mismatched' <<<"$EVIDENCE")"
+((MISSING == 0))
+((MISMATCHED == 0))
+```
+
+`missing == 0` is the gate: every keyId in the snapshot is still resolvable on
+the new host, including the thousands belonging to devices that never
+reconnected. Nothing but a loaded store can produce that.
+
+The one legitimate cause of `missing > 0` is TTL eviction at load —
+`loadAttestedKeys` drops entries whose `lastUsedAt` is older than 90 days.
+Entries with no `lastUsedAt` are backfilled to load time and survive, so this
+only reaches keys that were already stale. If the gate trips, list the missing
+entries and confirm every one of them is past the TTL before proceeding;
+anything else is a lost store.
+
+```bash
+jq -n --slurpfile s "$FINAL_STORE" --slurpfile l "$LIVE_STORE" '
+  ($s[0]) as $S | ($l[0]) as $L
+  | [ $S | to_entries[] | select($L[.key] == null)
+      | { key, lastUsedAt: .value.lastUsedAt,
+          registeredAt: .value.registeredAt } ]'
+```
+
+#### Corroboration
+
+`mismatched == 0` says the key material you transferred matches what real
+devices present — it rules out corruption in transfer, not a lost store.
+
+`asserted_untouched > 0` is the strongest single signal available: an entry
+whose `registeredAt` still matches the snapshot has not been rewritten on this
+host, and `lastAssertedAt` is written only by `updateSignCount` on a
+successful assertion and is never backfilled. A count above zero means the
+server verified an assertion against material it did not itself write. Record
+it when it appears — but it depends on some device asserting before it
+re-registers, which the cutover outage works against, so it cannot be
+mandatory.
+
+The journal count belongs here too, and the message to search for is the log
+line, not the HTTP status text. `wsproxy.ts` logs `Rejected upgrade: unknown
+App Attest keyId <keyId>`; `Unknown key` is only the 401 reason returned to
+the client and never appears in the journal, so grepping for it returns zero
+whether or not upgrades were rejected.
+
+```bash
+UNKNOWN_KEY_REJECTS="$(
+  ssh "$NEW_HOST" \
+    "sudo journalctl -u mud-web-proxy --since '@$CUTOVER_EPOCH' --no-pager" |
+    grep -c 'Rejected upgrade: unknown App Attest keyId' || true
+)"
+printf 'unknown-key rejections since cutover: %s\n' "$UNKNOWN_KEY_REJECTS"
+```
+
+Finally, beware timestamp-based checks: `lastUsedAt` is bulk-rewritten at
+load, so "used since cutover" is meaningless — in one production store 4,974
+of 5,230 entries shared a single load-time timestamp. Use `lastAssertedAt`,
+which is never backfilled.
 
 Record acceptance evidence, the final checksum/count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
