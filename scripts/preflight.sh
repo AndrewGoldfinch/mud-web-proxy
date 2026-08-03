@@ -64,21 +64,41 @@ run_gate "test:unit" bun run test:unit
 run_gate "build" bun run build
 
 if ((FULL)); then
-  run_gate "test:e2e:mock" bun run test:e2e:mock
-  run_gate "audit" bun run audit
-  # The `container` job runs this same script in CI. It needs a working
-  # Docker daemon, so skip rather than fail when there isn't one — but say so
-  # out loud, because a silent skip is how --full drifts back into claiming
-  # coverage it does not have.
-  if docker info >/dev/null 2>&1; then
-    run_gate "container" bash tests/container/run.sh
-  else
-    printf '\n\033[1m── container\033[0m\n  SKIPPED — no Docker daemon. CI runs this job; it is not covered here.\n'
-    SKIPPED+=("container (no Docker)")
-  fi
-  # `secret-scan` uses the gitleaks GitHub Action, which has no local
-  # equivalent invocation in this repo. Deliberately not covered.
-  SKIPPED+=("secret-scan (gitleaks action, CI-only)")
+  # This map DRIVES --full. It is executable data, not documentation: if a
+  # job is listed as cmd: and the command is wrong, --full breaks loudly. The
+  # previous version described its coverage in prose, which let the claim and
+  # the behaviour drift apart silently (review on #107, then again on #109).
+  #
+  # check:defect-classes fails the build if these keys and the job list in
+  # .github/workflows/test.yml disagree in either direction.
+  declare -A CI_JOB_COVERAGE=(
+    [quality]="inline"
+    [mock-e2e]="cmd:bun run test:e2e:mock"
+    [dependency-scan]="cmd:bun run audit"
+    [container]="docker:bash tests/container/run.sh"
+    [secret-scan]="skip:gitleaks GitHub Action, no local invocation"
+  )
+
+  for job in "${!CI_JOB_COVERAGE[@]}"; do
+    spec="${CI_JOB_COVERAGE[$job]}"
+    case "$spec" in
+      inline) ;; # already covered by the quality gates above
+      cmd:*) run_gate "$job" bash -c "${spec#cmd:}" ;;
+      docker:*)
+        if docker info >/dev/null 2>&1; then
+          run_gate "$job" bash -c "${spec#docker:}"
+        else
+          printf '\n\033[1m── %s\033[0m\n  SKIPPED — no Docker daemon.\n' "$job"
+          SKIPPED+=("$job (no Docker daemon)")
+        fi
+        ;;
+      skip:*) SKIPPED+=("$job (${spec#skip:})") ;;
+      *)
+        printf 'preflight: unknown coverage spec for %s: %s\n' "$job" "$spec" >&2
+        FAILED+=("$job (bad coverage spec)")
+        ;;
+    esac
+  done
 fi
 
 printf '\n\033[1m── summary\033[0m\n'

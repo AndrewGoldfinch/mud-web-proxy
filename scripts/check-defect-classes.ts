@@ -48,6 +48,26 @@ const allFiles = walk(ROOT);
 const tsFiles = allFiles.filter((f) => f.endsWith('.ts'));
 const rel = (f: string) => path.relative(ROOT, f);
 
+/**
+ * Blank out whole-line comments so a gate tests executable code, not prose.
+ *
+ * Both gates below originally matched raw file text. That made them
+ * unfailable on their own targets: `ci-status.sh` mentions STALE in a comment
+ * explaining the bug, which satisfied the STALE test no matter what the jq
+ * expression did (review on #109). Only full-line comments are stripped —
+ * enough to remove explanatory prose, conservative enough not to mangle a `#`
+ * or `//` inside a string literal.
+ */
+function stripComments(text: string, kind: 'sh' | 'ts'): string {
+  const withoutBlocks =
+    kind === 'ts' ? text.replace(/\/\*[\s\S]*?\*\//g, '') : text;
+  const lineComment = kind === 'ts' ? /^\s*\/\/.*$/ : /^\s*#.*$/;
+  return withoutBlocks
+    .split('\n')
+    .map((l) => (lineComment.test(l) ? '' : l))
+    .join('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Gate 1 — symlink-unsafe temporary files
 //
@@ -92,17 +112,22 @@ const GH_FAILURE_STATES = ['TIMED_OUT', 'ACTION_REQUIRED', 'STARTUP_FAILURE'];
 for (const file of allFiles.filter(
   (f) => f.endsWith('.sh') || f.endsWith('.ts'),
 )) {
-  const text = readFileSync(file, 'utf-8');
+  const text = stripComments(
+    readFileSync(file, 'utf-8'),
+    file.endsWith('.ts') ? 'ts' : 'sh',
+  );
   // Only look at files that clearly reason about GitHub check conclusions.
   if (!/conclusion/i.test(text) || !/FAILURE/.test(text)) continue;
   const mentions = GH_FAILURE_STATES.filter((s) => text.includes(s));
   // A file that names some failure states but not STARTUP_FAILURE/STALE is
   // denylisting an enum it does not own.
   if (mentions.length > 0 && !text.includes('STALE')) {
+    // Point at the first line naming a failure state — the tokens rarely sit
+    // on one line, so requiring both here reported line 1 and helped nobody.
     const line =
       text
         .split('\n')
-        .findIndex((l) => /conclusion/i.test(l) && /FAILURE/.test(l)) + 1;
+        .findIndex((l) => GH_FAILURE_STATES.some((st) => l.includes(st))) + 1;
     findings.push({
       gate: 'enum-denylist',
       file: rel(file),
@@ -134,13 +159,40 @@ try {
   const jobs = [...jobsSection.matchAll(/^ {2}([a-z][a-z0-9_-]*):$/gm)].map(
     (m) => m[1],
   );
+  // Parse preflight's CI_JOB_COVERAGE map from EXECUTABLE lines only. Matching
+  // arbitrary substrings let a job id in a comment stand in as proof of
+  // coverage, so deleting the run_gate call kept the gate green (review #109).
+  const declared = new Map<string, string>();
+  for (const line of stripComments(preflight, 'sh').split('\n')) {
+    const m = line.match(/^\s*\[([a-z0-9_-]+)\]="([^"]*)"/);
+    if (m) declared.set(m[1], m[2]);
+  }
+
   for (const job of jobs) {
-    if (!preflight.includes(job)) {
+    const spec = declared.get(job);
+    if (spec === undefined) {
       findings.push({
         gate: 'ci-job-coverage',
         file: 'scripts/preflight.sh',
         line: 1,
-        message: `CI job "${job}" is neither run nor listed as skipped by preflight.sh. Add it, or add it to SKIPPED with the reason.`,
+        message: `CI job "${job}" has no entry in preflight.sh's CI_JOB_COVERAGE map. Add [${job}]="cmd:…" or [${job}]="skip:reason".`,
+      });
+    } else if (!/^(inline|cmd:.+|docker:.+|skip:.+)$/.test(spec)) {
+      findings.push({
+        gate: 'ci-job-coverage',
+        file: 'scripts/preflight.sh',
+        line: 1,
+        message: `CI job "${job}" has an unrecognised coverage spec "${spec}". Use inline, cmd:<command>, docker:<command>, or skip:<reason>.`,
+      });
+    }
+  }
+  for (const job of declared.keys()) {
+    if (!jobs.includes(job)) {
+      findings.push({
+        gate: 'ci-job-coverage',
+        file: 'scripts/preflight.sh',
+        line: 1,
+        message: `preflight.sh declares coverage for "${job}", which is not a job in test.yml. Stale entry — remove it.`,
       });
     }
   }
