@@ -42,7 +42,8 @@
     "build:bundle": "bun scripts/build-release-bundle.ts",
     "preflight": "bash scripts/preflight.sh",
     "preflight:full": "bash scripts/preflight.sh --full",
-    "ci:status": "bash scripts/ci-status.sh"
+    "ci:status": "bash scripts/ci-status.sh",
+    "check:defect-classes": "bun scripts/check-defect-classes.ts"
   },
   "repository": {
     "type": "git",

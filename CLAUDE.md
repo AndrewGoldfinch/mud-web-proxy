@@ -10,9 +10,21 @@ mud-web-proxy is a WebSocket-to-Telnet proxy for MUD/MUSH/MOO game servers. It l
 
 ```bash
 bun run preflight        # every gate CI's `quality` job runs, in CI's order
-bun run preflight:full   # + mock-e2e and audit (the other two CI jobs)
+bun run preflight:full   # + mock-e2e, dependency-scan, container
 bun run ci:status        # poll the PR's checks, then dump failing job logs
 ```
+
+`test.yml` has five jobs. `--full` covers `quality`, `mock-e2e`,
+`dependency-scan`, and `container` (skipped with a notice when Docker is
+absent). It does **not** cover `secret-scan`, which is a gitleaks GitHub
+Action with no local invocation.
+
+That coverage lives in a `CI_JOB_COVERAGE` map inside `preflight.sh` which
+**drives** what `--full` runs — it is executable data, not a comment, so the
+claim and the behaviour cannot diverge. `check:defect-classes` fails the build
+if the map's keys and the workflow's job list disagree in either direction.
+Both guards exist because this claim drifted once and a first attempt to gate
+it matched prose rather than code.
 
 `preflight` mirrors `.github/workflows/test.yml` step for step, so a green
 preflight means a green `quality` job. **If the two ever disagree, the script

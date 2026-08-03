@@ -95,10 +95,17 @@ done
 printf '\nFinal state:\n'
 printf '%s' "$SNAP" | jq -rs '.[] | "  \(.conclusion // .state // "?")  \(.name // .context)"' | sort
 
+# Allowlist the values that mean "fine", rather than enumerating failures.
+#
+# Enumerating failures is how this got it wrong the first time: the list
+# omitted STALE and STARTUP_FAILURE, both non-success members of GitHub's
+# CheckConclusionState, so a run that hit either printed "All checks passed"
+# and exited 0. Any conclusion GitHub adds in future is now treated as a
+# failure until someone deliberately adds it here — the safe direction.
 FAILING="$(printf '%s' "$SNAP" | jq -rs '.[]
   | select(((.conclusion // .state // "") | ascii_upcase)
-           | . == "FAILURE" or . == "TIMED_OUT" or . == "CANCELLED" or . == "ERROR" or . == "ACTION_REQUIRED")
-  | "\(.name // .context)\t\(.detailsUrl // "")"')"
+           | . != "SUCCESS" and . != "NEUTRAL" and . != "SKIPPED")
+  | "\(.name // .context)\t\(.conclusion // .state // "?")\t\(.detailsUrl // "")"')"
 
 if [ -z "$FAILING" ]; then
   printf '\nAll checks passed.\n'
