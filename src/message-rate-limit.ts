@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Per-session and per-address message rate limits (MWP-124).
  *

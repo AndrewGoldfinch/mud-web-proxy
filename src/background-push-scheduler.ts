@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 import type { Session } from './session';
 import type { ActivityContentState } from './types';
 import { NotificationManager } from './notification-manager';

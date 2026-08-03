@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Ordered, bounded, idempotent shutdown (MWP-96).
  *

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * CircularBuffer - Fixed-size buffer for MUD output with sequence numbering
  *

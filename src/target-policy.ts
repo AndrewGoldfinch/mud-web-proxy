@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 import { normalizeAddress, parseIPv4 } from './wsproxy-utils';
 
 export type TargetMode = 'fixed' | 'allowlist' | 'arbitrary';

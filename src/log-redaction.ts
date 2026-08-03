@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Log redaction, applied centrally (MWP-94).
  *

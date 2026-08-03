@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * TriggerMatcher - Pattern matching for notification triggers
  *

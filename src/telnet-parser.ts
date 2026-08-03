@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * TelnetParser - Strips telnet IAC sequences from MUD data and handles negotiation.
  *

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-3.0-or-later
 import { createHash, timingSafeEqual } from 'crypto';
 import iconv from 'iconv-lite';
 import type { IncomingMessage, ServerResponse } from 'http';
