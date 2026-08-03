@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * Session - Manages a persistent telnet connection independent of WebSocket
  *
