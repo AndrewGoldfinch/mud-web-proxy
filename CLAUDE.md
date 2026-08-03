@@ -6,55 +6,49 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 mud-web-proxy is a WebSocket-to-Telnet proxy for MUD/MUSH/MOO game servers. It lets web browsers connect to legacy telnet MUD servers over secure WSS/HTTPS connections. Single-file TypeScript application (`wsproxy.ts`).
 
-## Commands
+## Before pushing
 
 ```bash
-bun run build        # Compile TypeScript to dist/
-bun dev              # Run directly with Bun (development)
-bun start            # Run compiled dist/wsproxy.js
-bun run test         # Run tests with coverage (bun test --coverage)
-bun run lint         # Lint with ESLint
-bun run lint:fix     # Auto-fix lint issues
-bun run typecheck    # Type-check without emitting
+bun run preflight        # every gate CI's `quality` job runs, in CI's order
+bun run preflight:full   # + mock-e2e and audit (the other two CI jobs)
+bun run ci:status        # poll the PR's checks, then dump failing job logs
 ```
 
-## Architecture
+`preflight` mirrors `.github/workflows/test.yml` step for step, so a green
+preflight means a green `quality` job. **If the two ever disagree, the script
+is wrong — fix `scripts/preflight.sh`, don't work around it.** Unlike CI it
+does not stop at the first failure: it runs every gate and reports all of
+them, so a push blocked by three problems costs one run instead of three.
 
-**Single-file design**: All server logic lives in `wsproxy.ts`. A central `srv` object holds both configuration and methods, acting as the application singleton.
+`format` (`prettier --check .`) is the gate most often skipped and it fails
+the build; `check:bun-version` and `check:config-docs` are easy to forget
+because nothing else surfaces them locally. That is exactly why preflight runs
+the whole set rather than the obvious three.
 
-**Data flow**: WebSocket Client → `parse()` (JSON commands) → `initT()` (telnet connection) → MUD Server → `sendClient()` (protocol negotiation + data transform) → WebSocket Client
-
-**Key methods on `srv`**:
-
-- `init()` — Creates HTTPS + WebSocketServer, loads chat log, sets up file watcher
-- `parse()` — Parses JSON `ClientRequest` messages from WebSocket clients
-- `initT()` — Opens telnet socket to target MUD server
-- `sendClient()` — Processes incoming telnet data, handles protocol negotiation, optional zlib compression
-- `forward()` — Forwards raw data from WebSocket to telnet
-- `closeSocket()` — Cleans up both WebSocket and telnet connections
-
-**Telnet protocol negotiation**: `sendClient()` contains a complex negotiation engine supporting MCCP, MXP, MSDP, GMCP, ATCP, TTYPE, CHARSET, UTF-8, SGA, NAWS, NEW-ENV, and ECHO. Each protocol has independent state flags on `SocketExtended`.
-
-**Types**: `SocketExtended` (WebSocket + telnet state), `TelnetSocket` (net.Socket + custom `send()`), `ClientRequest` (parsed JSON from browser), `ServerConfig`, `ProtocolConstants`.
+`ci:status` takes a PR number or infers it from the branch. Exit codes:
+`0` green, `1` something failed (logs printed), `2` setup problem, `3` timed
+out with checks still running.
 
 ## Code Conventions
 
+Run `bun run` to list the scripts; the manifest is authoritative.
+
 - **Runtime**: Bun (for dev and package management)
-- **Module system**: ES modules (`"type": "module"`)
-- **Target**: ES2022, strict mode
-- **Formatting**: Prettier — 79 char width, 2-space indent, single quotes, semicolons
 - **Naming**: camelCase (vars/functions), PascalCase (types/interfaces), UPPER_SNAKE_CASE (constants), `_` prefix for unused params
-- **Logging**: Use `srv.log()` instead of `console.log` (ESLint warns on `no-console`)
+- **Logging**: Use `srv.log()` instead of `console.log`. ESLint only _warns_ on
+  `no-console`, so this is not mechanically enforced — it is on you.
 - **Error typing**: Cast errors as `(err as Error)` in catch blocks
 - **Imports**: ES module style, use `import type` for type-only imports
 - **`__dirname` emulation**: `fileURLToPath(import.meta.url)` (required for ES modules)
 
-## Test Structure
-
-Tests use Bun's native test framework (`bun:test`). Test files are in `tests/` with mocks in `tests/mocks/` and config in `tests/config/`. Tests cover protocol negotiation, socket management, client requests, data transformation, chat, security, and integration.
-
 ## Security Notes
 
-- `ONLY_ALLOW_DEFAULT_SERVER = true` restricts connections to the configured default MUD server
-- SSL/TLS certificates are required for the HTTPS/WSS server
+- **Target policy is `TARGET_MODE`**, not a boolean. `fixed` (the default)
+  restricts to one target; `allowlist` and `arbitrary` widen it, and
+  `arbitrary` refuses to start without `ARBITRARY_ALLOWED_PORTS` plus enforced
+  authentication. `ONLY_ALLOW_DEFAULT_SERVER` was **removed** — setting it now
+  fails startup (`src/runtime-config.ts`). Do not assume connections are
+  restricted to one server; production runs `arbitrary`.
+- Inbound TLS is owned by the edge proxy (Caddy) in the native deployment; the
+  app listens plaintext on loopback. See `docs/deployment/systemd.md`.
 - Password mode detection (ECHO negotiation) omits passwords from logs

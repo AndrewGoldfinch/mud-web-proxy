@@ -39,7 +39,10 @@
     "check:config-docs": "bun scripts/check-config-docs.ts",
     "typecheck": "tsc --noEmit",
     "audit": "bun audit --audit-level=moderate",
-    "build:bundle": "bun scripts/build-release-bundle.ts"
+    "build:bundle": "bun scripts/build-release-bundle.ts",
+    "preflight": "bash scripts/preflight.sh",
+    "preflight:full": "bash scripts/preflight.sh --full",
+    "ci:status": "bash scripts/ci-status.sh"
   },
   "repository": {
     "type": "git",
