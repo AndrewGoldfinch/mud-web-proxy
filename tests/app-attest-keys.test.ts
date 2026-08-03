@@ -13,15 +13,20 @@ import {
 } from '../src/app-attest';
 
 describe('attested keys store', () => {
+  let tmpDir: string;
   let tmpFile: string;
 
   beforeEach(() => {
-    tmpFile = path.join(os.tmpdir(), `attest-test-${Date.now()}.json`);
+    // mkdtempSync, not a predictable join onto the shared temp dir: a
+    // guessable path can be pre-created as a symlink by another local user,
+    // which is what CodeQL's js/insecure-temporary-file flags.
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'attest-test-'));
+    tmpFile = path.join(tmpDir, 'store.json');
     _resetKeysForTesting();
   });
 
   afterEach(() => {
-    if (fs.existsSync(tmpFile)) fs.unlinkSync(tmpFile);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
   test('getAttestedKey returns undefined for unknown keyId', () => {

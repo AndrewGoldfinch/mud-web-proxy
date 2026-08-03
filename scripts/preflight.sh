@@ -7,7 +7,7 @@
 # ever drift, this script is wrong and should be corrected, not worked around.
 #
 #   scripts/preflight.sh          quality job only (fast, the usual case)
-#   scripts/preflight.sh --full   + mock-e2e and dependency-scan jobs
+#   scripts/preflight.sh --full   + mock-e2e, dependency-scan, container
 #
 # Unlike CI, this does not stop at the first failure: it runs everything and
 # reports every gate that failed. A push blocked by three problems should cost
@@ -38,6 +38,7 @@ done
 
 FAILED=()
 PASSED=()
+SKIPPED=()
 
 run_gate() {
   local label="$1"
@@ -56,6 +57,7 @@ run_gate "check:bun-version" bun run check:bun-version
 run_gate "install (frozen lockfile)" bun install --frozen-lockfile
 run_gate "format" bun run format
 run_gate "check:config-docs" bun run check:config-docs
+run_gate "check:defect-classes" bun run check:defect-classes
 run_gate "typecheck" bun run typecheck
 run_gate "lint" bun run lint
 run_gate "test:unit" bun run test:unit
@@ -64,6 +66,19 @@ run_gate "build" bun run build
 if ((FULL)); then
   run_gate "test:e2e:mock" bun run test:e2e:mock
   run_gate "audit" bun run audit
+  # The `container` job runs this same script in CI. It needs a working
+  # Docker daemon, so skip rather than fail when there isn't one — but say so
+  # out loud, because a silent skip is how --full drifts back into claiming
+  # coverage it does not have.
+  if docker info >/dev/null 2>&1; then
+    run_gate "container" bash tests/container/run.sh
+  else
+    printf '\n\033[1m── container\033[0m\n  SKIPPED — no Docker daemon. CI runs this job; it is not covered here.\n'
+    SKIPPED+=("container (no Docker)")
+  fi
+  # `secret-scan` uses the gitleaks GitHub Action, which has no local
+  # equivalent invocation in this repo. Deliberately not covered.
+  SKIPPED+=("secret-scan (gitleaks action, CI-only)")
 fi
 
 printf '\n\033[1m── summary\033[0m\n'
@@ -73,6 +88,9 @@ done
 for g in "${FAILED[@]:-}"; do
   [ -n "$g" ] && printf '  \033[31mFAIL\033[0m  %s\n' "$g"
 done
+for g in "${SKIPPED[@]:-}"; do
+  [ -n "$g" ] && printf '  \033[33mSKIP\033[0m  %s\n' "$g"
+done
 
 if ((${#FAILED[@]} > 0)); then
   printf '\n%d gate(s) failed — CI will fail the same way. Fix before pushing.\n' "${#FAILED[@]}" >&2
@@ -81,7 +99,7 @@ if ((${#FAILED[@]} > 0)); then
 fi
 
 if ((FULL)); then
-  printf '\nAll gates passed (quality + mock-e2e + audit).\n'
+  printf '\nAll runnable gates passed. See SKIP lines for CI jobs not covered locally.\n'
 else
-  printf '\nAll quality gates passed. `--full` also runs mock-e2e and audit.\n'
+  printf '\nAll quality gates passed. `--full` also runs mock-e2e, audit, and container.\n'
 fi
