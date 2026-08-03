@@ -3,6 +3,8 @@
 !bun.lock
 !tsconfig.json
 !wsproxy.ts
+!LICENSE
+!NOTICE
 !src/
 !src/**
 !config/
