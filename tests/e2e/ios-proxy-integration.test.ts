@@ -352,30 +352,40 @@ describe('Session Resume', () => {
       // The replay contract has two halves, and the previous version tested
       // neither. Reading through getMessagesAfterSeq(seqBefore) and asserting
       // seq > seqBefore was circular: that filter already guarantees it.
-      //
-      // First half — buffered frames actually arrived, marked as replays.
       // src/session-integration.ts sets `replayed: true` only on chunks it
-      // serves from the buffer, so a live frame cannot satisfy this.
+      // serves from the buffer, so a live frame cannot satisfy any of this.
       const replays = conn2
         .getMessages()
         .filter((m) => (m.data as { replayed?: boolean })?.replayed === true);
-      expect(replays.length).toBeGreaterThan(0);
+      const seqOf = (m: (typeof replays)[number]) =>
+        (m.data as { seq: number }).seq;
 
-      // Second half — the resume point is honoured: the proxy replays from
-      // where the client left off, not the whole buffer.
+      // The property the test is named for: output produced while no client
+      // was attached survived the disconnect and came back.
       //
-      // The bound is `>=`, not `>`, because CircularBuffer.replayFrom is
-      // inclusive: resuming at lastSeq re-delivers the frame at lastSeq
-      // itself. That is what the implementation does today and no spec says
-      // otherwise — docs/ defines no lastSeq semantics, and the client
-      // protocol reference is still MWP-113. Asserting `>` here would be
-      // inventing a contract and reporting the code as broken against it.
-      // The duplicate frame is worth a decision on its own; this test pins
-      // current behaviour rather than pre-judging it.
+      // This has to be counted strictly after seqBefore. `replays.length > 0`
+      // is not enough, because replayFrom is inclusive: the chunk at exactly
+      // seqBefore is returned on every resume, marked replayed, whether or
+      // not anything new was buffered. Asserting only that the list is
+      // non-empty would stay green with every newly buffered frame dropped
+      // (review on #118).
+      const bufferedDuringDisconnect = replays.filter(
+        (m) => seqOf(m) > seqBefore,
+      );
+      expect(bufferedDuringDisconnect.length).toBeGreaterThan(0);
+
+      // The resume point is honoured: replay starts where the client left
+      // off, not at the head of the buffer.
+      //
+      // `>=` rather than `>` deliberately, and only here — this bound exists
+      // to reject frames *older* than the resume point, and must tolerate the
+      // inclusive duplicate at seqBefore that the assertion above is careful
+      // not to count. Whether that duplicate should exist at all is undecided:
+      // docs/ defines no lastSeq semantics and the client protocol reference
+      // is still MWP-113, so asserting `>` globally would invent a contract
+      // and then report the implementation as broken against it.
       for (const msg of replays) {
-        expect((msg.data as { seq: number }).seq).toBeGreaterThanOrEqual(
-          seqBefore,
-        );
+        expect(seqOf(msg)).toBeGreaterThanOrEqual(seqBefore);
       }
 
       conn2.close();
