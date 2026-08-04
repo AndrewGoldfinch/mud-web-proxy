@@ -33,6 +33,7 @@ RUN groupadd --gid 10001 mwp \
 COPY --from=deps-prod /opt/mud-web-proxy/node_modules ./node_modules
 COPY --from=build --chown=0:0 --chmod=0444 /opt/mud-web-proxy/dist/wsproxy.js ./dist/wsproxy.js
 COPY --chown=0:0 --chmod=0444 config/apple-app-attest-root-ca.pem ./config/apple-app-attest-root-ca.pem
+COPY --chown=0:0 --chmod=0444 LICENSE NOTICE ./
 
 USER 10001:10001
 STOPSIGNAL SIGTERM

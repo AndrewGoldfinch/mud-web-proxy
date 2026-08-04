@@ -216,3 +216,9 @@ Probably you will only have to set:
 
 - `TN_HOST` to your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
 - `TN_PORT` to the port where the mud is running.
+
+## License and attribution
+
+mud-web-proxy is licensed under
+[GPL-3.0-or-later](LICENSE). See [NOTICE](NOTICE) for upstream authorship and
+the attribution required for MIT-derived portions of the project.
