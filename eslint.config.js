@@ -100,18 +100,17 @@ export default [
     },
   },
   {
-    // Tests are linted, but they are not production source.
+    // Test *harness* files are programs, not tests: mock MUD servers, the
+    // proxy launcher, and the acceptance clients. Their console output is
+    // the interface, exactly as for scripts/ above, and srv.log is not
+    // reachable from any of them.
     //
-    // They were excluded entirely until now, which left CodeQL as the only
-    // thing checking them — and CodeQL and ESLint each catch unused code the
-    // other misses, so neither alone was enough. Four tests that could not
-    // fail reached main behind this gap.
-    //
-    // `no-console` is off rather than warned: test helpers and the mock MUD
-    // log deliberately, and 64 warnings nobody can action is how a linter
-    // gets ignored. The `srv.log` convention it enforces is about production
-    // logging, which tests do not do.
+    // Scoped to harness files rather than all of tests/. Review on #121
+    // was right that blanketing tests/ would silently drop the repo-wide
+    // policy AGENTS.md states, inside a PR whose whole point is widening
+    // lint coverage. Real .test.ts files keep `no-console: warn`.
     files: ['tests/**/*.ts'],
+    ignores: ['tests/**/*.test.ts'],
     rules: {
       'no-console': 'off',
     },
