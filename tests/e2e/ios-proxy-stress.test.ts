@@ -247,6 +247,16 @@ describe('Stress Tests', () => {
       const result1 = await conn1.connect(proxy.url);
       expect(result1.success).toBe(true);
 
+      // Wait for the login prompt before typing — the same defect already
+      // documented for 'should handle rapid command input' above. The session
+      // frame is sent before the telnet socket exists, so 'user' was written
+      // with nowhere to go and dropped; 'pass' then became the username,
+      // login never completed, and sendWelcome — which starts the mock's
+      // continuous output — never ran. This test therefore had no continuous
+      // load at all, and passed only because replay used to be inclusive and
+      // returned the frame at seqBefore.
+      await conn1.waitForMessage('data', 5000);
+
       conn1.sendCommand('user');
       await new Promise((r) => setTimeout(r, 500));
       conn1.sendCommand('pass');
@@ -271,8 +281,16 @@ describe('Stress Tests', () => {
       );
       expect(result2.success).toBe(true);
 
-      // Wait for replayed + new data
-      await new Promise((r) => setTimeout(r, 3000));
+      // Poll for data rather than sleeping a fixed interval and hoping.
+      //
+      // This slept 3s and then asserted at least one data frame had arrived.
+      // That passed for the wrong reason: replay used to be inclusive, so the
+      // frame at seqBefore came back on every resume and satisfied the count
+      // even when the sleep outlasted the mock's output. With replay now
+      // exclusive the assertion depends entirely on new output landing inside
+      // a fixed window, which is exactly the thing a loaded CI runner breaks —
+      // and did, on this PR.
+      await conn2.waitForMessage('data', 10000);
 
       const afterResume = conn2.getMessages().filter((m) => m.type === 'data');
       expect(afterResume.length).toBeGreaterThan(0);

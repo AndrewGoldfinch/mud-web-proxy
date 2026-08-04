@@ -91,28 +91,44 @@ export class CircularBuffer {
   }
 
   /**
-   * Get all chunks from a specific sequence number onward.
-   * Uses sequenceIndex for O(1) lookup of the starting position.
-   * Falls back to returning all chunks from head if the sequence was evicted.
+   * Get every chunk *strictly after* a sequence number.
+   *
+   * The argument is what a client has already received, so it must not be
+   * sent back. This was `replayFrom` and was inclusive, which meant every
+   * resume re-delivered the last frame the client already had — the MUD's
+   * final line rendered twice on every reconnect. The iOS client
+   * (ProxyConnectionService.swift) stores each frame's seq as it arrives and
+   * sends that value as `lastSeq`, and it neither decodes the `replayed`
+   * flag nor deduplicates, so it had no way to suppress the repeat.
+   *
+   * Named `replayAfter` rather than `replayFrom` because the old name read
+   * as inclusive and the boundary is the whole point of the method.
+   *
+   * Uses sequenceIndex for O(1) lookup of the starting position, falling back
+   * to a scan when the sequence has been evicted.
    */
-  replayFrom(sequence: number): BufferChunk[] {
+  replayAfter(sequence: number): BufferChunk[] {
     if (this.count === 0) {
       return [];
     }
 
-    // Find the starting offset within the ring buffer
+    // Find the offset of the first chunk to return.
     let startOffset = 0;
     const arrayIdx = this.sequenceIndex.get(sequence);
     if (arrayIdx !== undefined) {
-      // O(1) lookup: convert array index to offset from head
-      startOffset = (arrayIdx - this.head + this.capacity) % this.capacity;
+      // O(1) lookup lands on the acknowledged chunk itself; start past it.
+      startOffset =
+        ((arrayIdx - this.head + this.capacity) % this.capacity) + 1;
+      if (startOffset >= this.count) {
+        return [];
+      }
     } else {
-      // Sequence was evicted or doesn't exist — find first chunk >= sequence
+      // Evicted or never existed — find the first chunk strictly newer.
       let found = false;
       for (let i = 0; i < this.count; i++) {
         const idx = (this.head + i) % this.capacity;
         const chunk = this.chunks[idx];
-        if (chunk && chunk.sequence >= sequence) {
+        if (chunk && chunk.sequence > sequence) {
           startOffset = i;
           found = true;
           break;

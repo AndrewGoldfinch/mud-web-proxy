@@ -62,24 +62,59 @@ describe('CircularBuffer', () => {
   });
 
   describe('replay functionality', () => {
-    it('should replay from specific sequence', () => {
+    // The argument is what the client already has, so it must not come back.
+    // This previously asserted the inclusive contract — replayAfter(2)
+    // returning chunks 2 and 3 — which is what made every resume re-deliver
+    // the client's last frame and render the MUD's final line twice.
+    it('should replay strictly after the acknowledged sequence', () => {
       const buffer = new CircularBuffer(1024);
 
       buffer.append(Buffer.from('chunk1'), 'data');
       buffer.append(Buffer.from('chunk2'), 'data');
       buffer.append(Buffer.from('chunk3'), 'data');
 
-      const replay = buffer.replayFrom(2);
-      expect(replay.length).toBe(2);
-      expect(replay[0].sequence).toBe(2);
-      expect(replay[1].sequence).toBe(3);
+      const replay = buffer.replayAfter(2);
+      expect(replay.map((c) => c.sequence)).toEqual([3]);
+    });
+
+    it('should return nothing when the client is already current', () => {
+      const buffer = new CircularBuffer(1024);
+      buffer.append(Buffer.from('chunk1'), 'data');
+      buffer.append(Buffer.from('chunk2'), 'data');
+
+      expect(buffer.replayAfter(2)).toEqual([]);
+    });
+
+    it('should replay everything for a client that has seen nothing', () => {
+      const buffer = new CircularBuffer(1024);
+      buffer.append(Buffer.from('chunk1'), 'data');
+      buffer.append(Buffer.from('chunk2'), 'data');
+
+      expect(buffer.replayAfter(0).map((c) => c.sequence)).toEqual([1, 2]);
+    });
+
+    it('should skip evicted sequences and resume at the first newer chunk', () => {
+      // Forces eviction so the sequenceIndex lookup misses and the scan path
+      // runs — the branch that also had to change to a strict comparison.
+      const buffer = new CircularBuffer(600);
+      for (let i = 0; i < 6; i++) {
+        buffer.append(Buffer.alloc(100), 'data');
+      }
+      const remaining = buffer.replayAfter(0).map((c) => c.sequence);
+      const evicted = remaining[0] - 1;
+
+      // Asking from an evicted sequence yields the surviving chunks, and the
+      // oldest survivor is strictly newer than what was asked for.
+      const replay = buffer.replayAfter(evicted).map((c) => c.sequence);
+      expect(replay).toEqual(remaining);
+      expect(replay[0]).toBeGreaterThan(evicted);
     });
 
     it('should return empty array for sequence not in buffer', () => {
       const buffer = new CircularBuffer(1024);
       buffer.append(Buffer.from('test'), 'data');
 
-      const replay = buffer.replayFrom(100);
+      const replay = buffer.replayAfter(100);
       expect(replay.length).toBe(0);
     });
   });

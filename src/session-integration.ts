@@ -664,7 +664,7 @@ export class SessionIntegration {
     socket.sendUTF(JSON.stringify(resumedResponse));
 
     // Replay buffered output
-    const chunks = session.replayFromSequence(msg.lastSeq);
+    const chunks = session.replayAfterSequence(msg.lastSeq);
     for (const chunk of chunks) {
       if (chunk.type === 'gmcp') {
         const response = {

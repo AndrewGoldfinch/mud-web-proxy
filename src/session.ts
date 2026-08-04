@@ -523,10 +523,10 @@ export class Session {
   }
 
   /**
-   * Get buffered output from a specific sequence
+   * Get buffered output strictly after a sequence the client already has.
    */
-  replayFromSequence(sequence: number): BufferChunk[] {
-    return this.buffer.replayFrom(sequence);
+  replayAfterSequence(sequence: number): BufferChunk[] {
+    return this.buffer.replayAfter(sequence);
   }
 
   /**
