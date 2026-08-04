@@ -49,7 +49,9 @@ parity afterward.
    socket closure, and absence of any upstream connection attempt.
 4. Extend the mock MUD with a cumulative accepted-connection counter so a
    short-lived connection cannot escape the assertion.
-5. Describe the fix precisely in the PR title and release-note line.
+5. Add one process-level discriminator proving the required-mode guard remains
+   confined to the legacy path.
+6. Describe the fix precisely in the PR title and release-note line.
 
 ### Out of scope
 
@@ -130,31 +132,69 @@ The regression belongs in `tests/e2e/legacy-protocol.test.ts`, which is run by
 prove that the live legacy path neither dials the MUD nor leaves the WebSocket
 open.
 
-The test gets a dedicated mock-MUD port and proxy port so it cannot share
-process state with the existing plain-mode or shared-secret suites. Setup will:
+The tests get a dedicated mock-MUD port and proxy port so they cannot share
+process state with the existing plain-mode or shared-secret suites. They must
+construct their own `createIREMUD()` plus `startTestProxy()` pair rather than
+use `startMockMUDTest()`: that helper does not accept proxy environment
+overrides, while this regression must override the target and TLS mode
+together.
+
+Setup will:
 
 1. start the existing plaintext mock MUD;
-2. record its cumulative connection-attempt count;
-3. call `startTestProxy()` with `MUD_TLS_MODE: 'required'` explicitly, because
-   the launcher deliberately defaults existing E2E coverage to `plain`;
+2. record its cumulative accepted-connection count;
+3. call `startTestProxy()` with all three of
+   `TN_HOST: 'localhost'`, `TN_PORT: portOf(mock).toString()`, and
+   `MUD_TLS_MODE: 'required'`; the target overrides are required because the
+   launcher hardcodes `TARGET_MODE=fixed`, and the TLS override is required
+   because it deliberately defaults existing E2E coverage to `plain`;
 4. open a raw WebSocket and attach frame and close observers before sending
    `{ connect: 1, host: 'localhost', port: mudPort }`.
 
-The test will then wait up to 3 seconds for the close event, comfortably longer
-than `SOCKET_CLOSE_DELAY_MS`. After closure it must assert all three outcomes:
+Matching the connect frame to the proxy's configured fixed target is
+load-bearing. If `TN_HOST` and `TN_PORT` retain their launcher defaults, target
+policy rejects the frame before `initT()`, producing a vacuous green test with
+zero upstream connections on the unfixed code.
 
-1. decoded legacy frames contain
+The test will wait for the existing 1,500-millisecond settle interval, which
+comfortably covers `SOCKET_CLOSE_DELAY_MS`, and make the cumulative-counter
+check its first assertion. It must then assert all three outcomes in this
+order:
+
+1. the mock MUD's cumulative accepted-connection count is unchanged;
+2. decoded legacy frames contain
    `Legacy connections are unavailable when MUD_TLS_MODE=required.`;
-2. the client WebSocket reached the closed state rather than hanging;
-3. the mock MUD's cumulative connection-attempt count is unchanged.
+3. the client WebSocket reached the closed state rather than hanging.
 
 Asserting only the upstream count is insufficient because a broken
 implementation could silently discard the connect frame and leave the player
 hanging. Asserting only the message and close is insufficient because the
 proxy could reject after it had already opened a plaintext connection.
 
-The current code must fail this regression: it reaches `initT()`, increments
-the mock's cumulative counter, and does not emit the required-mode rejection.
+The red run must fail specifically at the first assertion with the cumulative
+accepted-connection count incremented by the unfixed plaintext dial. A timeout,
+target-policy denial, missing frame, or unrelated assertion failure is not an
+acceptable red result. The expected failure proves that the test reached
+`initT()` and reproduced the defect rather than merely failing for some other
+reason.
+
+## Typed-path discriminator
+
+The required-mode guard belongs inside `openLegacyConnection()`, not in the
+shared parser, WebSocket upgrade, or typed session path. A second case against
+the same required-mode proxy will send a typed connect frame for the configured
+plaintext mock target and assert that:
+
+1. the proxy emits a typed JSON error envelope with
+   `{ type: 'error', code: 'connection_failed' }` after the TLS attempt fails;
+2. no typed frame contains the legacy rejection text;
+3. the mock's cumulative accepted-connection count increases, proving the
+   typed path reached its existing TLS transport rather than the legacy guard.
+
+The test must not require a successful typed session because the adversary is
+intentionally plaintext-only and `required` mode must refuse it. It also must
+not assert the platform-specific TLS diagnostic text; `connection_failed` is
+the stable application contract.
 
 ## Release-note contract
 
@@ -190,14 +230,13 @@ bun test tests/e2e/legacy-protocol.test.ts
 Repository verification:
 
 ```bash
-bun run format
-bun run check:defect-classes
-bun run typecheck
-bun run lint
-bun run test:unit
-bun run test:e2e:mock
-bun run build
+bun run preflight:full
 ```
+
+`preflight:full` is the sole repository-level gate list. It derives its
+coverage from `scripts/preflight.sh`, mirrors the CI workflow, and includes the
+easy-to-omit Bun-version, configuration-documentation, dependency-audit, and
+container checks. This spec must not copy that evolving list.
 
 ## Success criteria
 
@@ -208,6 +247,8 @@ MWP-134 is complete when:
 - a legacy client receives the exact actionable rejection in legacy framing;
 - that client is closed after the existing 500-millisecond delay;
 - the plaintext mock proves that no upstream connection was accepted;
+- a typed required-mode connect still reaches the typed TLS transport and
+  reports `connection_failed`, never the legacy rejection;
 - `plain` and `prefer` legacy behavior is unchanged;
 - no typed-session, transport-state-machine, authorization, capacity, or
   operator-documentation code changes;
