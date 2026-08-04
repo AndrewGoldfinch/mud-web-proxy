@@ -170,12 +170,16 @@ rather than a generator or configuration framework:
 - `varsInTemplate(template: string): Set<string>` recognizes exact dotenv
   assignment lines, including commented examples such as
   `# MAX_SESSIONS_GLOBAL=100`. Prose mentions do not count.
+- `duplicateVarsInTemplate(template: string): string[]` reports sorted repeated
+  assignment names so one active setting cannot present conflicting examples.
 - `missingVars(required, present): string[]` returns sorted missing names for
   deterministic diagnostics.
 - the main check compares all extracted names with the reference, then active
   names with each operator template;
 - the main check separately rejects retired names that occur as template
   assignments.
+- the main check rejects duplicate active assignments while allowing
+  template-specific Compose names.
 
 Template-specific names are allowed. `.env.compose.example` legitimately
 contains `MWP_*` values consumed by Compose rather than the proxy, so an
@@ -199,7 +203,8 @@ Focused unit tests will prove that:
 3. template extraction ignores prose, commented explanations, lowercase
    names, and malformed lines;
 4. missing-variable output is sorted and contains the expected names;
-5. a retired assignment is detectable even when the retired name is also
+5. duplicate assignments are detected and sorted;
+6. a retired assignment is detectable even when the retired name is also
    mentioned harmlessly in prose.
 
 The feature-level checks are:
