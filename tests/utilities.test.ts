@@ -5,7 +5,20 @@
 
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
+
+/**
+ * Private, unguessable scratch directory (CodeQL js/insecure-temporary-file).
+ *
+ * These tests used fixed paths like `/tmp/test-certs`. On a shared host any
+ * local user can pre-create that name as a symlink, so `mkdirSync` succeeds
+ * against their target and every subsequent write lands wherever they pointed
+ * it. `mkdtempSync` picks a random suffix and creates the directory 0700, so
+ * the whole subtree is ours before anything is written into it.
+ */
+const makeTempDir = (prefix: string): string =>
+  fs.mkdtempSync(path.join(os.tmpdir(), `mwp-${prefix}-`));
 
 // Store original functions
 const originalConsoleLog = console.log;
@@ -112,8 +125,8 @@ describe('stringify() function', () => {
 });
 
 describe('loadChatLog() function', () => {
-  const testDir = '/tmp/test-chatlog';
-  const chatFilePath = path.join(testDir, 'chat.json');
+  let testDir: string;
+  let chatFilePath: string;
 
   const loadChatLog = async (): Promise<
     Array<{ date: Date; data: Record<string, unknown> }>
@@ -131,9 +144,8 @@ describe('loadChatLog() function', () => {
 
   beforeEach(() => {
     // Create test directory
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    testDir = makeTempDir('test-chatlog');
+    chatFilePath = path.join(testDir, 'chat.json');
     // Change to test directory
     originalProcessChdir(testDir);
   });
@@ -408,10 +420,7 @@ describe('Server initialization', () => {
   });
 
   test('should load chat log on startup', async () => {
-    const testDir = '/tmp/test-init-chat';
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    const testDir = makeTempDir('test-init-chat');
 
     const chatEntries = [
       {
@@ -445,10 +454,7 @@ describe('Server initialization', () => {
   });
 
   test('should handle missing chat file gracefully', async () => {
-    const testDir = '/tmp/test-no-chat';
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    const testDir = makeTempDir('test-no-chat');
 
     const loadChatLog = async (): Promise<unknown[]> => {
       try {
@@ -470,10 +476,7 @@ describe('Server initialization', () => {
   });
 
   test('should create HTTPS server when certificates exist', () => {
-    const testDir = '/tmp/test-certs';
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    const testDir = makeTempDir('test-certs');
 
     fs.writeFileSync(path.join(testDir, 'cert.pem'), 'mock certificate');
     fs.writeFileSync(path.join(testDir, 'privkey.pem'), 'mock private key');
@@ -488,10 +491,7 @@ describe('Server initialization', () => {
   });
 
   test('should handle missing certificates', () => {
-    const testDir = '/tmp/test-no-certs';
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    const testDir = makeTempDir('test-no-certs');
 
     const certExists = fs.existsSync(path.join(testDir, 'cert.pem'));
     const keyExists = fs.existsSync(path.join(testDir, 'privkey.pem'));
@@ -503,10 +503,7 @@ describe('Server initialization', () => {
   });
 
   test('should set up file watching on wsproxy.ts', () => {
-    const testDir = '/tmp/test-watch';
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    const testDir = makeTempDir('test-watch');
 
     fs.writeFileSync(path.join(testDir, 'wsproxy.ts'), '// test file');
 
@@ -681,13 +678,11 @@ describe('Additional stringify edge cases', () => {
 });
 
 describe('loadChatLog edge cases', () => {
-  const testDir = '/tmp/test-chatlog-edge';
+  let testDir: string;
   const originalCwd = process.cwd();
 
   beforeEach(() => {
-    if (!fs.existsSync(testDir)) {
-      fs.mkdirSync(testDir, { recursive: true });
-    }
+    testDir = makeTempDir('test-chatlog-edge');
     originalProcessChdir(testDir);
   });
 

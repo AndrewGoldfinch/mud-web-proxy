@@ -25,6 +25,7 @@ import type {
 } from './runtime-config';
 import { resolveSocketAddress } from './wsproxy-utils';
 import { neutralizeControlSequences } from './log-redaction';
+import { withDefaults } from './with-defaults';
 import {
   recognize,
   validateTyped,
@@ -131,23 +132,25 @@ export class SessionIntegration {
   }
 
   constructor(config: Partial<SessionIntegrationConfig> = {}) {
-    this.config = {
-      sessions: {
-        timeoutHours: 24,
-        maxPerDevice: 5,
-        maxPerIP: 10,
-      },
-      buffer: {
-        sizeKB: 50,
-      },
-      triggers: {
-        rateLimit: {
-          perTypePerMinute: 1,
-          totalPerHour: 10,
+    this.config = withDefaults(
+      {
+        sessions: {
+          timeoutHours: 24,
+          maxPerDevice: 5,
+          maxPerIP: 10,
+        },
+        buffer: {
+          sizeKB: 50,
+        },
+        triggers: {
+          rateLimit: {
+            perTypePerMinute: 1,
+            totalPerHour: 10,
+          },
         },
       },
-      ...config,
-    };
+      config,
+    );
 
     this.sessionManager = new SessionManager(this.config.sessions);
     this.triggerMatcher = new TriggerMatcher(this.config.triggers);

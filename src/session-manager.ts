@@ -15,6 +15,7 @@ import type { MudTlsMode } from './runtime-config';
 import { timingSafeEqual } from 'crypto';
 import { Session } from './session';
 import type { SocketExtended } from './types';
+import { withDefaults } from './with-defaults';
 
 const CLIENT_CLOSE_CLEANUP_DELAY_MS = 200;
 
@@ -62,12 +63,14 @@ export class SessionManager {
   private cleanupInterval: NodeJS.Timeout | null = null;
 
   constructor(config: Partial<SessionManagerConfig> = {}) {
-    this.config = {
-      timeoutHours: 24,
-      maxPerDevice: 5,
-      maxPerIP: 10,
-      ...config,
-    };
+    this.config = withDefaults(
+      {
+        timeoutHours: 24,
+        maxPerDevice: 5,
+        maxPerIP: 10,
+      },
+      config,
+    );
 
     // Start cleanup interval (every 5 minutes)
     this.cleanupInterval = setInterval(
