@@ -35,7 +35,7 @@ describe('a single oversized chunk cannot exceed the cap', () => {
     b.append(Buffer.from('keep me'), 'data');
     b.append(Buffer.alloc(64 * 1024), 'data');
 
-    const replayed = b.replayFrom(0);
+    const replayed = b.replayAfter(0);
     expect(replayed.some((c) => c.data.toString() === 'keep me')).toBe(true);
   });
 });
@@ -54,7 +54,7 @@ describe('ordinary appends still evict to stay within the cap', () => {
     const b = new CircularBuffer(max);
     for (let i = 0; i < 50; i++) b.append(Buffer.from(`chunk-${i}`), 'data');
 
-    const replayed = b.replayFrom(0);
+    const replayed = b.replayAfter(0);
     expect(replayed.at(-1)?.data.toString()).toBe('chunk-49');
   });
 });

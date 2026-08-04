@@ -362,30 +362,18 @@ describe('Session Resume', () => {
 
       // The property the test is named for: output produced while no client
       // was attached survived the disconnect and came back.
-      //
-      // This has to be counted strictly after seqBefore. `replays.length > 0`
-      // is not enough, because replayFrom is inclusive: the chunk at exactly
-      // seqBefore is returned on every resume, marked replayed, whether or
-      // not anything new was buffered. Asserting only that the list is
-      // non-empty would stay green with every newly buffered frame dropped
-      // (review on #118).
-      const bufferedDuringDisconnect = replays.filter(
-        (m) => seqOf(m) > seqBefore,
-      );
-      expect(bufferedDuringDisconnect.length).toBeGreaterThan(0);
+      expect(replays.length).toBeGreaterThan(0);
 
-      // The resume point is honoured: replay starts where the client left
-      // off, not at the head of the buffer.
+      // Every replayed frame is strictly newer than the resume point.
       //
-      // `>=` rather than `>` deliberately, and only here — this bound exists
-      // to reject frames *older* than the resume point, and must tolerate the
-      // inclusive duplicate at seqBefore that the assertion above is careful
-      // not to count. Whether that duplicate should exist at all is undecided:
-      // docs/ defines no lastSeq semantics and the client protocol reference
-      // is still MWP-113, so asserting `>` globally would invent a contract
-      // and then report the implementation as broken against it.
+      // This was `>=` while CircularBuffer.replayFrom was inclusive, and the
+      // count above had to be taken over a filtered subset to mean anything,
+      // because the frame at exactly seqBefore came back on every resume
+      // whether or not anything new was buffered. replayAfter is exclusive
+      // now, so the client is not sent output it already has and the two
+      // assertions collapse back into what they should always have been.
       for (const msg of replays) {
-        expect(seqOf(msg)).toBeGreaterThanOrEqual(seqBefore);
+        expect(seqOf(msg)).toBeGreaterThan(seqBefore);
       }
 
       conn2.close();
