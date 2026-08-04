@@ -58,7 +58,7 @@ Complete the v4 configuration reference and enforce operator-template parity
 
 Replace the description with this exact scope:
 
-````markdown
+```markdown
 Source: docs/open-source-plan.md — Phase 3, documentation bullet 2
 
 ## Context
@@ -102,18 +102,14 @@ drifting.
 
 ## Verification
 
-```bash
-bun test tests/check-config-docs.test.ts
-bun run check:config-docs
-bun run format
-bun run typecheck
-bun run lint
-bun run test:unit
-bun run build
+    bun test tests/check-config-docs.test.ts
+    bun run check:config-docs
+    bun run format
+    bun run typecheck
+    bun run lint
+    bun run test:unit
+    bun run build
 ```
-````
-
-````
 
 - [ ] **Step 3: Move the issue to In Progress and assign it to the authenticated maintainer**
 
@@ -125,10 +121,12 @@ until its implementation PR merges.
 ### Task 2: Add active and retired variable classification
 
 **Files:**
+
 - Modify: `tests/check-config-docs.test.ts:1-61`
 - Modify: `scripts/check-config-docs.ts:28-72`
 
 **Interfaces:**
+
 - Consumes: `varsInSource(source: string): Set<string>`.
 - Produces:
   - `RETIRED_ENV_VARS: ReadonlySet<string>`
@@ -220,7 +218,7 @@ describe('template parity helpers', () => {
     expect(duplicates).toEqual(['BIND_HOST', 'WS_PORT']);
   });
 });
-````
+```
 
 The production mutations these tests catch are: returning all extracted names
 as active, failing to recognize commented examples, accepting prose as an
