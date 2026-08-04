@@ -3,6 +3,7 @@ import {
   activeVarsInSource,
   duplicateVarsInTemplate,
   missingVars,
+  RETIRED_ENV_VARS,
   retiredVarsInTemplate,
   varsInSource,
   varsInTemplate,
@@ -68,6 +69,17 @@ describe('varsInSource', () => {
 });
 
 describe('activeVarsInSource', () => {
+  test('classifies exactly the retired settings', () => {
+    expect([...RETIRED_ENV_VARS].sort()).toEqual([
+      'ALLOW_INSECURE_PRODUCTION_NO_TLS',
+      'ALLOW_MTLS_FALLBACK',
+      'DISABLE_TLS',
+      'MTLS_CLIENT_CA_PATH',
+      'ONLY_ALLOW_DEFAULT_SERVER',
+      'TRUST_PROXY',
+    ]);
+  });
+
   test('keeps live settings and excludes names read only to reject retirement', () => {
     const names = activeVarsInSource(`
       const port = env.WS_PORT;

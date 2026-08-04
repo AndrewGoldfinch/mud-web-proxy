@@ -162,8 +162,8 @@ if (import.meta.main) {
       `check-config-docs: ${undocumented.length} variable(s) read by src/runtime-config.ts ` +
         `but missing from docs/configuration.md:\n` +
         undocumented.map((n) => `  ${n}`).join('\n') +
-        `\n\nDocument each in docs/configuration.md, or add it to NOT_ENV_VARS in ` +
-        `scripts/check-config-docs.ts if it is not a configuration variable.`,
+        `\n\nDocument each active variable in docs/configuration.md; classify retired ` +
+        `variables in RETIRED_ENV_VARS.`,
     );
     process.exit(1);
   }
