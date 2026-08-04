@@ -26,13 +26,6 @@ const SOURCE = path.join(repoRoot, 'src', 'runtime-config.ts');
 const DOCS = path.join(repoRoot, 'docs', 'configuration.md');
 
 /**
- * Fully-uppercase string literals in runtime-config.ts that are not
- * environment variables. Empty today; the escape hatch exists so that adding
- * an unrelated constant does not force a documentation entry for it.
- */
-const NOT_ENV_VARS = new Set<string>([]);
-
-/**
  * Every variable the runtime reads, however it reads it.
  *
  * This is textual, not a parse, so it recognises access forms rather than
@@ -67,9 +60,56 @@ export const varsInSource = (source: string): Set<string> => {
     names.add(name);
   }
 
-  for (const ignored of NOT_ENV_VARS) names.delete(ignored);
   return names;
 };
+
+export const RETIRED_ENV_VARS: ReadonlySet<string> = new Set([
+  'ALLOW_INSECURE_PRODUCTION_NO_TLS',
+  'ALLOW_MTLS_FALLBACK',
+  'DISABLE_TLS',
+  'MTLS_CLIENT_CA_PATH',
+  'ONLY_ALLOW_DEFAULT_SERVER',
+  'TRUST_PROXY',
+]);
+
+export const activeVarsInSource = (source: string): Set<string> => {
+  const names = varsInSource(source);
+  for (const retired of RETIRED_ENV_VARS) names.delete(retired);
+  return names;
+};
+
+export const varsInTemplate = (template: string): Set<string> => {
+  const names = new Set<string>();
+  for (const [, name] of template.matchAll(
+    /^\s*(?:#\s*)?([A-Z][A-Z0-9_]{2,})\s*=.*$/gm,
+  )) {
+    names.add(name);
+  }
+  return names;
+};
+
+export const duplicateVarsInTemplate = (template: string): string[] => {
+  const counts = new Map<string, number>();
+  for (const [, name] of template.matchAll(
+    /^\s*(?:#\s*)?([A-Z][A-Z0-9_]{2,})\s*=.*$/gm,
+  )) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name)
+    .sort();
+};
+
+export const missingVars = (
+  required: ReadonlySet<string>,
+  present: ReadonlySet<string>,
+): string[] => [...required].filter((name) => !present.has(name)).sort();
+
+export const retiredVarsInTemplate = (template: string): string[] =>
+  [...varsInTemplate(template)]
+    .filter((name) => RETIRED_ENV_VARS.has(name))
+    .sort();
 
 /**
  * Every variable named in the reference's tables.

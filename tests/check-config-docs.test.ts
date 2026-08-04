@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { varsInSource } from '../scripts/check-config-docs';
+import {
+  activeVarsInSource,
+  duplicateVarsInTemplate,
+  missingVars,
+  retiredVarsInTemplate,
+  varsInSource,
+  varsInTemplate,
+} from '../scripts/check-config-docs';
 
 /**
  * The drift check is only worth having if it sees every way the runtime reads
@@ -57,5 +64,72 @@ describe('varsInSource', () => {
     expect(varsInSource('const { SOME_CONST } = constants;')).not.toContain(
       'SOME_CONST',
     );
+  });
+});
+
+describe('activeVarsInSource', () => {
+  test('keeps live settings and excludes names read only to reject retirement', () => {
+    const names = activeVarsInSource(`
+      const port = env.WS_PORT;
+      if (env.ONLY_ALLOW_DEFAULT_SERVER !== undefined) fail();
+      if (env.DISABLE_TLS !== undefined) fail();
+    `);
+
+    expect([...names].sort()).toEqual(['WS_PORT']);
+  });
+});
+
+describe('varsInTemplate', () => {
+  test('finds active and commented dotenv assignments', () => {
+    const names = varsInTemplate(`
+      WS_PORT=6200
+      # MAX_SESSIONS_GLOBAL=100
+      #TLS_CERT_PATH=/run/secrets/cert.pem
+    `);
+
+    expect([...names].sort()).toEqual([
+      'MAX_SESSIONS_GLOBAL',
+      'TLS_CERT_PATH',
+      'WS_PORT',
+    ]);
+  });
+
+  test('ignores prose, lowercase names, exports, and malformed lines', () => {
+    const names = varsInTemplate(`
+      # Use TARGET_MODE=fixed for one target.
+      lowercase=value
+      export WS_PORT=6200
+      NOT AN ASSIGNMENT
+    `);
+
+    expect(names.size).toBe(0);
+  });
+});
+
+describe('template parity helpers', () => {
+  test('sorts missing variables for deterministic diagnostics', () => {
+    expect(
+      missingVars(new Set(['WS_PORT', 'BIND_HOST']), new Set(['WS_PORT'])),
+    ).toEqual(['BIND_HOST']);
+  });
+
+  test('detects a retired assignment but ignores a prose mention', () => {
+    const retired = retiredVarsInTemplate(`
+      # DISABLE_TLS was removed.
+      # ONLY_ALLOW_DEFAULT_SERVER=true
+    `);
+
+    expect(retired).toEqual(['ONLY_ALLOW_DEFAULT_SERVER']);
+  });
+
+  test('detects and sorts repeated assignment names', () => {
+    const duplicates = duplicateVarsInTemplate(`
+      WS_PORT=6200
+      # BIND_HOST=127.0.0.1
+      # WS_PORT=6300
+      BIND_HOST=0.0.0.0
+    `);
+
+    expect(duplicates).toEqual(['BIND_HOST', 'WS_PORT']);
   });
 });
