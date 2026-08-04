@@ -19,6 +19,10 @@ import { createIREMUD } from './mock-mud';
 
 const PROXY_PORT = 6321;
 const AUTH_PORT = 6322;
+const REQUIRED_PROXY_PORT = 6325;
+const REQUIRED_MUD_PORT = 6326;
+const LEGACY_REQUIRED_REJECTION =
+  'Legacy connections are unavailable when MUD_TLS_MODE=required.';
 const SETTLE_MS = 1500;
 
 const settle = (ms = SETTLE_MS) => new Promise((r) => setTimeout(r, ms));
@@ -58,6 +62,15 @@ const decodeLegacy = (frames: string[]): string =>
       }
     })
     .join('');
+
+const parseJsonFrames = (frames: string[]): Array<Record<string, unknown>> =>
+  frames.flatMap((frame) => {
+    try {
+      return [JSON.parse(frame) as Record<string, unknown>];
+    } catch {
+      return [];
+    }
+  });
 
 /** Collect every frame the proxy sends, as text. */
 const collect = (ws: WebSocket): string[] => {
@@ -274,6 +287,82 @@ describe('legacy connect protocol, process-level', () => {
     ws.close();
     await settle();
   }, 15000);
+});
+
+describe('legacy connect under required MUD TLS', () => {
+  let mock: ReturnType<typeof createIREMUD>;
+  let proxy: Awaited<ReturnType<typeof startTestProxy>>;
+  let mudPort: number;
+
+  beforeAll(async () => {
+    mock = createIREMUD();
+    (mock as unknown as { config: { port: number } }).config.port =
+      REQUIRED_MUD_PORT;
+    mudPort = portOf(mock);
+    await mock.start();
+    proxy = await startTestProxy(REQUIRED_PROXY_PORT, {
+      TN_HOST: 'localhost',
+      TN_PORT: mudPort.toString(),
+      MUD_TLS_MODE: 'required',
+    });
+  });
+
+  afterAll(async () => {
+    await proxy.stop();
+    await mock.stop();
+  });
+
+  test('10. required mode rejects legacy before dialing upstream', async () => {
+    const before = mock.getAcceptedConnectionCount();
+    const ws = await openRaw(proxy.url);
+    const frames = collect(ws);
+    let closed = false;
+    ws.onclose = () => {
+      closed = true;
+    };
+
+    ws.send(JSON.stringify({ connect: 1, host: 'localhost', port: mudPort }));
+    await settle();
+
+    // Keep this first: the red run is valid only when this reports 1 vs 0.
+    expect(mock.getAcceptedConnectionCount()).toBe(before);
+    expect(decodeLegacy(frames)).toContain(LEGACY_REQUIRED_REJECTION);
+    expect(closed).toBe(true);
+  });
+
+  test('11. required mode still routes typed connects through TLS', async () => {
+    const before = mock.getAcceptedConnectionCount();
+    const ws = await openRaw(proxy.url);
+    const frames = collect(ws);
+
+    ws.send(
+      JSON.stringify({
+        type: 'connect',
+        host: 'localhost',
+        port: mudPort,
+        deviceToken: 'required-typed-path',
+      }),
+    );
+
+    const deadline = Date.now() + 5000;
+    let errorFrame: Record<string, unknown> | undefined;
+    while (Date.now() < deadline && !errorFrame) {
+      errorFrame = parseJsonFrames(frames).find(
+        (frame) =>
+          frame.type === 'error' && frame.code === 'connection_failed',
+      );
+      if (!errorFrame) await settle(100);
+    }
+
+    expect(errorFrame).toMatchObject({
+      type: 'error',
+      code: 'connection_failed',
+    });
+    expect(decodeLegacy(frames)).not.toContain(LEGACY_REQUIRED_REJECTION);
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 1);
+    ws.close();
+    await settle();
+  }, 10000);
 });
 
 describe('legacy connect under shared-secret auth', () => {

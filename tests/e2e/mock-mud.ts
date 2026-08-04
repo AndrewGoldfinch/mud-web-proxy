@@ -99,6 +99,7 @@ export class MockMUDServer extends EventEmitter {
     new Map();
   private continuousCounts: Map<string, number> = new Map();
   private receivedCommands: string[] = [];
+  private acceptedConnectionCount = 0;
 
   constructor(config: Partial<MockMUDConfig> = {}) {
     super();
@@ -206,6 +207,7 @@ export class MockMUDServer extends EventEmitter {
   }
 
   private handleConnection(socket: net.Socket): void {
+    this.acceptedConnectionCount += 1;
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`[MockMUD] Client connected: ${clientId}`);
 
@@ -760,6 +762,10 @@ export class MockMUDServer extends EventEmitter {
 
   public getClientCount(): number {
     return this.clients.size;
+  }
+
+  public getAcceptedConnectionCount(): number {
+    return this.acceptedConnectionCount;
   }
 
   public getClients(): MockClient[] {
