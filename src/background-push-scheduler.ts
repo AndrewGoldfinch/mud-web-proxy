@@ -44,13 +44,12 @@ export class BackgroundPushScheduler {
   ) {
     this.notificationManager = notificationManager;
     this.config = {
-      silentPushIntervalMs: 20 * 60 * 1000,
-      activityPushIntervalMs: 120 * 1000,
-      activityAckTimeoutMs: 15 * 1000,
-      fallbackCooldownMs: 60 * 1000,
-      maxFallbacksPerHour: 6,
-      maxSnippetLength: 100,
-      ...config,
+      silentPushIntervalMs: config.silentPushIntervalMs ?? 20 * 60 * 1000,
+      activityPushIntervalMs: config.activityPushIntervalMs ?? 120 * 1000,
+      activityAckTimeoutMs: config.activityAckTimeoutMs ?? 15 * 1000,
+      fallbackCooldownMs: config.fallbackCooldownMs ?? 60 * 1000,
+      maxFallbacksPerHour: config.maxFallbacksPerHour ?? 6,
+      maxSnippetLength: config.maxSnippetLength ?? 100,
     };
   }
 
