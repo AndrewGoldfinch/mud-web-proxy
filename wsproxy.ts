@@ -325,7 +325,10 @@ interface MSDPRequest {
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
   socketId?: number;
-  /** Owns an upstream dial until the final socket is handed off. */
+  /**
+   * Owns and latches an upstream dial until the final socket is handed off.
+   * closeSocket aborts it when a legacy WebSocket closes during setup.
+   */
   pendingMudTransport?: AbortController;
   ts?: TelnetSocket;
   host?: string;
@@ -2315,28 +2318,53 @@ const srv: ServerConfig = {
     port?: number,
   ): Promise<void> {
     // One connect per socket, matching the typed protocol.
-    if (s.ts || sessionIntegration.hasSession(s)) {
+    if (s.ts || s.pendingMudTransport || sessionIntegration.hasSession(s)) {
       srv.rejectLegacy(s, 'This connection already has a session');
       return;
     }
+
+    const controller = new AbortController();
+    s.pendingMudTransport = controller;
 
     // A bare {connect: 1} means the configured default target. It is not
     // privileged: the decision below still applies the full target policy.
     const wantHost = host || srv.tn_host;
     const wantPort = port || srv.tn_port;
 
-    const decision = await sessionIntegration.authorizeConnect(s, {
-      host: wantHost,
-      port: wantPort,
-    });
+    let decision: Awaited<
+      ReturnType<typeof sessionIntegration.authorizeConnect>
+    >;
+    try {
+      decision = await sessionIntegration.authorizeConnect(s, {
+        host: wantHost,
+        port: wantPort,
+      });
+    } catch (err) {
+      if (s.pendingMudTransport === controller) {
+        s.pendingMudTransport = undefined;
+      }
+      const error = err instanceof Error ? err : new Error(String(err));
+      srv.logError(
+        `telnet authorization error: ${error.toString()}`,
+        s,
+        'telnet',
+      );
+      srv.rejectLegacy(s, 'Error: maybe the mud server is down?');
+      return;
+    }
 
     if (!decision.allowed) {
+      if (s.pendingMudTransport === controller) {
+        s.pendingMudTransport = undefined;
+      }
       srv.rejectLegacy(s, decision.reason);
       return;
     }
 
-    const controller = new AbortController();
-    s.pendingMudTransport = controller;
+    if (controller.signal.aborted) {
+      sessionIntegration.sessionManager.releasePendingDial(decision.ip);
+      return;
+    }
 
     // Established capacity is counted for the life of the connection and
     // released in closeSocket; hand off from the reservation so the same
@@ -2516,6 +2544,12 @@ const srv: ServerConfig = {
     if (s.legacyCountedIp) {
       sessionIntegration.sessionManager.decrementIPCount(s.legacyCountedIp);
       s.legacyCountedIp = undefined;
+    }
+
+    if (!s.ts && s.pendingMudTransport) {
+      const controller = s.pendingMudTransport;
+      s.pendingMudTransport = undefined;
+      controller.abort();
     }
 
     // Legacy behavior - close everything

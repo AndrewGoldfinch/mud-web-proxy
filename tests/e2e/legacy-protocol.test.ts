@@ -13,6 +13,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import net, { type Server, type Socket } from 'net';
 import { inflateRawSync } from 'zlib';
 import { startMockMUDTest, type MockMUDSetup } from './mock-mud-helper';
 import { startTestProxy } from './proxy-launcher';
@@ -24,10 +25,7 @@ const REQUIRED_PROXY_PORT = 6325;
 const REQUIRED_MUD_PORT = 6326;
 const PREFER_PROXY_PORT = 6327;
 const PREFER_MUD_PORT = 6328;
-// Reserved for Task 5's stalled-dial process tests.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const STALL_PROXY_PORT = 6329;
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
 const STALL_MUD_PORT = 6330;
 const LEGACY_REQUIRED_REJECTION =
   'MUD_TLS_MODE=required: TLS connection failed and plaintext fallback is not permitted.';
@@ -378,6 +376,114 @@ describe('legacy connect under preferred MUD TLS', () => {
     ws.close();
     await settle();
   }, 20000);
+});
+
+describe('pending legacy transport races', () => {
+  let stallServer: Server;
+  let proxy: Awaited<ReturnType<typeof startTestProxy>>;
+  let acceptedUpstreams = 0;
+  const activeUpstreams = new Set<Socket>();
+
+  beforeAll(async () => {
+    stallServer = net.createServer((socket) => {
+      acceptedUpstreams += 1;
+      activeUpstreams.add(socket);
+      socket.once('close', () => activeUpstreams.delete(socket));
+      // Send no bytes: the TLS transport must remain provisional until its
+      // handshake deadline or an explicit abort.
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      stallServer.once('error', reject);
+      stallServer.listen(STALL_MUD_PORT, () => {
+        stallServer.off('error', reject);
+        resolve();
+      });
+    });
+
+    proxy = await startTestProxy(STALL_PROXY_PORT, {
+      TN_HOST: 'localhost',
+      TN_PORT: STALL_MUD_PORT.toString(),
+      MUD_TLS_MODE: 'prefer',
+    });
+  });
+
+  afterAll(async () => {
+    try {
+      await proxy.stop();
+    } finally {
+      for (const socket of activeUpstreams) socket.destroy();
+      await new Promise<void>((resolve, reject) => {
+        stallServer.close((err) => {
+          if (err) reject(err);
+          else resolve();
+        });
+      });
+    }
+  });
+
+  test('a stalled handshake is aborted when the legacy client closes', async () => {
+    const before = acceptedUpstreams;
+    const ws = await openRaw(proxy.url);
+
+    ws.send(
+      JSON.stringify({
+        connect: 1,
+        host: 'localhost',
+        port: STALL_MUD_PORT,
+      }),
+    );
+
+    const acceptedDeadline = Date.now() + 2000;
+    while (Date.now() < acceptedDeadline && acceptedUpstreams !== before + 1) {
+      await settle(25);
+    }
+    expect(acceptedUpstreams).toBe(before + 1);
+
+    const closedAt = Date.now();
+    ws.close();
+    const upstreamCloseDeadline = closedAt + 3000;
+    while (Date.now() < upstreamCloseDeadline && activeUpstreams.size !== 0) {
+      await settle(25);
+    }
+
+    expect(activeUpstreams.size).toBe(0);
+    expect(Date.now() - closedAt).toBeLessThan(4000);
+    expect(acceptedUpstreams).toBe(before + 1);
+  }, 8000);
+
+  test('same-turn duplicate legacy frames create exactly one upstream dial', async () => {
+    const before = acceptedUpstreams;
+    const ws = await openRaw(proxy.url);
+    const frames = collect(ws);
+    let closed = false;
+    ws.onclose = () => {
+      closed = true;
+    };
+    const connect = JSON.stringify({
+      connect: 1,
+      host: 'localhost',
+      port: STALL_MUD_PORT,
+    });
+
+    ws.send(connect);
+    ws.send(connect);
+
+    const deadline = Date.now() + 3000;
+    while (
+      Date.now() < deadline &&
+      (!closed ||
+        activeUpstreams.size !== 0 ||
+        !decodeLegacy(frames).includes('already has a session'))
+    ) {
+      await settle(25);
+    }
+
+    expect(acceptedUpstreams).toBe(before + 1);
+    expect(decodeLegacy(frames)).toContain('already has a session');
+    expect(closed).toBe(true);
+    expect(activeUpstreams.size).toBe(0);
+  }, 8000);
 });
 
 describe('legacy connect under required MUD TLS', () => {
