@@ -28,15 +28,13 @@ export class TriggerMatcher {
   private config: TriggerMatcherConfig;
 
   constructor(config: Partial<TriggerMatcherConfig> = {}) {
-    this.config = withDefaults(
-      {
-        rateLimit: {
-          perTypePerMinute: 1,
-          totalPerHour: 10,
-        },
+    this.config = {
+      rateLimit: {
+        perTypePerMinute: 1,
+        totalPerHour: 10,
       },
-      config,
-    );
+      ...config,
+    };
 
     // Initialize built-in triggers
     this.initializeBuiltInTriggers();

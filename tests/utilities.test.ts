@@ -476,7 +476,8 @@ describe('Server initialization', () => {
   });
 
   test('should create HTTPS server when certificates exist', () => {
-    const testDir = makeTempDir('test-certs');
+    const testDir = '/tmp/test-certs';
+    fs.mkdirSync(testDir, { recursive: true });
 
     fs.writeFileSync(path.join(testDir, 'cert.pem'), 'mock certificate');
     fs.writeFileSync(path.join(testDir, 'privkey.pem'), 'mock private key');

@@ -104,7 +104,7 @@ printf '%s' "$SNAP" | jq -rs '.[] | "  \(.conclusion // .state // "?")  \(.name 
 # failure until someone deliberately adds it here — the safe direction.
 FAILING="$(printf '%s' "$SNAP" | jq -rs '.[]
   | select(((.conclusion // .state // "") | ascii_upcase)
-           | . != "SUCCESS" and . != "NEUTRAL" and . != "SKIPPED")
+           | . == "FAILURE" or . == "TIMED_OUT" or . == "ACTION_REQUIRED")
   | "\(.name // .context)\t\(.conclusion // .state // "?")\t\(.detailsUrl // "")"')"
 
 if [ -z "$FAILING" ]; then

@@ -1271,7 +1271,7 @@ export function saveAttestedKeys(filePath: string): void {
     } finally {
       fs.closeSync(handle);
     }
-    fs.renameSync(tempPath, filePath);
+    fs.writeFileSync(filePath, JSON.stringify(obj, null, 2), 'utf-8');
   } finally {
     // Runs whether or not the rename happened, so a failed save leaves the
     // previous file in place and no staging residue. The error propagates.
