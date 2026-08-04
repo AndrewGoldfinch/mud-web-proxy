@@ -303,51 +303,98 @@ describe('Session Resume', () => {
     conn2.close();
   });
 
+  // Runs against its own continuous-output MUD rather than the shared Resume
+  // MUD, which only speaks when spoken to. With a silent MUD nothing is
+  // generated during the disconnect window, so there is nothing to replay and
+  // the test cannot demonstrate what its name claims — which is why this
+  // originally asserted only that the session was still valid.
   it('should replay buffered data on resume', async () => {
-    const conn1 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result1 = await conn1.connect(proxy.url);
-    expect(result1.success).toBe(true);
+    const bufMock = createBufferTestMUD();
+    (bufMock as unknown as { config: { port: number } }).config.port =
+      MOCK_MUD_PORT + 11;
+    await bufMock.start();
+    const bufProxy = await startTestProxy(PROXY_PORT + 11, {
+      TN_HOST: 'localhost',
+      TN_PORT: (MOCK_MUD_PORT + 11).toString(),
+    });
 
-    // Login and generate data
-    conn1.sendCommand('user');
-    await new Promise((r) => setTimeout(r, 500));
-    conn1.sendCommand('pass');
-    await new Promise((r) => setTimeout(r, 1000));
+    try {
+      const conn1 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 11));
+      const result1 = await conn1.connect(bufProxy.url);
+      expect(result1.success).toBe(true);
 
-    // Record last seq before disconnect
-    const seqBefore = conn1.getLastSequence();
+      // Wait for the login prompt before the first command, so it is not
+      // written before the telnet socket exists.
+      await conn1.waitForMessage('data', 5000);
+      conn1.sendCommand('user');
+      await new Promise((r) => setTimeout(r, 500));
+      conn1.sendCommand('pass');
+      await new Promise((r) => setTimeout(r, 1500));
 
-    // Close WS — MUD keeps sending prompt etc
-    conn1.close();
+      const seqBefore = conn1.getLastSequence();
+      expect(seqBefore).toBeGreaterThan(0);
 
-    // Generate more data while disconnected
-    await new Promise((r) => setTimeout(r, 500));
+      // Drop the WebSocket. The MUD emits every 500ms regardless, so the
+      // proxy buffers frames with no client attached.
+      conn1.close();
+      await new Promise((r) => setTimeout(r, 1500));
 
-    // Resume with old lastSeq
-    const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
-    const result2 = await conn2.resume(
-      proxy.url,
-      result1.sessionId!,
-      result1.token!,
-      seqBefore,
-    );
-    expect(result2.success).toBe(true);
+      const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 11));
+      const result2 = await conn2.resume(
+        bufProxy.url,
+        result1.sessionId!,
+        result1.token!,
+        seqBefore,
+      );
+      expect(result2.success).toBe(true);
+      await new Promise((r) => setTimeout(r, 1000));
 
-    // Wait for buffered replay
-    await new Promise((r) => setTimeout(r, 1000));
+      // The replay contract has two halves, and the previous version tested
+      // neither. Reading through getMessagesAfterSeq(seqBefore) and asserting
+      // seq > seqBefore was circular: that filter already guarantees it.
+      // src/session-integration.ts sets `replayed: true` only on chunks it
+      // serves from the buffer, so a live frame cannot satisfy any of this.
+      const replays = conn2
+        .getMessages()
+        .filter((m) => (m.data as { replayed?: boolean })?.replayed === true);
+      const seqOf = (m: (typeof replays)[number]) =>
+        (m.data as { seq: number }).seq;
 
-    // Whether the MUD emitted anything during the 500ms gap is timing
-    // dependent, so the count is not asserted. What must hold either way is
-    // the replay contract: anything the proxy replays is marked as such and
-    // sits strictly after the sequence the client resumed from. Computing
-    // `replayed` and asserting nothing — as this did — tested only that
-    // `result2.success` was still true, which line 334 already covered.
-    const replayed = conn2.getMessagesAfterSeq(seqBefore);
-    for (const msg of replayed) {
-      expect((msg.data as { seq: number }).seq).toBeGreaterThan(seqBefore);
+      // The property the test is named for: output produced while no client
+      // was attached survived the disconnect and came back.
+      //
+      // This has to be counted strictly after seqBefore. `replays.length > 0`
+      // is not enough, because replayFrom is inclusive: the chunk at exactly
+      // seqBefore is returned on every resume, marked replayed, whether or
+      // not anything new was buffered. Asserting only that the list is
+      // non-empty would stay green with every newly buffered frame dropped
+      // (review on #118).
+      const bufferedDuringDisconnect = replays.filter(
+        (m) => seqOf(m) > seqBefore,
+      );
+      expect(bufferedDuringDisconnect.length).toBeGreaterThan(0);
+
+      // The resume point is honoured: replay starts where the client left
+      // off, not at the head of the buffer.
+      //
+      // `>=` rather than `>` deliberately, and only here — this bound exists
+      // to reject frames *older* than the resume point, and must tolerate the
+      // inclusive duplicate at seqBefore that the assertion above is careful
+      // not to count. Whether that duplicate should exist at all is undecided:
+      // docs/ defines no lastSeq semantics and the client protocol reference
+      // is still MWP-113, so asserting `>` globally would invent a contract
+      // and then report the implementation as broken against it.
+      for (const msg of replays) {
+        expect(seqOf(msg)).toBeGreaterThanOrEqual(seqBefore);
+      }
+
+      conn2.close();
+    } finally {
+      await bufProxy.stop();
+      await bufMock.stop();
     }
-    conn2.close();
-  });
+    // Login handshake plus two multi-second waits exceed bun's 5s default.
+  }, 25000);
 
   it('should filter by lastSeq on resume', async () => {
     const conn1 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
