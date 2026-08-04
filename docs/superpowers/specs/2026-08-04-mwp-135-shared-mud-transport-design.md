@@ -58,6 +58,8 @@ planes are intentionally different.
 8. Add transport unit coverage and process-level legacy regressions.
 9. State the default-`prefer` behavior and latency change in the PR and
    release-note text.
+10. Close the pre-existing duplicate-legacy-dial race by using the pending
+    transport controller as a synchronous latch before target authorization.
 
 ### Out of scope
 
@@ -75,6 +77,8 @@ planes are intentionally different.
   mechanically calls the updated `initT()`.
 - Correcting the stale pre-existing comment in
   `tests/e2e/legacy-protocol.test.ts` that says the mock sends no greeting.
+- Adding an application setting for a private CA, certificate pinning, or
+  `rejectUnauthorized`. MWP-112 must document that separate trust-store gap.
 
 ## Chosen architecture
 
@@ -244,16 +248,40 @@ and passes its signal to the connector before any dial. Its handoff callback:
 5. clears the stored controller.
 
 `Session.close()` aborts and clears a pending controller before closing an
-already handed-off Telnet socket. The old `closing`/provisional-`telnet`
-mechanism becomes unnecessary and is removed only where the connector makes
-it obsolete.
+already handed-off Telnet socket. Delete the `closing` field and every read,
+reset, and write of it. Once the controller owns connection cancellation, the
+field has no readers; retaining the write in `close()` would create the same
+write-only private-field defect that the repository gates already reject.
 
 ### Legacy connection
 
-Both `SocketExtended` declarations gain an optional pending transport
-controller so their duplicated shape remains aligned. `srv.initT()` creates
-and stores that controller before calling the connector. Until handoff,
-`s.ts` remains `undefined`.
+Both `SocketExtended` declarations gain an optional
+`pendingMudTransport?: AbortController` so their duplicated shape remains
+aligned. This field is both cancellation owner and duplicate-connect latch.
+
+`openLegacyConnection()` must not wait until `initT()` to set it. Its current
+`s.ts || sessionIntegration.hasSession(s)` guard precedes an asynchronous
+`authorizeConnect()` call, so two connect frames delivered in one turn can
+both pass before `s.ts` exists. Settled-socket-only handoff would widen that
+pre-existing race through TCP establishment and as much as four seconds of
+TLS negotiation.
+
+The live path therefore:
+
+1. rejects when `s.ts`, `s.pendingMudTransport`, or a typed session exists;
+2. creates and stores the controller synchronously, before the first `await`;
+3. calls `authorizeConnect()`;
+4. clears the exact controller on every pre-dial denial or failure;
+5. after authorization, checks whether client closure aborted the controller;
+6. if aborted, releases any pending-dial reservation and returns before
+   established capacity is incremented; and
+7. otherwise converts capacity and passes the already stored controller into
+   `initT()` through the socket field.
+
+`initT()` reads the existing controller. Its production-dead direct caller
+may still reach it without one, so `initT()` creates and stores a controller
+only as a fallback for that call shape. Until successful handoff, `s.ts`
+remains `undefined`.
 
 `srv.closeSocket()` keeps its existing handed-off socket behavior. When
 `s.ts` is absent and a pending controller exists, it aborts and clears the
@@ -264,6 +292,11 @@ provisional socket.
 The handoff callback assigns `s.ts` and clears the pending controller before
 attaching the legacy handlers. A rejected aborted operation does not send a
 second player-visible error or schedule a second close.
+
+The PR body must identify the duplicate-connect race as pre-existing and
+explain why fixing it belongs here: the connector removes `s.ts` as an
+in-flight latch and materially widens the old race window. This is not a
+general parser or capacity refactor.
 
 ## Consumer integration
 
@@ -286,7 +319,8 @@ is removed; `telnetConnected` is set directly during handoff.
 
 The MWP-134 early check in `openLegacyConnection()` is removed. Authorization,
 reservation handoff, `s.host`, `s.port`, and the validated
-`decision.dialAddress` continue into `initT()` unchanged.
+`decision.dialAddress` continue into `initT()`, with the new synchronous
+pending-controller latch described above.
 
 The connector receives:
 
@@ -322,11 +356,20 @@ Connection failure before handoff is handled by the connector promise:
 - all detailed failures are logged through the existing redacted
   `srv.logError(..., 'telnet')` layer.
 
+For every non-abort rejection, that one promise rejection handler calls
+`rejectLegacy()` exactly once. `rejectLegacy()` sends the selected legacy
+message and schedules `closeSocket(s)` after the existing
+`SOCKET_CLOSE_DELAY_MS`. That scheduled close is load-bearing: it closes the
+player WebSocket and decrements `legacyCountedIp`. Pre-handoff there is no
+socket `.on('error')` handler to do either job. The aborted path sends nothing
+and schedules nothing because `closeSocket()` is already executing.
+
 After handoff, existing legacy close/error behavior remains in force.
 
 ## Capacity and authorization invariants
 
-No target-policy or capacity algorithm changes:
+Target policy and the pending-versus-established capacity model remain
+unchanged. The connector requires these sequencing rules:
 
 - `authorizeConnect()` still produces the distinct requested host and
   validated dial address.
@@ -334,8 +377,13 @@ No target-policy or capacity algorithm changes:
   increment established capacity, then release the reservation. Failure or
   abort releases the pending reservation through the existing catch path.
 - Legacy connections still convert the pending reservation to
-  `legacyCountedIp` before `initT()`. A failed or aborted dial reaches
-  `closeSocket()`, which decrements it exactly once.
+  `legacyCountedIp` before `initT()`. A non-abort connection failure calls
+  `rejectLegacy()` exactly once, whose delayed `closeSocket()` decrements the
+  established count exactly once. Client-driven abort is initiated by
+  `closeSocket()` itself and therefore needs no second scheduled close.
+- A client that closes while authorization is pending aborts the latch. If
+  authorization subsequently returns an allowed decision, the path releases
+  its pending reservation and returns before creating `legacyCountedIp`.
 - Neither consumer re-resolves `requestedHost`; all socket calls use
   `dialAddress`.
 
@@ -384,6 +432,16 @@ Extend `tests/e2e/legacy-protocol.test.ts` with isolated proxy/MUD pairs and
 explicit TLS modes. Existing general legacy coverage remains on the launcher's
 `plain` default, so its behavior and timing do not change.
 
+The mock's cumulative accepted-connection counter must count raw TCP accepts,
+including connections that never finish a TLS handshake. A `tls.Server`
+listener passed to `tls.createServer()` runs on `secureConnection`, which is
+too late for this invariant. Move the cumulative increment from
+`handleConnection()` to the server's raw `connection` event and remove the old
+increment so plaintext behavior is unchanged and TLS attempts are not double
+counted. [Node's TLS documentation](https://nodejs.org/api/tls.html#event-connection)
+specifies that `tls.Server` emits `connection` before the TLS handshake
+begins.
+
 #### Prefer against a plaintext MUD
 
 Use dedicated ports 6327 and 6328. Start the existing plaintext mock with
@@ -398,6 +456,37 @@ Use dedicated ports 6327 and 6328. Start the existing plaintext mock with
    envelope.
 
 The exact cumulative count proves there is no second fallback dial.
+
+#### Prefer against a trusted TLS MUD
+
+Use dedicated ports 6331 and 6332. Extend `MockMUDServer` with optional TLS
+key/certificate material; `start()` uses `tls.createServer()` when it is
+present and passes the resulting `TLSSocket` to the existing
+`handleConnection()` data plane after a successful handshake. Plain mocks
+continue to use `net.createServer()`.
+
+Generate a one-day localhost certificate and private key in a temporary
+directory with `openssl`, including `DNS:localhost` in the subject alternative
+name. Do not commit private-key material. Extend `ProxyConfig` and
+`startTestProxy()` to pass an optional `NODE_EXTRA_CA_CERTS` path into the
+spawned proxy, then point it at the generated certificate. The proxy process
+must genuinely trust the test certificate; disabling verification is not an
+acceptable test setup.
+
+One legacy `prefer` connection must:
+
+1. increase the raw accepted-connection counter by exactly one;
+2. keep one secure mock client connected;
+3. deliver a raw player command through the proxy to the TLS mock; and
+4. return the MUD response in legacy base64 framing, never a typed JSON
+   envelope.
+
+The exact count is essential. The unchanged fallback classifier treats
+`certificate` and `unable to verify` diagnostics as downgrade triggers. If the
+proxy does not trust the certificate, it will attempt plaintext after TLS;
+the raw counter becomes two and the test fails instead of vacuously proving
+only fallback. Counting raw `connection` events ensures the second attempt is
+observed even though plaintext cannot complete a TLS handshake.
 
 #### Required against a plaintext MUD
 
@@ -430,15 +519,26 @@ This process test proves the consumer wiring from `closeSocket()` to the
 stored controller. The connector unit test alone cannot prove that the live
 legacy path retained a reachable abort handle.
 
+#### Duplicate legacy frames during authorization
+
+Against the handshake-stall fixture, send two valid legacy connect frames in
+the same turn. The unfixed code permits two authorization/dial paths because
+`s.ts` is still absent. The fixed path must accept exactly one raw upstream
+connection, reject the duplicate in legacy framing, close the client, and
+leave zero active upstream sockets. This test makes the synchronous pending
+controller a behavioral contract rather than an untested field.
+
 ## Release-note contract
 
 The PR title must use a `fix:` prefix because this corrects live transport
 policy, not documentation. The PR body and release-note line must state:
 
 > Legacy connections now use the shared `MUD_TLS_MODE` transport. The default
-> `prefer` mode attempts TLS first and falls back to plaintext at most once;
-> plaintext-only MUDs may incur up to four seconds of handshake latency before
-> fallback. `required` never opens plaintext.
+> `prefer` mode attempts TLS first and falls back to plaintext at most once
+> when the peer appears plaintext, the handshake deadline expires, or TLS
+> negotiation/certificate validation fails—including an untrusted or
+> self-signed certificate. Plaintext-only MUDs may incur up to four seconds of
+> handshake latency before fallback. `required` never opens plaintext.
 
 Do not describe the deadline as Telnet negotiation and do not imply that
 fallback is possible under `required`.
@@ -480,6 +580,8 @@ MWP-135 is complete when:
   milliseconds;
 - caller-owned cancellation destroys every provisional socket and settles
   once;
+- the pending controller latches a legacy connect before authorization, so
+  duplicate frames cannot create two dials or overwrite `s.ts`;
 - legacy WebSocket closure during a stalled handshake reaches that
   cancellation path;
 - `required` cannot call the plaintext dial under error, close, deadline, or
@@ -490,10 +592,18 @@ MWP-135 is complete when:
   that the MUD may be down;
 - typed and legacy framing, Telnet negotiation, logging, authorization, and
   capacity accounting remain intact;
+- a real trusted `TLSSocket` carries a complete legacy command/response round
+  trip with exactly one raw upstream connection;
 - `srv.newSocket()` remains present and production-dead;
 - the PR/release wording calls out the default-`prefer` TLS-first behavior and
   bounded latency change; and
 - all focused tests, `preflight:full`, and GitHub CI pass.
 
 After MWP-135 lands, MWP-112 is unblocked and can complete the security model
-without qualifying `MUD_TLS_MODE` by client protocol.
+without qualifying `MUD_TLS_MODE` by client protocol. MWP-112 inherits one
+explicit residual trust-store gap: the proxy has no first-class custom-CA,
+pinning, or `rejectUnauthorized` configuration. `required` therefore works by
+default only for MUD certificates trusted by the runtime's public CA store;
+runtime-level mechanisms such as `NODE_EXTRA_CA_CERTS` can extend trust, but
+there is no proxy setting for them. The security model must state that
+limitation rather than discovering it during documentation work.
