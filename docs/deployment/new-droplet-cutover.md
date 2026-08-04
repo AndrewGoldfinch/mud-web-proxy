@@ -837,7 +837,7 @@ whether or not upgrades were rejected.
 UNKNOWN_KEY_REJECTS="$(
   ssh "$NEW_HOST" \
     "sudo journalctl -u mud-web-proxy --since '@$CUTOVER_EPOCH' --no-pager" |
-    grep -c 'Unknown key rejected' || true
+    grep -c 'Rejected upgrade: unknown App Attest keyId' || true
 )"
 printf 'unknown-key rejections since cutover: %s\n' "$UNKNOWN_KEY_REJECTS"
 ```

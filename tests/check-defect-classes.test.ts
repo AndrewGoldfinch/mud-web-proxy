@@ -226,7 +226,7 @@ describe("gate 'ci-job-coverage'", () => {
   });
 });
 
-describe('the licence header check', () => {
+describe("gate 'spdx-header'", () => {
   test('reports a nested production file without the identifier', () => {
     const findings = spdxHeaderGate.scanCorpus(
       new Map([['src/types/index.ts', '/** types */\n']]),
