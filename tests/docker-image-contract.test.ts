@@ -47,6 +47,9 @@ describe('production Docker image contract', () => {
       'COPY --chown=0:0 --chmod=0444 config/apple-app-attest-root-ca.pem ./config/apple-app-attest-root-ca.pem',
     );
     expect(runtime).toContain(
+      'COPY --chown=0:0 --chmod=0444 LICENSE NOTICE ./',
+    );
+    expect(runtime).toContain(
       'ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json',
     );
     expect(runtime).toContain('USER 10001:10001');
@@ -65,6 +68,8 @@ describe('production Docker image contract', () => {
       '!bun.lock',
       '!tsconfig.json',
       '!wsproxy.ts',
+      '!LICENSE',
+      '!NOTICE',
       '!src/',
       '!src/**',
       '!config/',
