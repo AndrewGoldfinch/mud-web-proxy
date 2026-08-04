@@ -86,13 +86,17 @@ network attacker who can make the TLS attempt fail.
 | Variable                  | Type                      | Default | Required when                                   | Description                                                       |
 | ------------------------- | ------------------------- | ------- | ----------------------------------------------- | ----------------------------------------------------------------- |
 | `AUTH_MODE`               | `none` or `shared-secret` | `none`  | Never                                           | Selects whether WebSocket upgrades require the shared secret.     |
-| `PROXY_SHARED_SECRET`     | secret string             | empty   | `AUTH_MODE=shared-secret`                       | Shared secret; it must be at least 32 bytes or startup aborts.    |
+| `PROXY_SHARED_SECRET`     | secret string             | empty   | `AUTH_MODE=shared-secret`                       | Shared secret; startup enforces at least 32 UTF-16 code units.    |
 | `AUTH_ALLOW_QUERY_SECRET` | boolean                   | `false` | Never                                           | Also accepts the shared secret in the `?secret=` query parameter. |
 | `REQUIRE_APP_AUTH`        | boolean                   | `false` | Never; `true` requires App Attest configuration | Requires a valid App Attest assertion on every upgrade.           |
 
 Browsers cannot set headers on a WebSocket handshake, which is the only reason
 `AUTH_ALLOW_QUERY_SECRET` exists. Setting it to `true` can place the secret in
 URLs, access logs, and referrer headers, so it is opt-in.
+
+Startup measures `PROXY_SHARED_SECRET` with JavaScript string length, which is
+UTF-16 code units rather than bytes. Use 32 or more ASCII characters so the
+threshold is unambiguous.
 
 `REQUIRE_APP_AUTH` without App Attest configured is not a stricter posture but
 a closed door — every upgrade would be rejected for headers the client has no
