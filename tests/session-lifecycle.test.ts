@@ -289,4 +289,131 @@ describe('Session TLS fallback classification', () => {
     await expect(pending).rejects.toThrow('MUD transport connection aborted');
     expect(plainAttempts).toBe(0);
   });
+
+  test('aborts the previous stalled connect before replacing it', async () => {
+    const session = new Session('mud.example.com', 4000);
+    const firstSocket = new MockTelnetSocket();
+    const replacementSocket = new MockTelnetSocket();
+    const sockets = [firstSocket, replacementSocket];
+    let tlsAttempts = 0;
+
+    tls.connect = ((
+      _port: number,
+      _host: string,
+      _options: tls.ConnectionOptions,
+    ) => {
+      const socket = sockets[tlsAttempts];
+      tlsAttempts++;
+      return asTelnetSocket(socket!);
+    }) as typeof tls.connect;
+
+    const first = session.connect();
+    const firstResult = first.then(
+      () => undefined,
+      (error: Error) => error,
+    );
+    const replacement = session.connect();
+
+    expect(firstSocket.destroyed).toBe(true);
+    await expect(firstResult).resolves.toMatchObject({
+      message: 'MUD transport connection aborted',
+    });
+
+    firstSocket.emit('secureConnect');
+    expect(session.telnet).toBeNull();
+    expect(session.telnetConnected).toBe(false);
+
+    replacementSocket.emit('secureConnect');
+    await expect(replacement).resolves.toBeUndefined();
+    expect(session.telnet).toBe(asTelnetSocket(replacementSocket));
+    expect(session.telnetConnected).toBe(true);
+  });
+
+  test('close aborts both a replaced and replacement stalled connect', async () => {
+    const session = new Session('mud.example.com', 4000);
+    const firstSocket = new MockTelnetSocket();
+    const replacementSocket = new MockTelnetSocket();
+    const sockets = [firstSocket, replacementSocket];
+    let tlsAttempts = 0;
+    let plainAttempts = 0;
+
+    tls.connect = ((
+      _port: number,
+      _host: string,
+      _options: tls.ConnectionOptions,
+    ) => {
+      const socket = sockets[tlsAttempts];
+      tlsAttempts++;
+      return asTelnetSocket(socket!);
+    }) as typeof tls.connect;
+    net.createConnection = ((_port: number, _host: string) => {
+      plainAttempts++;
+      return asTelnetSocket(new MockTelnetSocket());
+    }) as typeof net.createConnection;
+
+    const first = session.connect();
+    const replacement = session.connect();
+    const settledPromise = Promise.allSettled([first, replacement]);
+    session.close();
+
+    expect(firstSocket.destroyed).toBe(true);
+    expect(replacementSocket.destroyed).toBe(true);
+
+    const settled = await Promise.race([
+      settledPromise,
+      new Promise<undefined>((resolve) => {
+        setTimeout(() => resolve(undefined), 100);
+      }),
+    ]);
+
+    expect(settled).toBeDefined();
+    if (!settled) throw new Error('connection promises did not settle');
+    expect(settled).toHaveLength(2);
+    for (const result of settled) {
+      expect(result.status).toBe('rejected');
+      if (result.status === 'rejected') {
+        expect(result.reason).toMatchObject({
+          message: 'MUD transport connection aborted',
+        });
+      }
+    }
+    expect(plainAttempts).toBe(0);
+
+    firstSocket.emit('secureConnect');
+    replacementSocket.emit('secureConnect');
+    expect(session.telnet).toBeNull();
+    expect(session.telnetConnected).toBe(false);
+  });
+
+  test('rejects a new connect after handoff without disturbing the live socket', async () => {
+    const session = new Session('mud.example.com', 4000);
+    const tlsSocket = new MockTelnetSocket();
+    let tlsAttempts = 0;
+    let plainAttempts = 0;
+
+    tls.connect = ((
+      _port: number,
+      _host: string,
+      _options: tls.ConnectionOptions,
+    ) => {
+      tlsAttempts++;
+      return asTelnetSocket(tlsSocket);
+    }) as typeof tls.connect;
+    net.createConnection = ((_port: number, _host: string) => {
+      plainAttempts++;
+      return asTelnetSocket(new MockTelnetSocket());
+    }) as typeof net.createConnection;
+
+    const first = session.connect();
+    tlsSocket.emit('secureConnect');
+    await expect(first).resolves.toBeUndefined();
+
+    const duplicate = session.connect();
+    expect(tlsAttempts).toBe(1);
+    await expect(duplicate).rejects.toThrow('Session is already connected');
+    expect(plainAttempts).toBe(0);
+    expect(session.telnet).toBe(asTelnetSocket(tlsSocket));
+    expect(session.telnetConnected).toBe(true);
+    expect(tlsSocket.destroyed).toBe(false);
+  });
 });

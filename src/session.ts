@@ -105,6 +105,11 @@ export class Session {
    * Returns a promise that resolves when connected or rejects on error
    */
   async connect(): Promise<void> {
+    if (this.telnetConnected) {
+      throw new Error('Session is already connected');
+    }
+
+    this.connectAbortController?.abort();
     const controller = new AbortController();
     this.connectAbortController = controller;
 
