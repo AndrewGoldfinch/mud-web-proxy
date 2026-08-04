@@ -110,6 +110,22 @@ describe('INBOUND_TLS_MODE=required is enforced, not filtered away', () => {
   });
 });
 
+describe('shared-secret length diagnostics match JavaScript semantics', () => {
+  test('reports the minimum in UTF-16 code units', () => {
+    const { errors } = parseRuntimeConfig(
+      {
+        ...base,
+        AUTH_MODE: 'shared-secret',
+        PROXY_SHARED_SECRET: 'too-short',
+      },
+      noFiles,
+      '/app',
+    );
+
+    expect(errors.join(' ')).toMatch(/at least 32 UTF-16 code units/);
+  });
+});
+
 describe('allowlist validation uses the same parser as enforcement', () => {
   const allowlist = (targets: string) => ({
     ...base,

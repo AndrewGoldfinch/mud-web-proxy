@@ -1,6 +1,7 @@
 /**
  * Fail when a configuration variable exists in src/runtime-config.ts but is
- * not documented in docs/configuration.md.
+ * not documented in docs/configuration.md, or when either operator template
+ * drifts from the active runtime configuration.
  *
  * Configuration is the proxy's entire operator interface, and it is read in
  * exactly one place. A variable that ships undocumented is one an operator
@@ -24,13 +25,20 @@ const repoRoot = path.resolve(
 );
 const SOURCE = path.join(repoRoot, 'src', 'runtime-config.ts');
 const DOCS = path.join(repoRoot, 'docs', 'configuration.md');
+const TEMPLATES = [
+  path.join(repoRoot, '.env.example'),
+  path.join(repoRoot, '.env.compose.example'),
+];
+const COMPOSE_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
+  'MWP_ACME_EMAIL',
+  'MWP_DOMAIN',
+  'MWP_IMAGE',
+]);
 
-/**
- * Fully-uppercase string literals in runtime-config.ts that are not
- * environment variables. Empty today; the escape hatch exists so that adding
- * an unrelated constant does not force a documentation entry for it.
- */
-const NOT_ENV_VARS = new Set<string>([]);
+// Commented assignments are part of these templates: they advertise optional
+// defaults to operators and therefore count for parity. Consequently, prose
+// examples must not start a comment line in dotenv assignment form.
+const TEMPLATE_ASSIGNMENT = /^\s*(?:#\s*)?([A-Z][A-Z0-9_]{2,})\s*=.*$/gm;
 
 /**
  * Every variable the runtime reads, however it reads it.
@@ -67,9 +75,67 @@ export const varsInSource = (source: string): Set<string> => {
     names.add(name);
   }
 
-  for (const ignored of NOT_ENV_VARS) names.delete(ignored);
   return names;
 };
+
+export const RETIRED_ENV_VARS: ReadonlySet<string> = new Set([
+  'ALLOW_INSECURE_PRODUCTION_NO_TLS',
+  'ALLOW_MTLS_FALLBACK',
+  'DISABLE_TLS',
+  'MTLS_CLIENT_CA_PATH',
+  'ONLY_ALLOW_DEFAULT_SERVER',
+  'TRUST_PROXY',
+]);
+
+export const rejectedRetiredVarsInSource = (source: string): Set<string> => {
+  const names = new Set<string>();
+  for (const [, name] of source.matchAll(
+    /if\s*\(\s*env\.([A-Z][A-Z0-9_]{2,})\s*!==\s*undefined\s*\)\s*\{\s*errors\.push\(/g,
+  )) {
+    names.add(name);
+  }
+  return names;
+};
+
+export const activeVarsInSource = (source: string): Set<string> => {
+  const names = varsInSource(source);
+  for (const retired of RETIRED_ENV_VARS) names.delete(retired);
+  return names;
+};
+
+export const varsInTemplate = (template: string): Set<string> => {
+  const names = new Set<string>();
+  for (const [, name] of template.matchAll(TEMPLATE_ASSIGNMENT)) {
+    names.add(name);
+  }
+  return names;
+};
+
+export const duplicateVarsInTemplate = (template: string): string[] => {
+  const counts = new Map<string, number>();
+  for (const [, name] of template.matchAll(TEMPLATE_ASSIGNMENT)) {
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts]
+    .filter(([, count]) => count > 1)
+    .map(([name]) => name)
+    .sort();
+};
+
+export const missingVars = (
+  required: ReadonlySet<string>,
+  present: ReadonlySet<string>,
+): string[] => [...required].filter((name) => !present.has(name)).sort();
+
+export const unexpectedVars = (
+  present: ReadonlySet<string>,
+  allowed: ReadonlySet<string>,
+): string[] => [...present].filter((name) => !allowed.has(name)).sort();
+
+export const retiredVarsInTemplate = (template: string): string[] =>
+  [...varsInTemplate(template)]
+    .filter((name) => RETIRED_ENV_VARS.has(name))
+    .sort();
 
 /**
  * Every variable named in the reference's tables.
@@ -104,10 +170,13 @@ const read = (file: string): string => {
 // Guarded so the extraction above can be imported and tested without running
 // the check or calling process.exit.
 if (import.meta.main) {
-  const source = varsInSource(read(SOURCE));
+  const sourceText = read(SOURCE);
+  const source = varsInSource(sourceText);
+  const active = activeVarsInSource(sourceText);
   const documented = varsInDocs(read(DOCS));
+  let failed = false;
 
-  const undocumented = [...source].filter((n) => !documented.has(n)).sort();
+  const undocumented = missingVars(source, documented);
   const stale = [...documented].filter((n) => !source.has(n)).sort();
 
   if (stale.length > 0) {
@@ -122,13 +191,66 @@ if (import.meta.main) {
       `check-config-docs: ${undocumented.length} variable(s) read by src/runtime-config.ts ` +
         `but missing from docs/configuration.md:\n` +
         undocumented.map((n) => `  ${n}`).join('\n') +
-        `\n\nDocument each in docs/configuration.md, or add it to NOT_ENV_VARS in ` +
-        `scripts/check-config-docs.ts if it is not a configuration variable.`,
+        `\n\nDocument each reported variable in docs/configuration.md.`,
     );
-    process.exit(1);
+    failed = true;
   }
 
+  for (const templatePath of TEMPLATES) {
+    const template = read(templatePath);
+    const relative = path.relative(repoRoot, templatePath);
+    const missing = missingVars(active, varsInTemplate(template));
+    const retired = retiredVarsInTemplate(template);
+    const duplicates = duplicateVarsInTemplate(template).filter((name) =>
+      active.has(name),
+    );
+    const allowed = new Set([...active, ...RETIRED_ENV_VARS]);
+    if (path.basename(templatePath) === '.env.compose.example') {
+      for (const name of COMPOSE_ONLY_ENV_VARS) allowed.add(name);
+    }
+    const unexpected = unexpectedVars(varsInTemplate(template), allowed);
+
+    if (missing.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} is missing ${missing.length} active ` +
+          `configuration variable(s):\n` +
+          missing.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+
+    if (retired.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} assigns ${retired.length} retired ` +
+          `configuration variable(s):\n` +
+          retired.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+
+    if (duplicates.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} assigns ${duplicates.length} active ` +
+          `configuration variable(s) more than once:\n` +
+          duplicates.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+
+    if (unexpected.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} assigns ${unexpected.length} ` +
+          `unexpected configuration variable(s):\n` +
+          unexpected.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+  }
+
+  if (failed) process.exit(1);
+
   console.log(
-    `check-config-docs: ${source.size} configuration variables, all documented.`,
+    `check-config-docs: ${source.size} documented variables; ` +
+      `${active.size} active variables present in both operator templates.`,
   );
 }

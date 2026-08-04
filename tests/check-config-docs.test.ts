@@ -1,5 +1,27 @@
 import { describe, expect, test } from 'bun:test';
-import { varsInSource } from '../scripts/check-config-docs';
+import { readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
+import {
+  activeVarsInSource,
+  duplicateVarsInTemplate,
+  missingVars,
+  rejectedRetiredVarsInSource,
+  RETIRED_ENV_VARS,
+  retiredVarsInTemplate,
+  unexpectedVars,
+  varsInSource,
+  varsInTemplate,
+} from '../scripts/check-config-docs';
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
+const runtimeSource = readFileSync(
+  path.join(repoRoot, 'src', 'runtime-config.ts'),
+  'utf8',
+);
 
 /**
  * The drift check is only worth having if it sees every way the runtime reads
@@ -58,4 +80,110 @@ describe('varsInSource', () => {
       'SOME_CONST',
     );
   });
+});
+
+describe('activeVarsInSource', () => {
+  test('classifies every setting that the runtime explicitly rejects', () => {
+    expect([...RETIRED_ENV_VARS].sort()).toEqual(
+      [...rejectedRetiredVarsInSource(runtimeSource)].sort(),
+    );
+  });
+
+  test('keeps live settings and excludes names read only to reject retirement', () => {
+    const names = activeVarsInSource(`
+      const port = env.WS_PORT;
+      if (env.ONLY_ALLOW_DEFAULT_SERVER !== undefined) fail();
+      if (env.DISABLE_TLS !== undefined) fail();
+    `);
+
+    expect([...names].sort()).toEqual(['WS_PORT']);
+  });
+});
+
+describe('varsInTemplate', () => {
+  test('finds active and commented dotenv assignments', () => {
+    const names = varsInTemplate(`
+      WS_PORT=6200
+      # MAX_SESSIONS_GLOBAL=100
+      #TLS_CERT_PATH=/run/secrets/cert.pem
+    `);
+
+    expect([...names].sort()).toEqual([
+      'MAX_SESSIONS_GLOBAL',
+      'TLS_CERT_PATH',
+      'WS_PORT',
+    ]);
+  });
+
+  test('ignores prose, lowercase names, exports, and malformed lines', () => {
+    const names = varsInTemplate(`
+      # Use TARGET_MODE=fixed for one target.
+      lowercase=value
+      export WS_PORT=6200
+      NOT AN ASSIGNMENT
+    `);
+
+    expect(names.size).toBe(0);
+  });
+});
+
+describe('template parity helpers', () => {
+  test('sorts missing variables for deterministic diagnostics', () => {
+    expect(
+      missingVars(new Set(['WS_PORT', 'BIND_HOST']), new Set(['WS_PORT'])),
+    ).toEqual(['BIND_HOST']);
+  });
+
+  test('reports template names outside the explicit allowlist', () => {
+    expect(
+      unexpectedVars(
+        new Set(['WS_PORT', 'WS_PORTT', 'MWP_DOMAIN']),
+        new Set(['WS_PORT', 'MWP_DOMAIN']),
+      ),
+    ).toEqual(['WS_PORTT']);
+  });
+
+  test('detects a retired assignment but ignores a prose mention', () => {
+    const retired = retiredVarsInTemplate(`
+      # DISABLE_TLS was removed.
+      # ONLY_ALLOW_DEFAULT_SERVER=true
+    `);
+
+    expect(retired).toEqual(['ONLY_ALLOW_DEFAULT_SERVER']);
+  });
+
+  test('detects and sorts repeated assignment names', () => {
+    const duplicates = duplicateVarsInTemplate(`
+      WS_PORT=6200
+      # BIND_HOST=127.0.0.1
+      # WS_PORT=6300
+      BIND_HOST=0.0.0.0
+    `);
+
+    expect(duplicates).toEqual(['BIND_HOST', 'WS_PORT']);
+  });
+});
+
+describe('operator template parity', () => {
+  const active = activeVarsInSource(runtimeSource);
+  const templates = ['.env.example', '.env.compose.example'];
+
+  for (const template of templates) {
+    test(`${template} contains every active setting`, () => {
+      const contents = readFileSync(path.join(repoRoot, template), 'utf8');
+      expect(missingVars(active, varsInTemplate(contents))).toEqual([]);
+    });
+
+    test(`${template} assigns no retired setting`, () => {
+      const contents = readFileSync(path.join(repoRoot, template), 'utf8');
+      expect(retiredVarsInTemplate(contents)).toEqual([]);
+    });
+
+    test(`${template} assigns each active setting once`, () => {
+      const contents = readFileSync(path.join(repoRoot, template), 'utf8');
+      expect(
+        duplicateVarsInTemplate(contents).filter((name) => active.has(name)),
+      ).toEqual([]);
+    });
+  }
 });
