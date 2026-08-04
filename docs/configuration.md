@@ -395,3 +395,8 @@ These are not v4 configuration settings. Assigning any of them aborts startup.
 | `TRUST_PROXY`                      | Use `TRUSTED_PROXY_CIDRS`.                                                        |
 | `ALLOW_MTLS_FALLBACK`              | Use `AUTH_MODE=shared-secret` for clients that cannot attest.                     |
 | `MTLS_CLIENT_CA_PATH`              | Removed with mTLS fallback; the proxy no longer requests client certificates.     |
+
+Two older App Attest diagnostic bypass names are deliberately inert rather
+than rejected: `APPATTEST_ALLOW_ASSERTION_BYPASS` and
+`APPATTEST_DIAG_CROSSKEY`. The runtime no longer reads either name, so assigning
+one has no effect and App Attest verification remains enabled.

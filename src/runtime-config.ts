@@ -758,7 +758,8 @@ export const parseRuntimeConfig = (
     );
   }
 
-  // AUTH_MODE=shared-secret requires PROXY_SHARED_SECRET >= 32 bytes
+  // AUTH_MODE=shared-secret requires PROXY_SHARED_SECRET >= 32 UTF-16 code
+  // units, matching JavaScript String.length.
   if (authMode === 'shared-secret') {
     if (!proxySharedSecret) {
       errors.push(
@@ -766,7 +767,7 @@ export const parseRuntimeConfig = (
       );
     } else if (proxySharedSecret.length < 32) {
       errors.push(
-        `PROXY_SHARED_SECRET must be at least 32 bytes (current length: ${proxySharedSecret.length}).`,
+        `PROXY_SHARED_SECRET must be at least 32 UTF-16 code units (current length: ${proxySharedSecret.length}).`,
       );
     }
   }

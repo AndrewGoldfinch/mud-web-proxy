@@ -29,6 +29,16 @@ const TEMPLATES = [
   path.join(repoRoot, '.env.example'),
   path.join(repoRoot, '.env.compose.example'),
 ];
+const COMPOSE_ONLY_ENV_VARS: ReadonlySet<string> = new Set([
+  'MWP_ACME_EMAIL',
+  'MWP_DOMAIN',
+  'MWP_IMAGE',
+]);
+
+// Commented assignments are part of these templates: they advertise optional
+// defaults to operators and therefore count for parity. Consequently, prose
+// examples must not start a comment line in dotenv assignment form.
+const TEMPLATE_ASSIGNMENT = /^\s*(?:#\s*)?([A-Z][A-Z0-9_]{2,})\s*=.*$/gm;
 
 /**
  * Every variable the runtime reads, however it reads it.
@@ -77,6 +87,16 @@ export const RETIRED_ENV_VARS: ReadonlySet<string> = new Set([
   'TRUST_PROXY',
 ]);
 
+export const rejectedRetiredVarsInSource = (source: string): Set<string> => {
+  const names = new Set<string>();
+  for (const [, name] of source.matchAll(
+    /if\s*\(\s*env\.([A-Z][A-Z0-9_]{2,})\s*!==\s*undefined\s*\)\s*\{\s*errors\.push\(/g,
+  )) {
+    names.add(name);
+  }
+  return names;
+};
+
 export const activeVarsInSource = (source: string): Set<string> => {
   const names = varsInSource(source);
   for (const retired of RETIRED_ENV_VARS) names.delete(retired);
@@ -85,9 +105,7 @@ export const activeVarsInSource = (source: string): Set<string> => {
 
 export const varsInTemplate = (template: string): Set<string> => {
   const names = new Set<string>();
-  for (const [, name] of template.matchAll(
-    /^\s*(?:#\s*)?([A-Z][A-Z0-9_]{2,})\s*=.*$/gm,
-  )) {
+  for (const [, name] of template.matchAll(TEMPLATE_ASSIGNMENT)) {
     names.add(name);
   }
   return names;
@@ -95,9 +113,7 @@ export const varsInTemplate = (template: string): Set<string> => {
 
 export const duplicateVarsInTemplate = (template: string): string[] => {
   const counts = new Map<string, number>();
-  for (const [, name] of template.matchAll(
-    /^\s*(?:#\s*)?([A-Z][A-Z0-9_]{2,})\s*=.*$/gm,
-  )) {
+  for (const [, name] of template.matchAll(TEMPLATE_ASSIGNMENT)) {
     counts.set(name, (counts.get(name) ?? 0) + 1);
   }
   return [...counts]
@@ -110,6 +126,11 @@ export const missingVars = (
   required: ReadonlySet<string>,
   present: ReadonlySet<string>,
 ): string[] => [...required].filter((name) => !present.has(name)).sort();
+
+export const unexpectedVars = (
+  present: ReadonlySet<string>,
+  allowed: ReadonlySet<string>,
+): string[] => [...present].filter((name) => !allowed.has(name)).sort();
 
 export const retiredVarsInTemplate = (template: string): string[] =>
   [...varsInTemplate(template)]
@@ -183,6 +204,11 @@ if (import.meta.main) {
     const duplicates = duplicateVarsInTemplate(template).filter((name) =>
       active.has(name),
     );
+    const allowed = new Set([...active, ...RETIRED_ENV_VARS]);
+    if (path.basename(templatePath) === '.env.compose.example') {
+      for (const name of COMPOSE_ONLY_ENV_VARS) allowed.add(name);
+    }
+    const unexpected = unexpectedVars(varsInTemplate(template), allowed);
 
     if (missing.length > 0) {
       console.error(
@@ -207,6 +233,15 @@ if (import.meta.main) {
         `check-config-docs: ${relative} assigns ${duplicates.length} active ` +
           `configuration variable(s) more than once:\n` +
           duplicates.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+
+    if (unexpected.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} assigns ${unexpected.length} ` +
+          `unexpected configuration variable(s):\n` +
+          unexpected.map((name) => `  ${name}`).join('\n'),
       );
       failed = true;
     }

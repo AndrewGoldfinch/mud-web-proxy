@@ -6,8 +6,10 @@ import {
   activeVarsInSource,
   duplicateVarsInTemplate,
   missingVars,
+  rejectedRetiredVarsInSource,
   RETIRED_ENV_VARS,
   retiredVarsInTemplate,
+  unexpectedVars,
   varsInSource,
   varsInTemplate,
 } from '../scripts/check-config-docs';
@@ -81,15 +83,10 @@ describe('varsInSource', () => {
 });
 
 describe('activeVarsInSource', () => {
-  test('classifies exactly the retired settings', () => {
-    expect([...RETIRED_ENV_VARS].sort()).toEqual([
-      'ALLOW_INSECURE_PRODUCTION_NO_TLS',
-      'ALLOW_MTLS_FALLBACK',
-      'DISABLE_TLS',
-      'MTLS_CLIENT_CA_PATH',
-      'ONLY_ALLOW_DEFAULT_SERVER',
-      'TRUST_PROXY',
-    ]);
+  test('classifies every setting that the runtime explicitly rejects', () => {
+    expect([...RETIRED_ENV_VARS].sort()).toEqual(
+      [...rejectedRetiredVarsInSource(runtimeSource)].sort(),
+    );
   });
 
   test('keeps live settings and excludes names read only to reject retirement', () => {
@@ -135,6 +132,15 @@ describe('template parity helpers', () => {
     expect(
       missingVars(new Set(['WS_PORT', 'BIND_HOST']), new Set(['WS_PORT'])),
     ).toEqual(['BIND_HOST']);
+  });
+
+  test('reports template names outside the explicit allowlist', () => {
+    expect(
+      unexpectedVars(
+        new Set(['WS_PORT', 'WS_PORTT', 'MWP_DOMAIN']),
+        new Set(['WS_PORT', 'MWP_DOMAIN']),
+      ),
+    ).toEqual(['WS_PORTT']);
   });
 
   test('detects a retired assignment but ignores a prose mention', () => {
