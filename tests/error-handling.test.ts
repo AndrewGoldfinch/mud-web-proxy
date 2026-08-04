@@ -521,7 +521,6 @@ describe('Error Handling', () => {
         callback(new Error('Compression failed'), Buffer.from(''));
       };
 
-      const originalDeflateRaw = zlib.deflateRaw;
       (zlib as unknown as { deflateRaw: typeof zlib.deflateRaw }).deflateRaw =
         errorMock as typeof zlib.deflateRaw;
 

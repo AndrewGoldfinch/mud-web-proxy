@@ -1,6 +1,5 @@
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { SessionIntegration } from '../src/session-integration';
-import { validateTarget } from '../src/target-policy';
 import type { SocketExtended } from '../src/types';
 
 type Sent = string[];
