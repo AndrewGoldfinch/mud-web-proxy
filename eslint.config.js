@@ -15,10 +15,8 @@ export default [
     ignores: [
       '**/public/',
       '**/dist/',
-      '**/tests/',
       '**/types/',
       '**/wsproxy.js',
-      '**/*.test.ts',
       '**/.claude/**',
       '**/.agents/**',
       '**/.codex/**',
@@ -63,7 +61,8 @@ export default [
         ...globals.browser,
       },
       parserOptions: {
-        project: './tsconfig.json',
+        // Lint-only project: same settings, plus tests. See tsconfig.eslint.json.
+        project: './tsconfig.eslint.json',
       },
     },
   },
@@ -98,6 +97,22 @@ export default [
         },
       ],
       'no-console': 'warn',
+    },
+  },
+  {
+    // Test *harness* files are programs, not tests: mock MUD servers, the
+    // proxy launcher, and the acceptance clients. Their console output is
+    // the interface, exactly as for scripts/ above, and srv.log is not
+    // reachable from any of them.
+    //
+    // Scoped to harness files rather than all of tests/. Review on #121
+    // was right that blanketing tests/ would silently drop the repo-wide
+    // policy AGENTS.md states, inside a PR whose whole point is widening
+    // lint coverage. Real .test.ts files keep `no-console: warn`.
+    files: ['tests/**/*.ts'],
+    ignores: ['tests/**/*.test.ts'],
+    rules: {
+      'no-console': 'off',
     },
   },
 ];

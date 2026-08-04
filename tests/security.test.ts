@@ -49,12 +49,10 @@ interface ServerState {
 }
 
 // Module-level variables that simulate the wsproxy.ts state
-let serverState: ServerState = { sockets: [] };
+const serverState: ServerState = { sockets: [] };
 let ONLY_ALLOW_DEFAULT_SERVER = true;
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
 
-// Track originAllowed calls
-let originAllowedCalls: number = 0;
 let originAllowedReturnValue: number = 1;
 
 // Create a testable version of the server config
@@ -124,7 +122,6 @@ const createTestServer = () => {
     log: (_msg: unknown, _s?: MockSocketExtended) => {},
 
     originAllowed: function (): number {
-      originAllowedCalls++;
       return originAllowedReturnValue;
     },
 
@@ -323,7 +320,6 @@ describe('Security Features', () => {
   beforeEach(() => {
     serverState.sockets = [];
     ONLY_ALLOW_DEFAULT_SERVER = true;
-    originAllowedCalls = 0;
     originAllowedReturnValue = 1;
     srv = createTestServer();
     srv.open = true;

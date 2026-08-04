@@ -20,7 +20,6 @@ import {
   createROMMUD,
   createDiscworldMUD,
   createBufferTestMUD,
-  type MockClient,
 } from './mock-mud';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 

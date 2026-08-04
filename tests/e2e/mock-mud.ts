@@ -493,7 +493,7 @@ export class MockMUDServer extends EventEmitter {
           await this.sendWelcome(client);
         }
       }
-    } catch (e) {
+    } catch (_e) {
       // Invalid JSON
       console.error('[MockMUD] Invalid GMCP JSON:', json);
     }

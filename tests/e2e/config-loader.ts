@@ -12,12 +12,6 @@
  * ENABLED=true, HOST=..., etc.
  */
 
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 export interface E2EConfig {
   enabled: boolean;
   host: string;
@@ -141,7 +135,7 @@ export function isCI(): boolean {
 export function listAvailableConfigs(): string[] {
   const muds = ['aardwolf', 'achaea', 'discworld', 'ire', 'rom', 'raw'];
 
-  return muds.filter((mud) => {
+  return muds.filter((_mud) => {
     // In a real implementation, we would load each .env.{mud}.example/local pair
     // and check if ENABLED=true. For now, just return empty or
     // check if there's a way to know which are configured.

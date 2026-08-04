@@ -559,6 +559,10 @@ describe('Error Handling', () => {
       // Wait for async callback
       await new Promise((resolve) => setTimeout(resolve, 100));
 
+      // The failure path was actually taken. Without this the test passes
+      // even if sendClient never attempts compression — it only proved that
+      // *something* was sent.
+      expect(deflateCalled).toBe(true);
       // Data should be sent (either compressed or uncompressed)
       expect(mockSend).toHaveBeenCalled();
 
