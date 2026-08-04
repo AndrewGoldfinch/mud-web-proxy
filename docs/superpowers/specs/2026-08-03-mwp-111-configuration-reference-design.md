@@ -52,13 +52,16 @@ part of this design.
 6. Correct MWP-111 in Linear so its title, description, and acceptance criteria
    describe the first-public-release configuration work and contain no
    migration requirement.
+7. Correct the background-push scheduler's handling of explicitly present
+   `undefined` option values so the documented defaults are applied at runtime.
 
 ### Out of scope
 
 - A v3-to-v4 migration guide, renamed-variable migration table, or worked v3
   conversion.
 - PM2 migration instructions. PM2 is not a supported public deployment path.
-- Runtime parsing, defaults, validation, or security-policy changes.
+- Runtime parsing, validation, or security-policy changes. The narrowly scoped
+  scheduler-default correction described below is the sole runtime exception.
 - Changes to `.env.aardwolf.example`, `.env.achaea.example`,
   `.env.discworld.example`, `.env.ire.example`, `.env.raw.example`, or
   `.env.rom.example`. Those are E2E fixtures, not operator templates.
@@ -122,6 +125,29 @@ default because they are rejected, not configured.
 
 No default or accepted value will be inferred from existing prose. Each value
 will be checked against `src/runtime-config.ts` and its configuration tests.
+
+## Background-push default handoff
+
+Source verification found one runtime defect that prevents the reference from
+truthfully publishing the required background-push defaults. When those six
+environment variables are unset, `src/runtime-config.ts` returns an object
+whose six properties are present with the value `undefined`. `wsproxy.ts`
+passes that object to `BackgroundPushScheduler`. The scheduler currently builds
+its configuration as `{ defaults, ...config }`, so the present-but-`undefined`
+properties overwrite every numeric default.
+
+The scheduler owns these defaults, so it will normalize each optional property
+at its constructor boundary with nullish fallback. This is preferable to
+duplicating the constants in `runtime-config.ts`, and safer than filtering only
+the `wsproxy.ts` call site because other callers can supply the same valid
+partial configuration shape. Nullish fallback preserves an explicit `0`, which
+is a meaningful interval value already supported by runtime parsing.
+
+The change is intentionally limited to
+`src/background-push-scheduler.ts` and its focused test file. A regression test
+will pass all six properties as `undefined`, reproduce the exact handoff shape,
+and prove the scheduler uses the six existing defaults. The test must fail for
+the observed `undefined` override before production code changes.
 
 ## Operator template contract
 
@@ -207,6 +233,10 @@ Focused unit tests will prove that:
 6. a retired assignment is detectable even when the retired name is also
    mentioned harmlessly in prose.
 
+A focused scheduler regression test will additionally prove that all six
+present-but-`undefined` background-push options fall back to the scheduler's
+existing defaults while an explicit `0` remains unchanged.
+
 The feature-level checks are:
 
 - `bun test tests/check-config-docs.test.ts`
@@ -233,7 +263,10 @@ The implementation is complete when:
 - CI catches a new active runtime variable that is missing from the reference
   or either operator template;
 - the existing quality and test suites pass;
+- the documented background-push defaults are effective when runtime parsing
+  supplies present-but-`undefined` options, without changing explicit values;
 - MWP-111 no longer requests or evaluates migration documentation.
 
-No application runtime file should change. Every changed line must trace to
-the public v4 configuration contract or its verification.
+No application runtime file other than `src/background-push-scheduler.ts`
+should change. Every changed line must trace to the public v4 configuration
+contract, its verification, or the approved scheduler-default correction.
