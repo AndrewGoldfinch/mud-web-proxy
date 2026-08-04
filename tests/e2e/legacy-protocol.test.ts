@@ -359,7 +359,7 @@ describe('legacy connect under required MUD TLS', () => {
       code: 'connection_failed',
     });
     expect(decodeLegacy(frames)).not.toContain(LEGACY_REQUIRED_REJECTION);
-    expect(mock.getAcceptedConnectionCount()).toBeGreaterThan(before);
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 1);
     ws.close();
     await settle();
   }, 10000);
