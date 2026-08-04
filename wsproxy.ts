@@ -2312,6 +2312,14 @@ const srv: ServerConfig = {
     host?: string,
     port?: number,
   ): Promise<void> {
+    if (runtimeConfig.mudTlsMode === 'required') {
+      srv.rejectLegacy(
+        s,
+        'Legacy connections are unavailable when MUD_TLS_MODE=required.',
+      );
+      return;
+    }
+
     // One connect per socket, matching the typed protocol.
     if (s.ts || sessionIntegration.hasSession(s)) {
       srv.rejectLegacy(s, 'This connection already has a session');
