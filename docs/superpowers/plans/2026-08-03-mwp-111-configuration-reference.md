@@ -4,14 +4,15 @@
 
 **Goal:** Publish an exhaustive first-public-release v4 configuration reference and keep both operator environment templates synchronized with the active runtime settings through CI.
 
-**Architecture:** Keep `src/runtime-config.ts` as the sole configuration authority. Extend the existing textual drift checker with a six-name retired-variable taxonomy and dotenv-template extraction, then complete the two operator templates and the human reference without changing runtime behavior.
+**Architecture:** Keep `src/runtime-config.ts` as the sole configuration authority. Extend the existing textual drift checker with a six-name retired-variable taxonomy and dotenv-template extraction, then complete the two operator templates and the human reference. Normalize optional background-push values at the scheduler boundary so present-but-`undefined` properties cannot erase the defaults that scheduler owns.
 
 **Tech Stack:** Bun 1.3.14, TypeScript 6, Bun test, Markdown, dotenv templates, Linear.
 
 ## Global Constraints
 
 - v4 is the first public release; do not create v3 migration documentation or imply a supported v3 operator contract.
-- Do not modify `src/runtime-config.ts`, runtime defaults, validation, security policy, or application behavior.
+- Do not modify `src/runtime-config.ts`, parsing, validation, or security policy.
+- `src/background-push-scheduler.ts` is the sole permitted runtime-file change; it may only restore its existing defaults when an optional property is `undefined` and must preserve explicit `0` values.
 - `.env.example` and `.env.compose.example` are the only operator templates governed by parity checks.
 - Do not modify `.env.aardwolf.example`, `.env.achaea.example`, `.env.discworld.example`, `.env.ire.example`, `.env.raw.example`, or `.env.rom.example`.
 - Every active runtime setting must occur exactly once in each operator template as an active or commented assignment.
@@ -19,6 +20,7 @@
 - Compose-only `MWP_DOMAIN`, `MWP_ACME_EMAIL`, and `MWP_IMAGE` remain valid extras in `.env.compose.example`.
 - Match the repository's 79-column Prettier formatting and existing TypeScript style.
 - Use test-driven development for every checker behavior: failing test, observed expected failure, minimal implementation, passing test.
+- Use test-driven development for the scheduler correction: the exact present-but-`undefined` handoff must fail before production code changes and pass afterward.
 
 ---
 
@@ -29,6 +31,8 @@
 - `.env.example`: exhaustive deployment-neutral v4 runtime template.
 - `.env.compose.example`: exhaustive v4 runtime template plus Compose-only settings and topology overrides.
 - `docs/configuration.md`: complete human reference with explicit type, default, and requirement columns.
+- `src/background-push-scheduler.ts`: own and apply the six background-push defaults even when a partial configuration contains explicit `undefined` properties.
+- `tests/background-push-scheduler.test.ts`: reproduce the runtime handoff and protect default fallback plus explicit-zero behavior.
 - `docs/superpowers/specs/2026-08-03-mwp-111-configuration-reference-design.md`: approved design; read-only during implementation.
 - `docs/superpowers/plans/2026-08-03-mwp-111-configuration-reference.md`: this execution plan.
 
@@ -86,6 +90,8 @@ drifting.
 5. Extend `scripts/check-config-docs.ts` and its tests so CI fails when an active
    variable is missing from the reference or either operator template, or when
    a retired variable appears as a template assignment.
+6. Correct `BackgroundPushScheduler` so present-but-undefined optional values
+   use its existing defaults while explicit zero values remain valid.
 
 ## Acceptance criteria
 
@@ -98,11 +104,15 @@ drifting.
       values imposed by `compose.yaml`.
 - [ ] CI fails when either operator template omits an active variable.
 - [ ] CI fails when either operator template assigns a retired variable.
-- [ ] Per-MUD E2E fixtures and runtime behavior are unchanged.
+- [ ] Per-MUD E2E fixtures and runtime parsing, validation, and security policy
+      are unchanged.
+- [ ] The six documented background-push defaults are effective when their
+      environment variables are unset, while explicit zero values remain valid.
 
 ## Verification
 
     bun test tests/check-config-docs.test.ts
+    bun test tests/background-push-scheduler.test.ts
     bun run check:config-docs
     bun run format
     bun run typecheck
@@ -571,7 +581,7 @@ MWP_ACME_EMAIL=
 # MWP_IMAGE=ghcr.io/andrewgoldfinch/mud-web-proxy@sha256:...
 ```
 
-Add all 52 runtime assignments from Step 5 exactly once. For the three values
+Add all 52 runtime assignments from Step 5 exactly once. For the four values
 hard-coded by `compose.yaml`, include commented assignments and state that the
 service-level `environment` block wins over `.env`:
 
@@ -579,11 +589,12 @@ service-level `environment` block wins over `.env`:
 # BIND_HOST=0.0.0.0
 # INBOUND_TLS_MODE=off
 # ALLOW_INSECURE_INBOUND_NO_TLS=true
+# TRUSTED_PROXY_CIDRS=172.28.0.0/24
 ```
 
 Keep `TN_HOST=` blank because Compose deliberately requires the operator to
 choose a target. Keep secrets blank and optional features commented. Do not
-claim that changing one of the three imposed topology values in `.env` changes
+claim that changing one of the four imposed topology values in `.env` changes
 the container.
 
 - [ ] **Step 7: Run focused tests and the real checker to observe GREEN**
@@ -598,7 +609,7 @@ bun run check:config-docs
 Expected:
 
 ```text
-21 pass
+22 pass
 0 fail
 check-config-docs: 58 documented variables; 52 active variables present in both operator templates.
 ```
@@ -738,8 +749,9 @@ following prose:
 - raising session, buffer, telnet, or rate limits increases per-client resource
   exposure;
 - `MUD_TLS_MODE=prefer` is downgradeable by an active network attacker;
-- `LOG_LEVEL=debug` exposes session content except password input protected by
-  telnet ECHO state;
+- `LOG_LEVEL=debug` emits structured message shape and byte-count diagnostics,
+  not session payload content; raw dumps remain behind the separate hardcoded
+  `srv.debug=false` gate;
 - App Attest is experimental and not independently reviewed;
 - attested keys and APNS tokens are device-derived data;
 - APNS alert snippets transit Apple's infrastructure.
@@ -788,7 +800,154 @@ git commit -m "docs: complete the v4 configuration reference"
 
 ---
 
-### Task 5: Mutation checks, full verification, and Linear handoff
+### Task 5: Restore background-push scheduler defaults at the ownership boundary
+
+**Files:**
+
+- Modify: `tests/background-push-scheduler.test.ts:1-end`
+- Modify: `src/background-push-scheduler.ts:35-54`
+
+**Interfaces:**
+
+- Consumes: `Partial<BackgroundPushSchedulerConfig>` from
+  `SessionIntegrationConfig.backgroundPush`, including properties that are
+  present with the value `undefined`.
+- Produces: a resolved internal `BackgroundPushSchedulerConfig` in which each
+  `undefined` property uses the scheduler's existing default and each explicit
+  numeric value, including `0`, is preserved.
+
+- [ ] **Step 1: Write the handoff regression tests**
+
+Extend the import with the exported configuration type:
+
+```typescript
+import {
+  BackgroundPushScheduler,
+  type BackgroundPushSchedulerConfig,
+} from '../src/background-push-scheduler';
+```
+
+Add these tests inside the existing `BackgroundPushScheduler` suite. The
+expected objects are hand-written literals and do not reuse production
+constants or calculations.
+
+```typescript
+it('uses scheduler defaults when runtime options are present but undefined', () => {
+  const notifier = new MockPushNotifier();
+  const scheduler = new BackgroundPushScheduler(notifier as never, {
+    silentPushIntervalMs: undefined,
+    activityPushIntervalMs: undefined,
+    activityAckTimeoutMs: undefined,
+    fallbackCooldownMs: undefined,
+    maxFallbacksPerHour: undefined,
+    maxSnippetLength: undefined,
+  });
+
+  const resolved = Reflect.get(
+    scheduler,
+    'config',
+  ) as BackgroundPushSchedulerConfig;
+
+  expect(resolved).toEqual({
+    silentPushIntervalMs: 1200000,
+    activityPushIntervalMs: 120000,
+    activityAckTimeoutMs: 15000,
+    fallbackCooldownMs: 60000,
+    maxFallbacksPerHour: 6,
+    maxSnippetLength: 100,
+  });
+});
+
+it('preserves explicit zero scheduler options', () => {
+  const notifier = new MockPushNotifier();
+  const scheduler = new BackgroundPushScheduler(notifier as never, {
+    silentPushIntervalMs: 0,
+    activityPushIntervalMs: 0,
+    activityAckTimeoutMs: 0,
+    fallbackCooldownMs: 0,
+    maxFallbacksPerHour: 0,
+    maxSnippetLength: 0,
+  });
+
+  const resolved = Reflect.get(
+    scheduler,
+    'config',
+  ) as BackgroundPushSchedulerConfig;
+
+  expect(resolved).toEqual({
+    silentPushIntervalMs: 0,
+    activityPushIntervalMs: 0,
+    activityAckTimeoutMs: 0,
+    fallbackCooldownMs: 0,
+    maxFallbacksPerHour: 0,
+    maxSnippetLength: 0,
+  });
+});
+```
+
+The first test catches the production mutation that spreads `undefined` over
+the defaults. The second prevents a truthiness-based fix from replacing valid
+zero values.
+
+- [ ] **Step 2: Run the focused suite and observe RED**
+
+Run:
+
+```bash
+bun test tests/background-push-scheduler.test.ts
+```
+
+Expected: the present-but-`undefined` test fails with six received
+`undefined` values. The explicit-zero test and the existing scheduler tests
+pass.
+
+- [ ] **Step 3: Resolve every property at the scheduler boundary**
+
+Replace the constructor's `{ defaults, ...config }` assignment with explicit
+nullish fallback:
+
+```typescript
+this.config = {
+  silentPushIntervalMs: config.silentPushIntervalMs ?? 20 * 60 * 1000,
+  activityPushIntervalMs: config.activityPushIntervalMs ?? 120 * 1000,
+  activityAckTimeoutMs: config.activityAckTimeoutMs ?? 15 * 1000,
+  fallbackCooldownMs: config.fallbackCooldownMs ?? 60 * 1000,
+  maxFallbacksPerHour: config.maxFallbacksPerHour ?? 6,
+  maxSnippetLength: config.maxSnippetLength ?? 100,
+};
+```
+
+Do not add a second default source, change any numeric value, filter in
+`wsproxy.ts`, or change runtime parsing. Nullish fallback is required so an
+explicit `0` survives.
+
+- [ ] **Step 4: Run focused and integration-adjacent tests to observe GREEN**
+
+```bash
+bun test tests/background-push-scheduler.test.ts
+bun test tests/wsproxy-utils.test.ts
+bun run typecheck
+bun run lint
+```
+
+Expected: all commands exit 0; the scheduler suite includes both new passing
+tests, and the runtime-config handoff tests remain green.
+
+- [ ] **Step 5: Format and commit the independently reviewable correction**
+
+```bash
+bunx prettier --write \
+  src/background-push-scheduler.ts \
+  tests/background-push-scheduler.test.ts
+git add src/background-push-scheduler.ts \
+  tests/background-push-scheduler.test.ts
+git diff --cached --check
+git commit -m "fix: preserve background push scheduler defaults"
+```
+
+---
+
+### Task 6: Mutation checks, full verification, and Linear handoff
 
 **Files:**
 
@@ -797,7 +956,10 @@ git commit -m "docs: complete the v4 configuration reference"
 - Verify: `.env.example`
 - Verify: `.env.compose.example`
 - Verify: `docs/configuration.md`
-- Verify unchanged: `src/runtime-config.ts` and all specialized E2E fixtures.
+- Verify: `src/background-push-scheduler.ts`
+- Verify: `tests/background-push-scheduler.test.ts`
+- Verify unchanged: `src/runtime-config.ts`, every other runtime source file,
+  and all specialized E2E fixtures.
 
 **Interfaces:**
 
@@ -890,6 +1052,7 @@ with 0 failures, plus the new focused tests.
 
 ```bash
 git diff --exit-code origin/main -- src/runtime-config.ts
+git diff --name-only origin/main...HEAD -- src
 git diff --exit-code origin/main -- \
   .env.aardwolf.example \
   .env.achaea.example \
@@ -902,11 +1065,30 @@ git status --short --branch
 git log --oneline origin/main..HEAD
 ```
 
-Expected: no runtime or specialized-fixture diff, no whitespace errors, a clean
-worktree, and only MWP-111 design/plan/implementation commits above
-`origin/main`.
+Expected: `src/runtime-config.ts` and specialized fixtures are unchanged;
+the source-name command prints exactly `src/background-push-scheduler.ts`;
+no whitespace errors exist, the worktree is clean, and only MWP-111
+design/plan/implementation commits are above `origin/main`.
 
-- [ ] **Step 6: Add the implementation evidence to Linear without closing the issue**
+- [ ] **Step 6: Correct the Linear scope expansion without closing the issue**
+
+Fetch MWP-111 and update its existing description in place:
+
+- add Implementation item 6: `Correct BackgroundPushScheduler so
+present-but-undefined optional values use its existing defaults while
+explicit zero values remain valid.`
+- replace the acceptance bullet `Per-MUD E2E fixtures and runtime behavior are
+unchanged.` with these two bullets:
+  - `Per-MUD E2E fixtures and runtime parsing, validation, and security policy
+are unchanged.`
+  - `The six documented background-push defaults are effective when their
+environment variables are unset, while explicit zero values remain valid.`
+- add `bun test tests/background-push-scheduler.test.ts` to Verification.
+
+Preserve the rest of the description exactly. Keep the issue assigned to the
+authenticated maintainer and In Progress.
+
+- [ ] **Step 7: Add the implementation evidence to Linear without closing the issue**
 
 Comment on MWP-111 with:
 
@@ -919,11 +1101,15 @@ MWP-111 implementation is ready for review.
 - Made `.env.example` and `.env.compose.example` exhaustive.
 - Extended CI to enforce source/reference/template parity and reject retired
   assignments.
-- Left runtime behavior and all per-MUD E2E fixtures unchanged.
+- Corrected the scheduler handoff so all six documented background-push
+  defaults are effective when unset while explicit zero values remain valid.
+- Left runtime parsing, validation, security policy, and all per-MUD E2E
+  fixtures unchanged.
 
 Verification: formatting, config drift, defect classes, typecheck, lint, unit
-tests, and build all pass. Mutation checks prove each template omission and a
-retired assignment fail with file-specific diagnostics.
+tests, and build all pass. Focused regression tests cover the scheduler's
+undefined-default and explicit-zero behavior. Mutation checks prove each
+template omission and a retired assignment fail with file-specific diagnostics.
 
 The issue remains In Progress until the implementation PR merges.
 ```
@@ -944,4 +1130,5 @@ worktree:
 
 Execute tasks in order. Task 2 establishes the tested parsing interfaces;
 Task 3 consumes them for real-template parity; Task 4 completes the human
-contract; Task 5 supplies mutation and full-suite evidence.
+contract; Task 5 restores the scheduler defaults the reference documents; Task
+6 supplies mutation and full-suite evidence.
