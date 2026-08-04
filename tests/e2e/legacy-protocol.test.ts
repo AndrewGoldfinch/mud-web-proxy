@@ -13,6 +13,7 @@
  */
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
+import { inflateRawSync } from 'zlib';
 import { startMockMUDTest, type MockMUDSetup } from './mock-mud-helper';
 import { startTestProxy } from './proxy-launcher';
 import { createIREMUD } from './mock-mud';
@@ -66,6 +67,19 @@ const decodeLegacy = (frames: string[]): string =>
         return Buffer.from(f, 'base64').toString('utf8');
       } catch {
         return '';
+      }
+    })
+    .join('');
+
+/** Established legacy player frames may be deflated before base64 encoding. */
+const decodeLegacyPlayer = (frames: string[]): string =>
+  frames
+    .map((frame) => {
+      const data = Buffer.from(frame, 'base64');
+      try {
+        return inflateRawSync(data).toString('utf8');
+      } catch {
+        return data.toString('utf8');
       }
     })
     .join('');
@@ -342,21 +356,17 @@ describe('legacy connect under preferred MUD TLS', () => {
     frames.length = 0;
     ws.send('legacy-prefer-probe\r\n');
 
-    const relayDeadline = Date.now() + 8000;
+    const responseDeadline = Date.now() + 8000;
     while (
-      Date.now() < relayDeadline &&
-      !mock.getReceivedCommands().includes('legacy-prefer-probe')
+      Date.now() < responseDeadline &&
+      (!mock.getReceivedCommands().includes('legacy-prefer-probe') ||
+        !decodeLegacyPlayer(frames).includes('Password:'))
     ) {
       await settle(100);
     }
 
+    expect(decodeLegacyPlayer(frames)).toContain('Password:');
     expect(mock.getReceivedCommands()).toContain('legacy-prefer-probe');
-
-    const responseDeadline = Date.now() + 5000;
-    while (Date.now() < responseDeadline && frames.length === 0) {
-      await settle(100);
-    }
-
     expect(frames.length).toBeGreaterThan(0);
     for (const frame of frames) {
       expect(frame.trimStart().startsWith('{')).toBe(false);
