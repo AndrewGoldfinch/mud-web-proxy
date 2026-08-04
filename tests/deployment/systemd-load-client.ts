@@ -153,6 +153,7 @@ const createSession = (
       if (message.type !== 'data' || !message.payload) return;
 
       const text = Buffer.from(message.payload, 'base64').toString('utf8');
+      // eslint-disable-next-line no-control-regex -- matching ANSI on purpose
       const plainText = text.replace(/\x1b\[[0-9;]*m/g, '');
       if (phase === 'sustaining' && plainText.includes(`look ${index}`)) {
         const now = performance.now();

@@ -49,7 +49,7 @@ interface ServerState {
 }
 
 // Module-level variables that simulate the wsproxy.ts state
-let serverState: ServerState = { sockets: [] };
+const serverState: ServerState = { sockets: [] };
 let ONLY_ALLOW_DEFAULT_SERVER = true;
 const REPOSITORY_URL = 'https://github.com/maldorne/mud-web-proxy/';
 

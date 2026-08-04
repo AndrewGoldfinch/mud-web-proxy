@@ -15,10 +15,8 @@ export default [
     ignores: [
       '**/public/',
       '**/dist/',
-      '**/tests/',
       '**/types/',
       '**/wsproxy.js',
-      '**/*.test.ts',
       '**/.claude/**',
       '**/.agents/**',
       '**/.codex/**',
@@ -63,7 +61,8 @@ export default [
         ...globals.browser,
       },
       parserOptions: {
-        project: './tsconfig.json',
+        // Lint-only project: same settings, plus tests. See tsconfig.eslint.json.
+        project: './tsconfig.eslint.json',
       },
     },
   },
@@ -98,6 +97,23 @@ export default [
         },
       ],
       'no-console': 'warn',
+    },
+  },
+  {
+    // Tests are linted, but they are not production source.
+    //
+    // They were excluded entirely until now, which left CodeQL as the only
+    // thing checking them — and CodeQL and ESLint each catch unused code the
+    // other misses, so neither alone was enough. Four tests that could not
+    // fail reached main behind this gap.
+    //
+    // `no-console` is off rather than warned: test helpers and the mock MUD
+    // log deliberately, and 64 warnings nobody can action is how a linter
+    // gets ignored. The `srv.log` convention it enforces is about production
+    // logging, which tests do not do.
+    files: ['tests/**/*.ts'],
+    rules: {
+      'no-console': 'off',
     },
   },
 ];

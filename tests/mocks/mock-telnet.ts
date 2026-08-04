@@ -5,11 +5,6 @@
 import { EventEmitter } from 'events';
 import { createServer, Server, Socket } from 'net';
 
-// Local type definition for TelnetSocket
-interface TelnetSocket extends Socket {
-  send: (data: string | Buffer) => void;
-}
-
 // Telnet protocol constants
 export const TELNET = {
   IAC: 255,
@@ -261,7 +256,7 @@ export function parseTelnetSequence(buffer: Buffer): {
       return { command: 'DO', option };
     case TELNET.DONT:
       return { command: 'DONT', option };
-    case TELNET.SB:
+    case TELNET.SB: {
       // Parse subnegotiation
       const endIndex = buffer.indexOf(TELNET.SE);
       if (endIndex > 3) {
@@ -272,6 +267,7 @@ export function parseTelnetSequence(buffer: Buffer): {
         };
       }
       return { command: 'SB', option };
+    }
     default:
       return null;
   }

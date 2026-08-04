@@ -10,7 +10,7 @@ import {
   createChaosMUD,
   createBufferTestMUD,
 } from './mock-mud';
-import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
+import { startTestProxy } from './proxy-launcher';
 
 const STRESS_PROXY_PORT = 6470;
 const STRESS_MUD_PORT = 6451;
