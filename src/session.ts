@@ -10,16 +10,10 @@
  * - Device token for push notifications
  */
 
-import net from 'net';
-import tls from 'tls';
 import crypto from 'crypto';
 import { WebSocket } from 'ws';
 import type { MudTlsMode } from './runtime-config';
-import {
-  shouldAttemptTls,
-  shouldFallBackToPlain,
-  sniServerName,
-} from './mud-transport';
+import { connectMudTransport } from './mud-transport';
 import type {
   BufferChunk,
   ProcessedData,
@@ -45,7 +39,7 @@ export class Session {
 
   telnet: TelnetSocket | null = null;
   telnetConnected = false;
-  private closing = false;
+  private connectAbortController?: AbortController;
 
   clients: Set<SocketExtended> = new Set();
   clientConnected = false;
@@ -111,144 +105,52 @@ export class Session {
    * Returns a promise that resolves when connected or rejects on error
    */
   async connect(): Promise<void> {
-    this.closing = false;
+    const controller = new AbortController();
+    this.connectAbortController = controller;
 
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let triedPlain = false;
+    if (this.tlsMode === 'plain') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[session] INFO MUD_TLS_MODE=plain, using plain TCP for ${this.mudHost}:${this.mudPort}`,
+      );
+    }
 
-      const abortIfClosing = (socket: TelnetSocket): boolean => {
-        if (!this.closing) return false;
-        socket.removeAllListeners();
-        socket.destroy();
-        if (this.telnet === socket) {
-          this.telnet = null;
-        }
-        if (!settled) {
-          settled = true;
-          reject(new Error('Session closed during connect'));
-        }
-        return true;
-      };
-
-      const tryPlain = (reason = 'TLS failed') => {
-        if (triedPlain) return;
-        triedPlain = true;
-
-        if (this.closing) {
-          if (!settled) {
-            settled = true;
-            reject(new Error('Session closed during connect'));
-          }
-          return;
-        }
-
-        // A downgrade must be conspicuous. Logged at WARN with the reason,
-        // because the failure this mode guards against is one that looks
-        // exactly like normal operation.
-        const level = this.tlsDowngraded ? 'WARN ' : 'INFO ';
-        // eslint-disable-next-line no-console
-        console.log(
-          `[session] ${level}${reason}, using plain TCP for ${this.mudHost}:${this.mudPort}`,
-        );
-
-        // Destroy the old TLS socket to prevent stale handlers
-        if (this.telnet) {
-          this.telnet.removeAllListeners();
-          this.telnet.destroy();
-          this.telnet = null;
-        }
-
-        try {
-          const plainSocket = net.createConnection(
-            this.mudPort,
-            this.dialAddress,
-            () => {
-              if (abortIfClosing(plainSocket)) return;
-              this.telnetConnected = true;
-              settled = true;
-              resolve();
-            },
-          ) as TelnetSocket;
-          this.telnet = plainSocket;
-
-          this.setupTelnetHandlers((err: Error) => {
-            if (!settled) reject(err);
-          });
-        } catch (err) {
-          if (!settled) reject(err as Error);
-        }
-      };
-
-      if (!shouldAttemptTls(this.tlsMode)) {
-        tryPlain('MUD_TLS_MODE=plain');
-        return;
-      }
-
-      try {
-        const onTlsConnectError = (err: Error): void => {
-          if (settled) return;
-          if (shouldFallBackToPlain(this.tlsMode, 'error', err)) {
-            this.tlsDowngraded = true;
-            tryPlain(`TLS failed (${err.message})`);
-          } else {
-            settled = true;
-            reject(err);
-          }
-        };
-        const onTlsConnectClose = (): void => {
-          if (settled || this.closing) return;
-          if (!shouldFallBackToPlain(this.tlsMode, 'close')) {
-            settled = true;
-            reject(
-              new Error(
-                'MUD_TLS_MODE=required: peer closed the connection during the ' +
-                  'TLS handshake and plaintext fallback is not permitted',
-              ),
-            );
-            return;
-          }
-          this.tlsDowngraded = true;
-          tryPlain('peer closed during TLS handshake');
-        };
-
-        const tlsSocket = tls.connect(this.mudPort, this.dialAddress, {
-          // Present the requested hostname so certificate verification still
-          // works against the name the user asked for, not the IP we dialled.
-          // Omitted when the target is itself a literal — Node rejects an IP
-          // as SNI.
-          servername: sniServerName(this.mudHost),
-        }) as unknown as TelnetSocket;
-        this.telnet = tlsSocket;
-        tlsSocket.once('secureConnect', () => {
-          tlsSocket.off('error', onTlsConnectError);
-          tlsSocket.off('close', onTlsConnectClose);
-          if (abortIfClosing(tlsSocket)) return;
-          this.setupTelnetHandlers((err: Error) => {
-            if (!settled) reject(err);
-          });
+    try {
+      await connectMudTransport({
+        requestedHost: this.mudHost,
+        dialAddress: this.dialAddress,
+        port: this.mudPort,
+        mode: this.tlsMode,
+        signal: controller.signal,
+        onDowngrade: (reason) => {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[session] WARN ${reason}, using plain TCP for ${this.mudHost}:${this.mudPort}`,
+          );
+        },
+        onConnected: ({ socket, downgraded }) => {
+          this.telnet = socket;
+          this.tlsDowngraded = downgraded;
+          this.setupTelnetHandlers();
           this.telnetConnected = true;
-          settled = true;
-          resolve();
-        });
-        tlsSocket.once('error', onTlsConnectError);
-        tlsSocket.once('close', onTlsConnectClose);
-      } catch (err) {
-        reject(err);
+          if (this.connectAbortController === controller) {
+            this.connectAbortController = undefined;
+          }
+        },
+      });
+    } finally {
+      if (this.connectAbortController === controller) {
+        this.connectAbortController = undefined;
       }
-    });
+    }
   }
 
-  private setupTelnetHandlers(onConnectError: (err: Error) => void): void {
+  private setupTelnetHandlers(): void {
     if (!this.telnet) return;
 
     this.telnet.send = (data: string | Buffer) => {
       this.telnet?.write(data);
     };
-
-    this.telnet.on('connect', () => {
-      this.telnetConnected = true;
-    });
 
     this.telnet.on('data', (data: Buffer) => {
       if (this.onDataCallback) {
@@ -271,7 +173,6 @@ export class Session {
       if (this.onErrorCallback) {
         this.onErrorCallback(err);
       }
-      onConnectError(err);
     });
   }
 
@@ -506,7 +407,9 @@ export class Session {
    * Gracefully close the session
    */
   close(): void {
-    this.closing = true;
+    const pendingController = this.connectAbortController;
+    this.connectAbortController = undefined;
+    pendingController?.abort();
 
     // Close all WebSocket clients
     for (const client of this.clients) {
