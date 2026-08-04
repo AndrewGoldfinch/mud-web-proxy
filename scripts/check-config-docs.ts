@@ -1,6 +1,7 @@
 /**
  * Fail when a configuration variable exists in src/runtime-config.ts but is
- * not documented in docs/configuration.md.
+ * not documented in docs/configuration.md, or when either operator template
+ * drifts from the active runtime configuration.
  *
  * Configuration is the proxy's entire operator interface, and it is read in
  * exactly one place. A variable that ships undocumented is one an operator
@@ -24,6 +25,10 @@ const repoRoot = path.resolve(
 );
 const SOURCE = path.join(repoRoot, 'src', 'runtime-config.ts');
 const DOCS = path.join(repoRoot, 'docs', 'configuration.md');
+const TEMPLATES = [
+  path.join(repoRoot, '.env.example'),
+  path.join(repoRoot, '.env.compose.example'),
+];
 
 /**
  * Every variable the runtime reads, however it reads it.
@@ -144,10 +149,13 @@ const read = (file: string): string => {
 // Guarded so the extraction above can be imported and tested without running
 // the check or calling process.exit.
 if (import.meta.main) {
-  const source = varsInSource(read(SOURCE));
+  const sourceText = read(SOURCE);
+  const source = varsInSource(sourceText);
+  const active = activeVarsInSource(sourceText);
   const documented = varsInDocs(read(DOCS));
+  let failed = false;
 
-  const undocumented = [...source].filter((n) => !documented.has(n)).sort();
+  const undocumented = missingVars(source, documented);
   const stale = [...documented].filter((n) => !source.has(n)).sort();
 
   if (stale.length > 0) {
@@ -164,10 +172,50 @@ if (import.meta.main) {
         undocumented.map((n) => `  ${n}`).join('\n') +
         `\n\nDocument each reported variable in docs/configuration.md.`,
     );
-    process.exit(1);
+    failed = true;
   }
 
+  for (const templatePath of TEMPLATES) {
+    const template = read(templatePath);
+    const relative = path.relative(repoRoot, templatePath);
+    const missing = missingVars(active, varsInTemplate(template));
+    const retired = retiredVarsInTemplate(template);
+    const duplicates = duplicateVarsInTemplate(template).filter((name) =>
+      active.has(name),
+    );
+
+    if (missing.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} is missing ${missing.length} active ` +
+          `configuration variable(s):\n` +
+          missing.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+
+    if (retired.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} assigns ${retired.length} retired ` +
+          `configuration variable(s):\n` +
+          retired.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+
+    if (duplicates.length > 0) {
+      console.error(
+        `check-config-docs: ${relative} assigns ${duplicates.length} active ` +
+          `configuration variable(s) more than once:\n` +
+          duplicates.map((name) => `  ${name}`).join('\n'),
+      );
+      failed = true;
+    }
+  }
+
+  if (failed) process.exit(1);
+
   console.log(
-    `check-config-docs: ${source.size} configuration variables, all documented.`,
+    `check-config-docs: ${source.size} documented variables; ` +
+      `${active.size} active variables present in both operator templates.`,
   );
 }

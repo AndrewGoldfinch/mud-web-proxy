@@ -1,4 +1,7 @@
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   activeVarsInSource,
   duplicateVarsInTemplate,
@@ -8,6 +11,15 @@ import {
   varsInSource,
   varsInTemplate,
 } from '../scripts/check-config-docs';
+
+const repoRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  '..',
+);
+const runtimeSource = readFileSync(
+  path.join(repoRoot, 'src', 'runtime-config.ts'),
+  'utf8',
+);
 
 /**
  * The drift check is only worth having if it sees every way the runtime reads
@@ -144,4 +156,28 @@ describe('template parity helpers', () => {
 
     expect(duplicates).toEqual(['BIND_HOST', 'WS_PORT']);
   });
+});
+
+describe('operator template parity', () => {
+  const active = activeVarsInSource(runtimeSource);
+  const templates = ['.env.example', '.env.compose.example'];
+
+  for (const template of templates) {
+    test(`${template} contains every active setting`, () => {
+      const contents = readFileSync(path.join(repoRoot, template), 'utf8');
+      expect(missingVars(active, varsInTemplate(contents))).toEqual([]);
+    });
+
+    test(`${template} assigns no retired setting`, () => {
+      const contents = readFileSync(path.join(repoRoot, template), 'utf8');
+      expect(retiredVarsInTemplate(contents)).toEqual([]);
+    });
+
+    test(`${template} assigns each active setting once`, () => {
+      const contents = readFileSync(path.join(repoRoot, template), 'utf8');
+      expect(
+        duplicateVarsInTemplate(contents).filter((name) => active.has(name)),
+      ).toEqual([]);
+    });
+  }
 });
