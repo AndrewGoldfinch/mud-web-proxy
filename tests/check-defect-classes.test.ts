@@ -13,6 +13,7 @@
  * violations.
  */
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
 import {
   ALL_GATE_IDS,
   CORPUS_GATES,
@@ -21,6 +22,7 @@ import {
   docLogLiteralGate,
   enumDenylistGate,
   gateHasNegativeTestGate,
+  missingFixtureFindings,
   readRepo,
   runAllGates,
   spdxHeaderGate,
@@ -29,6 +31,7 @@ import {
   truncatingStateWriteGate,
   unsafeTempFileGate,
 } from '../scripts/check-defect-classes';
+import { NEGATIVE_FIXTURES } from '../scripts/gate-fixtures';
 
 const SPDX = '// SPDX-License-Identifier: GPL-3.0-or-later';
 
@@ -292,21 +295,60 @@ describe("gate 'doc-log-literal'", () => {
 });
 
 describe("gate 'gate-has-negative-test'", () => {
-  test('reports a gate that no test names', () => {
-    const findings = gateHasNegativeTestGate.scanCorpus(
-      new Map([['tests/check-defect-classes.test.ts', 'nothing here\n']]),
+  test('reports every gate that has no fixture', () => {
+    // Its own negative case: a registry with a gap. The meta-gate excludes
+    // itself, so an empty registry should report all the others.
+    const findings = missingFixtureFindings({});
+    expect(findings).toHaveLength(ALL_GATE_IDS.length - 1);
+    expect(findings.every((f) => f.gate === 'gate-has-negative-test')).toBe(
+      true,
     );
-    expect(findings).toHaveLength(ALL_GATE_IDS.length);
   });
 
-  test('fails rather than passing when the test file is missing', () => {
-    expect(gateHasNegativeTestGate.scanCorpus(new Map())).toHaveLength(1);
+  test('is satisfied only by a fixture, not by a mention of the id', () => {
+    // The hole review caught on #116: the id appearing in a comment or import
+    // used to count. The check is now Object.keys, so prose cannot satisfy it.
+    const registry: Record<string, unknown> = {};
+    for (const id of ALL_GATE_IDS) registry[id] = { note: `mentions ${id}` };
+    expect(missingFixtureFindings(registry)).toEqual([]);
+    delete registry['unsafe-temp-file'];
+    expect(missingFixtureFindings(registry)).toHaveLength(1);
   });
 
-  test('this file names every gate, so the real repo passes', () => {
-    const findings = gateHasNegativeTestGate.scanCorpus(readRepo());
-    expect(findings).toEqual([]);
+  test('the real registry covers every gate', () => {
+    expect(gateHasNegativeTestGate.scanCorpus(new Map())).toEqual([]);
   });
+});
+
+/**
+ * The guarantee itself, executed rather than asserted.
+ *
+ * A gate added without a fixture fails here on a missing entry, so this cannot
+ * pass vacuously the way the old text search could.
+ */
+describe('every gate reports on its violating fixture', () => {
+  for (const gate of FILE_GATES) {
+    test(`${gate.id} (file gate)`, () => {
+      const fixture = NEGATIVE_FIXTURES[gate.id];
+      expect(fixture?.file).toBeDefined();
+      const { path, text } = fixture!.file!;
+      expect(gate.applies(path)).toBe(true);
+      const findings = gate.scan(path, text);
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.every((f) => f.gate === gate.id)).toBe(true);
+    });
+  }
+
+  for (const gate of CORPUS_GATES) {
+    if (gate.id === 'gate-has-negative-test') continue;
+    test(`${gate.id} (corpus gate)`, () => {
+      const fixture = NEGATIVE_FIXTURES[gate.id];
+      expect(fixture?.corpus).toBeDefined();
+      const findings = gate.scanCorpus(fixture!.corpus!);
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.every((f) => f.gate === gate.id)).toBe(true);
+    });
+  }
 });
 
 describe('stripComments', () => {
@@ -315,6 +357,32 @@ describe('stripComments', () => {
     expect(stripComments(`// gone\nconst u = 'http://x';\n`, 'ts')).toBe(
       `\nconst u = 'http://x';\n`,
     );
+  });
+
+  test('blanks a multi-line block comment', () => {
+    expect(stripComments(`/**\n * prose\n */\nconst a = 1;\n`, 'ts')).toBe(
+      `\n\n\nconst a = 1;\n`,
+    );
+  });
+
+  test('a slash-star inside a string literal does not open a block', () => {
+    // The bug this replaced: pairing `/*` with the next `*/` anywhere in the
+    // text let a string in wsproxy.ts open a phantom comment that deleted
+    // 40 KB of live code, including the log call a gate was looking for.
+    const src =
+      `const msg = '/attest/* routes are not registered';\n` +
+      `srv.logWarn('Rejected upgrade: unknown keyId');\n` +
+      `/**\n * a real block\n */\n` +
+      `const after = 2;\n`;
+    const out = stripComments(src, 'ts');
+    expect(out).toContain('Rejected upgrade: unknown keyId');
+    expect(out).toContain('const after = 2;');
+    expect(out).not.toContain('a real block');
+  });
+
+  test('keeps wsproxy.ts log calls that follow a slash-star string', () => {
+    const out = stripComments(readFileSync('wsproxy.ts', 'utf8'), 'ts');
+    expect(out).toContain('Rejected upgrade: unknown App Attest keyId');
   });
 });
 

@@ -19,6 +19,7 @@
  */
 import { readFileSync, readdirSync, statSync } from 'fs';
 import path from 'path';
+import { NEGATIVE_FIXTURES } from './gate-fixtures';
 
 const ROOT = path.resolve(import.meta.dirname, '..');
 
@@ -41,11 +42,14 @@ const SKIP_DIRS = new Set([
 ]);
 
 /**
- * The one file exempt from every file gate: it holds deliberate violations as
- * test fixtures. Exempting it by name is safer than teaching each gate to
+ * The files exempt from every file gate: they hold deliberate violations as
+ * fixtures. Exempting them by name is safer than teaching each gate to
  * recognise a fixture, which would be a hole any real defect could hide in.
  */
-const FIXTURE_FILE = 'tests/check-defect-classes.test.ts';
+const FIXTURE_FILES = new Set([
+  'tests/check-defect-classes.test.ts',
+  'scripts/gate-fixtures.ts',
+]);
 
 function walk(dir: string, out: string[] = []): string[] {
   for (const entry of readdirSync(dir)) {
@@ -58,22 +62,43 @@ function walk(dir: string, out: string[] = []): string[] {
 }
 
 /**
- * Blank out whole-line comments so a gate tests executable code, not prose.
+ * Blank out comment lines so a gate tests executable code, not prose.
  *
  * Both of the original gates matched raw file text. That made them unfailable
  * on their own targets: `ci-status.sh` mentions the STALE conclusion in a
  * comment explaining the bug, which satisfied the test no matter what the jq
- * expression did (review on #109). Only full-line comments are stripped —
- * enough to remove explanatory prose, conservative enough not to mangle a `#`
- * or `//` inside a string literal.
+ * expression did (review on #109).
+ *
+ * Block comments are tracked line-wise, and only a line that *begins* with
+ * `/*` opens one. A regex that paired `/*` with the next `*\/` anywhere in the
+ * text was catastrophically wrong on real source: wsproxy.ts line 1191 has the
+ * string `'/attest/* routes are not registered'`, whose `/*` opened a phantom
+ * comment that ran to the next real `*\/` 1,094 lines later and deleted 40 KB
+ * of live code, including the very log call a gate was checking for.
+ *
+ * Line-wise is also the safe direction: the worst case is a trailing block
+ * comment on a code line surviving, which can only make a gate miss something,
+ * never make it delete code it should have judged.
  */
 export function stripComments(text: string, kind: 'sh' | 'ts'): string {
-  const withoutBlocks =
-    kind === 'ts' ? text.replace(/\/\*[\s\S]*?\*\//g, '') : text;
-  const lineComment = kind === 'ts' ? /^\s*\/\/.*$/ : /^\s*#.*$/;
-  return withoutBlocks
+  const lineComment = kind === 'ts' ? /^\s*\/\// : /^\s*#/;
+  let inBlock = false;
+
+  return text
     .split('\n')
-    .map((l) => (lineComment.test(l) ? '' : l))
+    .map((line) => {
+      if (kind === 'ts' && inBlock) {
+        if (line.includes('*/')) inBlock = false;
+        return '';
+      }
+      // Only a line that opens with `/*` starts a block. Anything later on the
+      // line may be inside a string literal.
+      if (kind === 'ts' && /^\s*\/\*/.test(line)) {
+        if (!line.includes('*/')) inBlock = true;
+        return '';
+      }
+      return lineComment.test(line) ? '' : line;
+    })
     .join('\n');
 }
 
@@ -390,19 +415,32 @@ export const ciJobCoverageGate: CorpusGate = {
 // The general defect is a bulk edit that reports success against the set it
 // happened to enumerate rather than the set it claimed.
 // ---------------------------------------------------------------------------
+/**
+ * The tag on a line of its own, optionally behind a comment marker.
+ *
+ * Searching the whole file for the bare phrase accepted a file that only
+ * mentions it in prose (review on #116). Requiring line 1 exactly would be
+ * wrong in the other direction: wsproxy.ts carries the tag at line 12, inside
+ * the provenance block that predates it, which is a legitimate placement.
+ */
+const SPDX_TAG = /^\s*(?:\/\/|\/\*|\*|#)?\s*SPDX-License-Identifier:\s*\S+/;
+/** Header region — the leading comment block, generously bounded. */
+const SPDX_HEADER_LINES = 30;
+
 export const spdxHeaderGate: CorpusGate = {
   id: 'spdx-header',
   scanCorpus(files) {
     const findings: Finding[] = [];
     for (const [relPath, text] of files) {
       if (!isProductionTs(relPath)) continue;
-      if (text.includes('SPDX-License-Identifier')) continue;
+      const header = text.split('\n', SPDX_HEADER_LINES);
+      if (header.some((line) => SPDX_TAG.test(line))) continue;
       findings.push({
         gate: 'spdx-header',
         file: relPath,
         line: 1,
         message:
-          'Production source without an SPDX-License-Identifier. Add "// SPDX-License-Identifier: GPL-3.0-or-later" as the first line.',
+          'Production source without an SPDX-License-Identifier tag in its header. Add "// SPDX-License-Identifier: GPL-3.0-or-later" on a line of its own. A mention in prose does not count.',
       });
     }
     return findings;
@@ -425,9 +463,12 @@ export const docLogLiteralGate: CorpusGate = {
   id: 'doc-log-literal',
   scanCorpus(files) {
     const findings: Finding[] = [];
+    // Comment-stripped, because a log message quoted in a comment is not the
+    // application emitting it. Building this from raw text reproduced the very
+    // failure described above — prose standing in as proof (review on #116).
     const sources = [...files]
       .filter(([f]) => isProductionTs(f))
-      .map(([, text]) => text)
+      .map(([, text]) => stripComments(text, 'ts'))
       .join('\n');
 
     for (const [relPath, text] of files) {
@@ -468,31 +509,35 @@ export const docLogLiteralGate: CorpusGate = {
 // red. This gate cannot judge semantics, but it can require that each gate
 // above is named by a test that feeds it a violation.
 // ---------------------------------------------------------------------------
+/**
+ * Findings for every gate id with no fixture in the registry.
+ *
+ * Exported and parameterised so the meta-gate's own negative case — a registry
+ * with a gap — is reachable from a test. The gate itself always runs against
+ * the real registry, which is complete.
+ */
+export function missingFixtureFindings(
+  registry: Record<string, unknown>,
+  ids: string[] = ALL_GATE_IDS,
+): Finding[] {
+  return ids
+    .filter((id) => id !== 'gate-has-negative-test')
+    .filter((id) => registry[id] === undefined)
+    .map((id) => ({
+      gate: 'gate-has-negative-test',
+      file: 'scripts/gate-fixtures.ts',
+      line: 1,
+      message: `Gate "${id}" has no fixture in NEGATIVE_FIXTURES. Add a violating input so the gate is known to be able to fail; tests/check-defect-classes.test.ts runs every gate against its fixture.`,
+    }));
+}
+
 export const gateHasNegativeTestGate: CorpusGate = {
   id: 'gate-has-negative-test',
-  scanCorpus(files) {
-    const tests = files.get(FIXTURE_FILE);
-    if (tests === undefined) {
-      return [
-        {
-          gate: 'gate-has-negative-test',
-          file: FIXTURE_FILE,
-          line: 1,
-          message:
-            'Missing the gate test file. Every gate needs a fixture proving it reports a violation.',
-        },
-      ];
-    }
-
-    return ALL_GATE_IDS.filter((id) => !tests.includes(`'${id}'`)).map(
-      (id) => ({
-        gate: 'gate-has-negative-test',
-        file: FIXTURE_FILE,
-        line: 1,
-        message: `Gate "${id}" has no test naming it. Add a case that feeds it a violating fixture and asserts it reports, so the gate is known to be able to fail.`,
-      }),
-    );
-  },
+  // Structural: Object keys against the gate registry, not a text search.
+  // The first version grepped the test file for the gate id, which an import
+  // or a comment satisfied — an unfailable check guarding against unfailable
+  // checks (review on #116).
+  scanCorpus: () => missingFixtureFindings(NEGATIVE_FIXTURES),
 };
 
 export const FILE_GATES: FileGate[] = [
@@ -518,7 +563,7 @@ export function runAllGates(files: Map<string, string>): Finding[] {
   const findings: Finding[] = [];
 
   for (const [relPath, text] of files) {
-    if (relPath === FIXTURE_FILE) continue;
+    if (FIXTURE_FILES.has(relPath)) continue;
     for (const gate of FILE_GATES) {
       if (gate.applies(relPath)) findings.push(...gate.scan(relPath, text));
     }
