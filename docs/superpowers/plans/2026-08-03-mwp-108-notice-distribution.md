@@ -31,11 +31,13 @@
 ### Task 1: Ship legal files in the runtime image
 
 **Files:**
+
 - Modify: `.dockerignore:1-9`
 - Modify: `Dockerfile:33-36`
 - Test: `tests/docker-image-contract.test.ts:41-77`
 
 **Interfaces:**
+
 - Consumes: repository-root `LICENSE` and `NOTICE` files.
 - Produces: readable `/opt/mud-web-proxy/LICENSE` and `/opt/mud-web-proxy/NOTICE` files in the runtime image; no application code consumes them.
 
@@ -44,9 +46,7 @@
 In `tests/docker-image-contract.test.ts`, extend the runtime-artifact test after the App Attest CA assertion:
 
 ```typescript
-    expect(runtime).toContain(
-      'COPY --chown=0:0 --chmod=0444 LICENSE NOTICE ./',
-    );
+expect(runtime).toContain('COPY --chown=0:0 --chmod=0444 LICENSE NOTICE ./');
 ```
 
 Extend the `included` array in the build-context test immediately after
@@ -121,9 +121,11 @@ git commit -m "fix: ship legal notices in the runtime image"
 ### Task 2: Make licensing and attribution discoverable
 
 **Files:**
+
 - Modify: `README.md` at the end of the file
 
 **Interfaces:**
+
 - Consumes: repository-root `LICENSE` and `NOTICE` files.
 - Produces: repository landing-page links to both files; no runtime interface.
 
@@ -174,9 +176,11 @@ git commit -m "docs: link license and attribution notice"
 ### Task 3: Verify both supported artifacts and prepare closeout evidence
 
 **Files:**
+
 - Verify only: `LICENSE`, `NOTICE`, `.dockerignore`, `Dockerfile`, `README.md`, `tests/docker-image-contract.test.ts`, `tests/release-bundle.test.ts`
 
 **Interfaces:**
+
 - Consumes: the completed container and README changes from Tasks 1 and 2.
 - Produces: reproducible MWP-108 verification evidence for the Linear completion comment.
 

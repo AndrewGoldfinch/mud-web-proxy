@@ -3,6 +3,8 @@ import type { WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
 import zlib from 'zlib';
 import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import iconv from 'iconv-lite';
 
 // Type definitions
@@ -635,9 +637,14 @@ describe('Error Handling', () => {
 
   describe('File Operation Errors', () => {
     it('should handle chat log file read error', async () => {
-      // Create a temporary file path that does not exist
-      const nonExistentPath =
-        '/tmp/nonexistent-chat-log-' + Date.now() + '.json';
+      // A path that does not exist, inside a directory only this process can
+      // reach. `/tmp/…-${Date.now()}` is predictable enough for another local
+      // user to create first, which would make the read succeed and this test
+      // pass for the wrong reason.
+      const nonExistentPath = path.join(
+        fs.mkdtempSync(path.join(os.tmpdir(), 'mwp-missing-chat-')),
+        'nonexistent-chat-log.json',
+      );
 
       const loadChatLog = async (): Promise<unknown[]> => {
         try {
