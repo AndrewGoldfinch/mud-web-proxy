@@ -16,7 +16,7 @@ import {
   isTlsNegotiationError,
   shouldAttemptTls,
   shouldFallBackToPlain,
-} from '../src/session.js';
+} from '../src/mud-transport.js';
 
 const err = (message: string, code?: string): Error => {
   const e = new Error(message);
