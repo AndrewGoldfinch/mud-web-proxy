@@ -1,10 +1,11 @@
 # Configuration reference
 
 Every setting is an environment variable, read once at startup in
-[`src/runtime-config.ts`](../src/runtime-config.ts). Parsing is strict: a value
-that is present but unparseable aborts the process rather than falling back to
-the default, and a retired variable aborts with the name of its replacement.
-Nothing is re-read while the process runs, so a change requires a restart.
+[`src/runtime-config.ts`](../src/runtime-config.ts). Except where explicitly
+noted, parsing is strict: a value that is present but unparseable aborts the
+process rather than falling back to the default, and a retired variable aborts
+with the name of its replacement. Nothing is re-read while the process runs, so
+a change requires a restart.
 
 Defaults below are the values the proxy uses when the variable is unset. They
 are the ones in `src/runtime-config.ts`; `scripts/check-config-docs.ts` fails
@@ -55,16 +56,24 @@ never second-guessed.
 | `TN_HOST`                 | hostname                             | `muds.maldorne.org` | Never                   | Default upstream host.                                                      |
 | `TN_PORT`                 | integer                              | `5010`              | Never                   | Default upstream port.                                                      |
 | `TARGET_MODE`             | `fixed`, `allowlist`, or `arbitrary` | `fixed`             | Never                   | Controls which targets a client may name.                                   |
-| `ALLOWED_TARGETS`         | comma-separated `host:port` list     | empty               | `TARGET_MODE=allowlist` | Allowed targets; every entry must parse as `host:port`.                     |
+| `ALLOWED_TARGETS`         | comma-separated `host:port` list     | empty               | `TARGET_MODE=allowlist` | Allowed targets; malformed entries are ignored.                             |
 | `ARBITRARY_ALLOWED_PORTS` | comma-separated ports/ranges         | empty               | `TARGET_MODE=arbitrary` | Allowed ports and ranges for arbitrary targets, for example `23,4000-4100`. |
 | `MUD_TLS_MODE`            | `plain`, `required`, or `prefer`     | `prefer`            | Never                   | Controls how the proxy connects to the upstream MUD.                        |
 
 `TARGET_MODE=arbitrary` lets the client name the host. Without enforced
 authentication it is an open relay, so startup rejects it unless either
 `AUTH_MODE=shared-secret` or `REQUIRE_APP_AUTH=true` enforces authentication.
-Reserved-network rejection still applies. `TARGET_MODE=allowlist` with an
-empty or unparseable `ALLOWED_TARGETS` is a startup error rather than a
-permissive fallback.
+Reserved-network rejection still applies. `TARGET_MODE=allowlist` with zero
+valid `host:port` entries in `ALLOWED_TARGETS` is a startup error rather than a
+permissive fallback. Malformed entries are ignored, so a mixed list starts with
+only its valid entries; a typo can silently remove an intended target and cause
+connections to it to be denied.
+
+`TARGET_MODE=arbitrary` requires `ARBITRARY_ALLOWED_PORTS` to contain a
+non-empty list item, but startup does not verify that any item is a valid port
+or range. Malformed items and ranges are ignored during enforcement. This fails
+closed—an entirely malformed list permits no ports—but a typo can leave the
+proxy running while denying intended targets.
 
 `MUD_TLS_MODE` defaults to `prefer` — attempt TLS, fall back to plaintext —
 because that is the historical behaviour. Defaulting to `plain` would silently
@@ -206,6 +215,9 @@ already reporting unhealthy, long enough for a load balancer or orchestrator to
 stop routing new traffic. Set it to at least the interval between health checks,
 or clients will be sent to a process that has stopped accepting them.
 
+Startup requires `SHUTDOWN_DEADLINE_MS > SHUTDOWN_GRACE_MS`; otherwise the
+deadline would expire before the ordered close and persistence steps can run.
+
 Repeated signals are ignored rather than restarting the drain, so a second
 `SIGTERM` cannot reset the deadline and keep the process alive.
 
@@ -278,8 +290,10 @@ accumulate.
 | `LOG_LEVEL`          | `debug`, `info`, `warn`, or `error` | `info`  | Never                                  | Sets the minimum emitted log level.                                            |
 | `NO_COLOR`           | literal `1` or unset                | unset   | Never                                  | Set to exactly `1` to disable ANSI colour in logs; any other value is ignored. |
 
-`LOG_LEVEL=debug` exposes session content except password input protected by
-telnet ECHO state.
+`LOG_LEVEL=debug` enables structured diagnostics such as message shape, field
+names, and byte counts; it does not log session payload content. Raw binary
+dumps are guarded by the separate internal `srv.debug` flag, which is hardcoded
+to `false` and is not an environment setting.
 
 ## App Attest (optional, off by default)
 
@@ -303,12 +317,12 @@ to. Setting one without the other aborts startup. There is no separate enable
 flag, so the configuration and the state cannot disagree.
 
 **Startup also aborts when App Attest is enabled but the directory containing
-`ATTESTED_KEYS_PATH` is not writable.** Enabled-but-unwritable is the worst
-shape this misconfiguration can take: the proxy starts, passes its health
-check, and logs `App Attest ENABLED`, then loses the first registration it
-accepts. The container case is the concrete one — the image creates
-`/var/lib/mud-web-proxy`, so the directory exists, but with a read-only root
-and no volume mounted over it every write returns `EROFS`.
+`ATTESTED_KEYS_PATH` is not writable.** This validation prevents the otherwise
+misleading failure mode: without it, an enabled-but-unwritable proxy could
+start, pass its health check, log `App Attest ENABLED`, then lose the first
+registration at flush. The container case is concrete — the image creates
+`/var/lib/mud-web-proxy`, so the directory exists, but with a read-only root and
+no volume mounted over it every write returns `EROFS`.
 
 The **directory** is checked, not the file: on a first run the file does not
 exist yet, and persistence stages a sibling file beside it before renaming it
@@ -352,12 +366,18 @@ below as its scheduler default.
 | `SILENT_PUSH_INTERVAL_MS`             | integer | `1200000` | Never         | Minimum gap between silent pushes to a device (20 minutes). |
 | `ACTIVITY_PUSH_INTERVAL_MS`           | integer | `120000`  | Never         | Minimum gap between Live Activity updates (2 minutes).      |
 | `ACTIVITY_PUSH_ACK_TIMEOUT_MS`        | integer | `15000`   | Never         | How long to wait for a client acknowledgement (15 seconds). |
-| `ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS`  | integer | `60000`   | Never         | Initial cooldown before fallback after no acknowledgement.  |
+| `ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS`  | integer | `60000`   | Never         | Initial cooldown and backoff after a successful fallback.   |
 | `ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR` | integer | `6`       | Never         | Cap on fallback silent pushes per device per hour.          |
-| `ACTIVITY_PUSH_MAX_SNIPPET_LENGTH`    | integer | `100`     | Never         | Characters of MUD output carried in an alert push.          |
+| `ACTIVITY_PUSH_MAX_SNIPPET_LENGTH`    | integer | `100`     | Never         | Characters of MUD output carried in a Live Activity update. |
 
-`ACTIVITY_PUSH_MAX_SNIPPET_LENGTH` bounds how much text reaches Apple. It does
-not change who can see it.
+`ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS` does not delay the first fallback after
+the acknowledgement timeout; that fallback is immediately eligible subject to
+the silent-push interval, hourly cap, and other gates. After a successful
+fallback silent push, the value initializes the cooldown and exponential
+backoff before another fallback may be sent.
+
+`ACTIVITY_PUSH_MAX_SNIPPET_LENGTH` bounds how much Live Activity text reaches
+Apple. It does not change who can see it.
 
 ## Rejected retired names
 
