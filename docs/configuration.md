@@ -12,15 +12,19 @@ CI when a variable exists there and not here, so this list cannot silently fall
 behind the code. It can still fall behind on _description_ — if a default here
 disagrees with the source, the source is right.
 
+The background-push values are the exception to where the default is applied:
+the parser leaves an unset runtime value unset, and the scheduler then uses the
+documented value as its default.
+
 Boolean variables accept `1`, `true`, `yes`, `on` and `0`, `false`, `no`, `off`,
 case-insensitively. Anything else is a startup error.
 
 ## Listener
 
-| Variable    | Description                              | Default     |
-| ----------- | ---------------------------------------- | ----------- |
-| `BIND_HOST` | Address the WebSocket listener binds to. | `127.0.0.1` |
-| `WS_PORT`   | Port the WebSocket listener binds to.    | `6200`      |
+| Variable    | Type    | Default     | Required when | Description                              |
+| ----------- | ------- | ----------- | ------------- | ---------------------------------------- |
+| `BIND_HOST` | string  | `127.0.0.1` | Never         | Address the WebSocket listener binds to. |
+| `WS_PORT`   | integer | `6200`      | Never         | Port the WebSocket listener binds to.    |
 
 Binding to loopback and terminating TLS in a reverse proxy is the supported
 production layout. `BIND_HOST` is also the signal that decides whether a
@@ -28,12 +32,12 @@ plaintext listener needs acknowledgement — see `ALLOW_INSECURE_INBOUND_NO_TLS`
 
 ## Inbound TLS
 
-| Variable                        | Description                                                                                                    | Default         |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------- |
-| `INBOUND_TLS_MODE`              | `required` or `off`. `required` refuses to start unless both paths below point at readable, matching material. | `required`      |
-| `TLS_CERT_PATH`                 | Certificate path.                                                                                              | `./cert.pem`    |
-| `TLS_KEY_PATH`                  | Private key path.                                                                                              | `./privkey.pem` |
-| `ALLOW_INSECURE_INBOUND_NO_TLS` | Acknowledge a plaintext listener. Required when `INBOUND_TLS_MODE=off` and `BIND_HOST` is not loopback.        | `false`         |
+| Variable                        | Type                | Default         | Required when                                       | Description                                                                                      |
+| ------------------------------- | ------------------- | --------------- | --------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `INBOUND_TLS_MODE`              | `required` or `off` | `required`      | Never                                               | Controls whether the listener requires TLS or serves plaintext.                                  |
+| `TLS_CERT_PATH`                 | path                | `./cert.pem`    | `INBOUND_TLS_MODE=required`                         | Certificate path.                                                                                |
+| `TLS_KEY_PATH`                  | path                | `./privkey.pem` | `INBOUND_TLS_MODE=required`                         | Private-key path.                                                                                |
+| `ALLOW_INSECURE_INBOUND_NO_TLS` | boolean             | `false`         | Must be `true` for plaintext on a non-loopback bind | Explicitly acknowledges that plaintext exposes credentials unless a trusted edge terminates TLS. |
 
 The certificate and key are checked as a pair at startup, not merely for
 existence: a certificate renewed without its key is readable, present, and
@@ -46,38 +50,40 @@ never second-guessed.
 
 ## Telnet target and target policy
 
-| Variable                  | Description                                                                                   | Default             |
-| ------------------------- | --------------------------------------------------------------------------------------------- | ------------------- |
-| `TN_HOST`                 | Default upstream host.                                                                        | `muds.maldorne.org` |
-| `TN_PORT`                 | Default upstream port.                                                                        | `5010`              |
-| `TARGET_MODE`             | `fixed`, `allowlist`, or `arbitrary`. Controls which targets a client may name.               | `fixed`             |
-| `ALLOWED_TARGETS`         | Comma-separated `host:port` entries. Required and must parse when `TARGET_MODE=allowlist`.    | _(empty)_           |
-| `ARBITRARY_ALLOWED_PORTS` | Comma-separated ports and ranges, e.g. `23,4000-4100`. Required when `TARGET_MODE=arbitrary`. | _(empty)_           |
-| `MUD_TLS_MODE`            | `prefer`, `required`, or `plain`. How the proxy connects upstream.                            | `prefer`            |
+| Variable                  | Type                                 | Default             | Required when           | Description                                                                 |
+| ------------------------- | ------------------------------------ | ------------------- | ----------------------- | --------------------------------------------------------------------------- |
+| `TN_HOST`                 | hostname                             | `muds.maldorne.org` | Never                   | Default upstream host.                                                      |
+| `TN_PORT`                 | integer                              | `5010`              | Never                   | Default upstream port.                                                      |
+| `TARGET_MODE`             | `fixed`, `allowlist`, or `arbitrary` | `fixed`             | Never                   | Controls which targets a client may name.                                   |
+| `ALLOWED_TARGETS`         | comma-separated `host:port` list     | empty               | `TARGET_MODE=allowlist` | Allowed targets; every entry must parse as `host:port`.                     |
+| `ARBITRARY_ALLOWED_PORTS` | comma-separated ports/ranges         | empty               | `TARGET_MODE=arbitrary` | Allowed ports and ranges for arbitrary targets, for example `23,4000-4100`. |
+| `MUD_TLS_MODE`            | `plain`, `required`, or `prefer`     | `prefer`            | Never                   | Controls how the proxy connects to the upstream MUD.                        |
 
-`TARGET_MODE=arbitrary` lets the client name the host, which is an open SSRF
-relay without authentication, so it requires `AUTH_MODE=shared-secret` and
-refuses to start otherwise. `TARGET_MODE=allowlist` with an empty or
-unparseable `ALLOWED_TARGETS` is a startup error rather than a permissive
-fallback.
+`TARGET_MODE=arbitrary` lets the client name the host. Without enforced
+authentication it is an open relay, so startup rejects it unless either
+`AUTH_MODE=shared-secret` or `REQUIRE_APP_AUTH=true` enforces authentication.
+Reserved-network rejection still applies. `TARGET_MODE=allowlist` with an
+empty or unparseable `ALLOWED_TARGETS` is a startup error rather than a
+permissive fallback.
 
 `MUD_TLS_MODE` defaults to `prefer` — attempt TLS, fall back to plaintext —
 because that is the historical behaviour. Defaulting to `plain` would silently
 stop attempting TLS against every MUD that supports it. Use `required` to
-refuse plaintext upstream entirely.
+refuse plaintext upstream entirely: `prefer` is downgradeable by an active
+network attacker who can make the TLS attempt fail.
 
 ## Authentication
 
-| Variable                  | Description                                                                                         | Default   |
-| ------------------------- | --------------------------------------------------------------------------------------------------- | --------- |
-| `AUTH_MODE`               | `shared-secret` or `none`.                                                                          | `none`    |
-| `PROXY_SHARED_SECRET`     | The secret. At least 32 bytes when `AUTH_MODE=shared-secret`; shorter is a startup error.           | _(empty)_ |
-| `AUTH_ALLOW_QUERY_SECRET` | Also accept the secret as a `?secret=` query parameter.                                             | `false`   |
-| `REQUIRE_APP_AUTH`        | Require an App Attest assertion on every upgrade. Refuses to start unless App Attest is configured. | `false`   |
+| Variable                  | Type                      | Default | Required when                                   | Description                                                       |
+| ------------------------- | ------------------------- | ------- | ----------------------------------------------- | ----------------------------------------------------------------- |
+| `AUTH_MODE`               | `none` or `shared-secret` | `none`  | Never                                           | Selects whether WebSocket upgrades require the shared secret.     |
+| `PROXY_SHARED_SECRET`     | secret string             | empty   | `AUTH_MODE=shared-secret`                       | Shared secret; it must be at least 32 bytes or startup aborts.    |
+| `AUTH_ALLOW_QUERY_SECRET` | boolean                   | `false` | Never                                           | Also accepts the shared secret in the `?secret=` query parameter. |
+| `REQUIRE_APP_AUTH`        | boolean                   | `false` | Never; `true` requires App Attest configuration | Requires a valid App Attest assertion on every upgrade.           |
 
 Browsers cannot set headers on a WebSocket handshake, which is the only reason
-`AUTH_ALLOW_QUERY_SECRET` exists. It puts the secret in access logs and
-referrer headers, so it is opt-in.
+`AUTH_ALLOW_QUERY_SECRET` exists. Setting it to `true` can place the secret in
+URLs, access logs, and referrer headers, so it is opt-in.
 
 `REQUIRE_APP_AUTH` without App Attest configured is not a stricter posture but
 a closed door — every upgrade would be rejected for headers the client has no
@@ -85,37 +91,40 @@ way to obtain — so that combination aborts at startup.
 
 ## Origin checking
 
-| Variable               | Description                                                                          | Default             |
-| ---------------------- | ------------------------------------------------------------------------------------ | ------------------- |
-| `ALLOWED_ORIGINS`      | Comma-separated exact origins, e.g. `https://app.example.com`. Unset means no check. | _(empty, no check)_ |
-| `ALLOW_MISSING_ORIGIN` | Accept upgrades that carry no `Origin` header, such as native clients.               | `false`             |
+| Variable               | Type                          | Default | Required when | Description                                                                         |
+| ---------------------- | ----------------------------- | ------- | ------------- | ----------------------------------------------------------------------------------- |
+| `ALLOWED_ORIGINS`      | comma-separated exact origins | empty   | Never         | Exact allowed origins, for example `https://app.example.com`; empty means no check. |
+| `ALLOW_MISSING_ORIGIN` | boolean                       | `false` | Never         | Accepts upgrades with no `Origin` header, such as native clients.                   |
 
 Entries must be scheme + host + optional port. A `*` wildcard is rejected at
 startup rather than accepted as "allow everything", as is any malformed entry.
+Origin checking limits browser contexts; it is not authentication.
 
 ## Trusted proxies
 
-| Variable              | Description                                                                                     | Default |
-| --------------------- | ----------------------------------------------------------------------------------------------- | ------- |
-| `TRUSTED_PROXY_CIDRS` | `true`, `false`, or comma-separated addresses/CIDR ranges whose forwarded headers are honoured. | `false` |
+| Variable              | Type                                             | Default | Required when | Description                                                                              |
+| --------------------- | ------------------------------------------------ | ------- | ------------- | ---------------------------------------------------------------------------------------- |
+| `TRUSTED_PROXY_CIDRS` | `true`, `false`, or comma-separated IP/CIDR list | `false` | Never         | Identifies peers whose forwarded client-address headers are honoured; `true` trusts all. |
 
 A malformed entry aborts startup. Accepting it and matching nothing would leave
 forwarded headers unhonoured, collapsing every client onto the proxy's own
 address and tripping per-IP limits service-wide — while reading as configured.
+Trusting arbitrary forwarded headers permits identity spoofing and defeats
+per-IP session and message-rate limits.
 
 ## Session limits
 
-| Variable                  | Description                                                        | Default           |
-| ------------------------- | ------------------------------------------------------------------ | ----------------- |
-| `SESSION_TIMEOUT_HOURS`   | Idle lifetime of a resumable session.                              | `24`              |
-| `MAX_SESSIONS_PER_DEVICE` | Concurrent sessions per device identifier.                         | `5`               |
-| `MAX_SESSIONS_PER_IP`     | Concurrent sessions per client address.                            | `10`              |
-| `MAX_SESSIONS_GLOBAL`     | Concurrent sessions across the process. Unset means no global cap. | _(unset, no cap)_ |
-
-| `RESUME_GRACE_MINUTES` | How long a session with no attached client keeps its slot. | `45` |
+| Variable                  | Type             | Default | Required when | Description                                                        |
+| ------------------------- | ---------------- | ------- | ------------- | ------------------------------------------------------------------ |
+| `SESSION_TIMEOUT_HOURS`   | positive integer | `24`    | Never         | Idle lifetime of a resumable session.                              |
+| `MAX_SESSIONS_PER_DEVICE` | positive integer | `5`     | Never         | Concurrent sessions per device identifier.                         |
+| `MAX_SESSIONS_PER_IP`     | positive integer | `10`    | Never         | Concurrent sessions per client address.                            |
+| `MAX_SESSIONS_GLOBAL`     | positive integer | unset   | Never         | Concurrent sessions across the process; unset means no global cap. |
+| `RESUME_GRACE_MINUTES`    | positive integer | `45`    | Never         | How long a session with no attached client keeps its slot.         |
 
 All must be positive integers when set. Sessions and resume state are
-memory-local and are lost on restart.
+memory-local and are lost on restart. Raising session limits increases
+per-client memory and connection exposure.
 
 `RESUME_GRACE_MINUTES` is what makes the limits above meaningful. Terminating a
 client's socket does not free its session — the session is deliberately kept
@@ -131,10 +140,10 @@ them, breaking resume for backgrounded clients.
 
 ## Message rate
 
-| Variable                         | Description                                       | Default |
-| -------------------------------- | ------------------------------------------------- | ------- |
-| `MAX_MESSAGES_PER_SECOND`        | Inbound frames per second for one session.        | `60`    |
-| `MAX_MESSAGES_PER_SECOND_PER_IP` | Inbound frames per second for one client address. | `240`   |
+| Variable                         | Type             | Default | Required when | Description                                       |
+| -------------------------------- | ---------------- | ------- | ------------- | ------------------------------------------------- |
+| `MAX_MESSAGES_PER_SECOND`        | positive integer | `60`    | Never         | Inbound frames per second for one connection.     |
+| `MAX_MESSAGES_PER_SECOND_PER_IP` | positive integer | `240`   | Never         | Inbound frames per second for one client address. |
 
 The session limits bound how many connections a client may hold; these bound how
 fast it may talk through them. Without them a client inside every connection cap
@@ -175,12 +184,15 @@ client sends. Measured: a client sending 8 commands per second is never
 throttled, while 300 frames sent in a tight loop against a 10/second allowance
 delivers 9 and produces one notice.
 
+Raising either rate limit increases per-client CPU, traffic, and upstream MUD
+resource exposure.
+
 ## Shutdown
 
-| Variable               | Description                                                         | Default |
-| ---------------------- | ------------------------------------------------------------------- | ------- |
-| `SHUTDOWN_GRACE_MS`    | Time spent unready, before anything is closed.                      | `3000`  |
-| `SHUTDOWN_DEADLINE_MS` | Absolute budget for the whole drain; the process then exits anyway. | `15000` |
+| Variable               | Type             | Default | Required when | Description                                                         |
+| ---------------------- | ---------------- | ------- | ------------- | ------------------------------------------------------------------- |
+| `SHUTDOWN_GRACE_MS`    | positive integer | `3000`  | Never         | Time spent unready before anything is closed.                       |
+| `SHUTDOWN_DEADLINE_MS` | positive integer | `15000` | Never         | Absolute budget for the whole drain; the process then exits anyway. |
 
 On `SIGINT`/`SIGTERM` the proxy drains in order: become unready so `/health`
 returns 503 and new upgrades are rejected, wait `SHUTDOWN_GRACE_MS`, stop the
@@ -205,10 +217,10 @@ Repeated signals are ignored rather than restarting the drain, so a second
 
 ## Telnet byte caps
 
-| Variable                   | Description                                           | Default |
-| -------------------------- | ----------------------------------------------------- | ------- |
-| `MAX_SUBNEGOTIATION_BYTES` | Cap on one telnet subnegotiation payload.             | `65536` |
-| `OUTPUT_BUFFER_BYTES`      | Per-session output buffer retained for resume replay. | `51200` |
+| Variable                   | Type             | Default | Required when | Description                                           |
+| -------------------------- | ---------------- | ------- | ------------- | ----------------------------------------------------- |
+| `MAX_SUBNEGOTIATION_BYTES` | positive integer | `65536` | Never         | Cap on one telnet subnegotiation payload.             |
+| `OUTPUT_BUFFER_BYTES`      | positive integer | `51200` | Never         | Per-session output buffer retained for resume replay. |
 
 The telnet parser is stateful across TCP chunks, which is what lets it handle
 an `IAC` sequence split over a packet boundary. It is also what made an
@@ -231,13 +243,16 @@ The default is above what real MUDs send. Aardwolf, Achaea and Discworld all
 push large MSDP/GMCP payloads, and a cap that breaks a legitimate game is a
 worse outcome than the memory it saves.
 
+Raising either the telnet payload cap or output buffer limit increases the
+memory a client or client-selected upstream can make the process retain.
+
 ## WebSocket liveness
 
-| Variable                   | Description                                                 | Default |
-| -------------------------- | ----------------------------------------------------------- | ------- |
-| `WS_HEARTBEAT_ENABLED`     | Ping connected clients and reclaim slots from silent peers. | `true`  |
-| `WS_HEARTBEAT_INTERVAL_MS` | How often to ping.                                          | `30000` |
-| `WS_HEARTBEAT_TIMEOUT_MS`  | Silence beyond this terminates the connection.              | `90000` |
+| Variable                   | Type             | Default | Required when | Description                                                 |
+| -------------------------- | ---------------- | ------- | ------------- | ----------------------------------------------------------- |
+| `WS_HEARTBEAT_ENABLED`     | boolean          | `true`  | Never         | Ping connected clients and reclaim slots from silent peers. |
+| `WS_HEARTBEAT_INTERVAL_MS` | positive integer | `30000` | Never         | How often to ping.                                          |
+| `WS_HEARTBEAT_TIMEOUT_MS`  | positive integer | `90000` | Never         | Silence beyond this terminates the connection.              |
 
 These are what reclaim capacity from connections that are gone but not closed
 — a closed laptop lid, or a NAT that dropped its mapping without telling
@@ -256,15 +271,15 @@ accumulate.
 
 ## Diagnostics and logging
 
-| Variable             | Description                                                                    | Default   |
-| -------------------- | ------------------------------------------------------------------------------ | --------- |
-| `ENABLE_DIAGNOSTICS` | Expose the diagnostics endpoints.                                              | `false`   |
-| `ADMIN_TOKEN`        | Bearer token guarding those endpoints.                                         | _(empty)_ |
-| `LOG_LEVEL`          | `debug`, `info`, `warn`, or `error`.                                           | `info`    |
-| `NO_COLOR`           | Set to exactly `1` to disable ANSI colour in logs. Any other value is ignored. | _(unset)_ |
+| Variable             | Type                                | Default | Required when                          | Description                                                                    |
+| -------------------- | ----------------------------------- | ------- | -------------------------------------- | ------------------------------------------------------------------------------ |
+| `ENABLE_DIAGNOSTICS` | boolean                             | `false` | Never                                  | Exposes the diagnostics endpoints.                                             |
+| `ADMIN_TOKEN`        | secret string                       | empty   | Required to access enabled diagnostics | Bearer token guarding enabled diagnostics endpoints.                           |
+| `LOG_LEVEL`          | `debug`, `info`, `warn`, or `error` | `info`  | Never                                  | Sets the minimum emitted log level.                                            |
+| `NO_COLOR`           | literal `1` or unset                | unset   | Never                                  | Set to exactly `1` to disable ANSI colour in logs; any other value is ignored. |
 
-`LOG_LEVEL=debug` logs session content. Password input is omitted from logs in
-every mode, via telnet ECHO negotiation.
+`LOG_LEVEL=debug` exposes session content except password input protected by
+telnet ECHO state.
 
 ## App Attest (optional, off by default)
 
@@ -276,11 +291,11 @@ genuine client, so the failure mode is silent. Pair it with
 [the open-source plan](open-source-plan.md#optional-apple-features-privacy-and-status)
 for the privacy implications of enabling it.
 
-| Variable              | Description                                                       | Default                     |
-| --------------------- | ----------------------------------------------------------------- | --------------------------- |
-| `APPATTEST_BUNDLE_ID` | iOS bundle identifier. Enables App Attest with the next variable. | _(empty, disabled)_         |
-| `APPATTEST_TEAM_ID`   | Apple team identifier.                                            | _(empty, disabled)_         |
-| `ATTESTED_KEYS_PATH`  | Where registered device keys are persisted.                       | `config/attested-keys.json` |
+| Variable              | Type   | Default                     | Required when                                                | Description                                 |
+| --------------------- | ------ | --------------------------- | ------------------------------------------------------------ | ------------------------------------------- |
+| `APPATTEST_BUNDLE_ID` | string | empty                       | Set together with `APPATTEST_TEAM_ID` to enable App Attest   | iOS bundle identifier.                      |
+| `APPATTEST_TEAM_ID`   | string | empty                       | Set together with `APPATTEST_BUNDLE_ID` to enable App Attest | Apple team identifier.                      |
+| `ATTESTED_KEYS_PATH`  | path   | `config/attested-keys.json` | Never                                                        | Where registered device keys are persisted. |
 
 Both identifiers are required together — verification uses the bundle ID for
 the `rpIdHash` and the team ID for the App ID the attestation nonce is bound
@@ -300,25 +315,26 @@ exist yet, and persistence stages a sibling file beside it before renaming it
 into place. That is also why the fix is always to mount the directory —
 mounting `attested-keys.json` itself breaks every write for the same reason.
 
-`ATTESTED_KEYS_PATH` holds a durable record of which devices have used this
-server and roughly when. Treat it as personal data. Entries are reclaimed after
-90 days of inactivity, which bounds retention rather than eliminating it.
+`ATTESTED_KEYS_PATH` contains attested keys, which are device-derived data, and
+holds a durable record of which devices have used this server and roughly when.
+Entries are reclaimed after 90 days of inactivity, which bounds retention
+rather than eliminating it.
 
 ## APNS push (optional, off by default)
 
-Configuring push sends data to Apple: device tokens with every push, and, for
-alert pushes, a snippet of MUD output that Apple can read. Silent and Live
-Activity pushes reveal connection timing even when they carry no text. None of
-this happens with APNS unconfigured, which is the default.
+Configuring push sends APNS device tokens, which are device-derived data, to
+Apple with every push. APNS alert snippets transit Apple's infrastructure.
+Silent and Live Activity pushes reveal connection timing even when they carry
+no text. None of this happens with APNS unconfigured, which is the default.
 
-| Variable           | Description                             | Default             |
-| ------------------ | --------------------------------------- | ------------------- |
-| `APNS_KEY_PATH`    | Path to the APNS signing key.           | _(empty, disabled)_ |
-| `APNS_KEY_ID`      | Key identifier.                         | _(empty, disabled)_ |
-| `APNS_TEAM_ID`     | Apple team identifier.                  | _(empty, disabled)_ |
-| `APNS_TOPIC`       | Push topic, normally the bundle ID.     | _(empty, disabled)_ |
-| `APNS_ENVIRONMENT` | `sandbox` or `production`.              | `sandbox`           |
-| `APNS_TEST_SECRET` | Secret guarding the push test endpoint. | _(empty)_           |
+| Variable           | Type                      | Default   | Required when                                            | Description                             |
+| ------------------ | ------------------------- | --------- | -------------------------------------------------------- | --------------------------------------- |
+| `APNS_KEY_PATH`    | path                      | empty     | Set with all four APNS identity variables to enable push | Path to the APNS signing key.           |
+| `APNS_KEY_ID`      | string                    | empty     | Set with all four APNS identity variables to enable push | Key identifier.                         |
+| `APNS_TEAM_ID`     | string                    | empty     | Set with all four APNS identity variables to enable push | Apple team identifier.                  |
+| `APNS_TOPIC`       | string                    | empty     | Set with all four APNS identity variables to enable push | Push topic, normally the bundle ID.     |
+| `APNS_ENVIRONMENT` | `sandbox` or `production` | `sandbox` | Never                                                    | Selects the Apple push environment.     |
+| `APNS_TEST_SECRET` | secret string             | empty     | Required to use the APNS test endpoint                   | Secret guarding the push test endpoint. |
 
 The first four are all-or-nothing: setting some but not all aborts startup and
 names the missing ones. Partial configuration used to produce a "configured"
@@ -327,36 +343,31 @@ for.
 
 ## Background push tuning
 
-These apply only when APNS is configured. All are optional integers; unset
-means the built-in default.
+These apply only when APNS is configured. All are optional integers. When a
+parsed runtime value is unset, `BackgroundPushScheduler` uses the value shown
+below as its scheduler default.
 
-| Variable                              | Description                                        | Default            |
-| ------------------------------------- | -------------------------------------------------- | ------------------ |
-| `SILENT_PUSH_INTERVAL_MS`             | Minimum gap between silent pushes to a device.     | `1200000` (20 min) |
-| `ACTIVITY_PUSH_INTERVAL_MS`           | Minimum gap between Live Activity updates.         | `120000` (2 min)   |
-| `ACTIVITY_PUSH_ACK_TIMEOUT_MS`        | How long to wait for a client acknowledgement.     | `15000` (15 s)     |
-| `ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS`  | Cooldown before falling back to an alert push.     | `60000` (1 min)    |
-| `ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR` | Cap on fallback alert pushes per device per hour.  | `6`                |
-| `ACTIVITY_PUSH_MAX_SNIPPET_LENGTH`    | Characters of MUD output carried in an alert push. | `100`              |
+| Variable                              | Type    | Default   | Required when | Description                                                 |
+| ------------------------------------- | ------- | --------- | ------------- | ----------------------------------------------------------- |
+| `SILENT_PUSH_INTERVAL_MS`             | integer | `1200000` | Never         | Minimum gap between silent pushes to a device (20 minutes). |
+| `ACTIVITY_PUSH_INTERVAL_MS`           | integer | `120000`  | Never         | Minimum gap between Live Activity updates (2 minutes).      |
+| `ACTIVITY_PUSH_ACK_TIMEOUT_MS`        | integer | `15000`   | Never         | How long to wait for a client acknowledgement (15 seconds). |
+| `ACTIVITY_PUSH_FALLBACK_COOLDOWN_MS`  | integer | `60000`   | Never         | Initial cooldown before fallback after no acknowledgement.  |
+| `ACTIVITY_PUSH_FALLBACK_MAX_PER_HOUR` | integer | `6`       | Never         | Cap on fallback silent pushes per device per hour.          |
+| `ACTIVITY_PUSH_MAX_SNIPPET_LENGTH`    | integer | `100`     | Never         | Characters of MUD output carried in an alert push.          |
 
 `ACTIVITY_PUSH_MAX_SNIPPET_LENGTH` bounds how much text reaches Apple. It does
 not change who can see it.
 
-## Removed variables
+## Rejected retired names
 
-Each of these aborts startup with a message naming its replacement. They are
-listed so that an upgrade fails loudly instead of silently changing posture.
+These are not v4 configuration settings. Assigning any of them aborts startup.
 
-| Variable                           | Replacement                                                                      |
-| ---------------------------------- | -------------------------------------------------------------------------------- |
-| `ONLY_ALLOW_DEFAULT_SERVER`        | `TARGET_MODE=fixed` (the default), or `allowlist` / `arbitrary`.                 |
-| `DISABLE_TLS`                      | `INBOUND_TLS_MODE=off`, permitted on loopback only.                              |
-| `ALLOW_INSECURE_PRODUCTION_NO_TLS` | `INBOUND_TLS_MODE=off`, or `required` with valid paths.                          |
-| `TRUST_PROXY`                      | Renamed to `TRUSTED_PROXY_CIDRS`.                                                |
-| `ALLOW_MTLS_FALLBACK`              | `AUTH_MODE=shared-secret` for clients that cannot attest.                        |
-| `MTLS_CLIENT_CA_PATH`              | Removed with `ALLOW_MTLS_FALLBACK`; client certificates are no longer requested. |
-
-The two retired App Attest bypass variables are deliberately _not_ in this
-list. Ignoring a bypass fails toward the safe side — the setting is inert and
-verification stays on — whereas rejecting it at startup would mean something
-still reads it.
+| Variable                           | Replacement or disposition                                                        |
+| ---------------------------------- | --------------------------------------------------------------------------------- |
+| `ONLY_ALLOW_DEFAULT_SERVER`        | Use `TARGET_MODE=fixed` (the default), `allowlist`, or `arbitrary`.               |
+| `DISABLE_TLS`                      | Use `INBOUND_TLS_MODE=off`; non-loopback plaintext also requires acknowledgement. |
+| `ALLOW_INSECURE_PRODUCTION_NO_TLS` | Use `INBOUND_TLS_MODE=off`, or `required` with valid certificate and key paths.   |
+| `TRUST_PROXY`                      | Use `TRUSTED_PROXY_CIDRS`.                                                        |
+| `ALLOW_MTLS_FALLBACK`              | Use `AUTH_MODE=shared-secret` for clients that cannot attest.                     |
+| `MTLS_CLIENT_CA_PATH`              | Removed with mTLS fallback; the proxy no longer requests client certificates.     |
