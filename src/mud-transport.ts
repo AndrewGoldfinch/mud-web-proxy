@@ -250,7 +250,12 @@ export const connectMudTransport = (
       removeTlsListeners();
       tlsSocket?.destroy();
       downgraded = true;
-      options.onDowngrade(reason);
+      try {
+        options.onDowngrade(reason);
+      } catch (err) {
+        fail(err as Error);
+        return;
+      }
       if (settled) return;
       startPlain();
     };

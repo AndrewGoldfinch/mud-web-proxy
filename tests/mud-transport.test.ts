@@ -278,6 +278,50 @@ describe('connectMudTransport TLS fallback', () => {
     expect(connected).toHaveLength(1);
   });
 
+  test('throwing onDowngrade rejects without opening plaintext', async () => {
+    const tlsSocket = new TestSocket();
+    const callbackError = new Error('downgrade callback failed');
+    let plainCalls = 0;
+    let downgradeCalls = 0;
+    const connected: ConnectedMudTransport[] = [];
+    tlsSocket.on('error', () => undefined);
+    net.createConnection = ((_port: number, _host: string) => {
+      plainCalls++;
+      return asTelnetSocket(new TestSocket());
+    }) as typeof net.createConnection;
+    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+
+    const controller = new AbortController();
+    const pending = connectMudTransport({
+      requestedHost: 'mud.example',
+      dialAddress: '203.0.113.7',
+      port: 4000,
+      mode: 'prefer',
+      signal: controller.signal,
+      onDowngrade: () => {
+        downgradeCalls++;
+        throw callbackError;
+      },
+      onConnected: (connection) => connected.push(connection),
+    });
+    const observation = observeRejection(pending);
+    const tlsError = new Error('wrong version number');
+
+    expect(() => tlsSocket.emit('error', tlsError)).not.toThrow();
+    tlsSocket.emit('close');
+    tlsSocket.emit('error', tlsError);
+    tlsSocket.emit('close');
+    controller.abort();
+    await Promise.resolve();
+
+    expect(observation.rejection).toBe(callbackError);
+    expect(tlsSocket.destroyed).toBe(true);
+    expect(plainCalls).toBe(0);
+    expect(downgradeCalls).toBe(1);
+    expect(connected).toEqual([]);
+    await observation.observed;
+  });
+
   test('prefer falls back exactly once after close before secureConnect', async () => {
     const tlsSocket = new TestSocket();
     const plainSocket = new TestSocket();
