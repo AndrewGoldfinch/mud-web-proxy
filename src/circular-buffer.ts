@@ -7,6 +7,7 @@
  */
 
 import type { BufferChunk } from './types';
+import { withDefaults } from './with-defaults';
 
 const CHUNK_OVERHEAD_ESTIMATE = 256;
 
@@ -36,13 +37,15 @@ export class CircularBuffer {
     type: 'data' | 'gmcp' | 'echo',
     metadata?: Partial<BufferChunk>,
   ): BufferChunk {
-    const chunk: BufferChunk = {
-      sequence: ++this.sequenceCounter,
-      timestamp: Date.now(),
-      data,
-      type,
-      ...metadata,
-    };
+    const chunk: BufferChunk = withDefaults(
+      {
+        sequence: ++this.sequenceCounter,
+        timestamp: Date.now(),
+        data,
+        type,
+      },
+      metadata,
+    );
 
     const chunkSize = data.length + CHUNK_OVERHEAD_ESTIMATE;
 

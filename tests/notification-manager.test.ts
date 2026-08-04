@@ -1,6 +1,9 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import EventEmitter from 'events';
+import fs from 'fs';
 import http2 from 'http2';
+import os from 'os';
+import path from 'path';
 import { NotificationManager } from '../src/notification-manager';
 import { TriggerMatcher } from '../src/trigger-matcher';
 
@@ -85,11 +88,21 @@ const setHttp2Connect = (connect: typeof http2.connect): void => {
   (http2 as unknown as { connect: typeof http2.connect }).connect = connect;
 };
 
+/**
+ * A key path guaranteed absent, inside a directory only this process can
+ * reach. A fixed `/tmp` name is one another local user can create first, and
+ * then the "no key file" path under test reads their file instead.
+ */
+const missingKeyPath = path.join(
+  fs.mkdtempSync(path.join(os.tmpdir(), 'mwp-apns-missing-')),
+  'missing-apns-key.p8',
+);
+
 const createManager = (): NotificationManager => {
   const config = {
     enabled: false,
     apns: {
-      keyPath: '/tmp/missing-apns-key.p8',
+      keyPath: missingKeyPath,
       keyId: 'KEYID12345',
       teamId: 'TEAMID1234',
       topic: 'org.example.mud',

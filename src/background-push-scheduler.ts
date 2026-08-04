@@ -2,6 +2,7 @@
 import type { Session } from './session';
 import type { ActivityContentState } from './types';
 import { NotificationManager } from './notification-manager';
+import { withDefaults } from './with-defaults';
 
 interface TrackedSession {
   sessionId: string;
@@ -43,14 +44,17 @@ export class BackgroundPushScheduler {
     config: Partial<BackgroundPushSchedulerConfig> = {},
   ) {
     this.notificationManager = notificationManager;
-    this.config = {
-      silentPushIntervalMs: config.silentPushIntervalMs ?? 20 * 60 * 1000,
-      activityPushIntervalMs: config.activityPushIntervalMs ?? 120 * 1000,
-      activityAckTimeoutMs: config.activityAckTimeoutMs ?? 15 * 1000,
-      fallbackCooldownMs: config.fallbackCooldownMs ?? 60 * 1000,
-      maxFallbacksPerHour: config.maxFallbacksPerHour ?? 6,
-      maxSnippetLength: config.maxSnippetLength ?? 100,
-    };
+    this.config = withDefaults(
+      {
+        silentPushIntervalMs: 20 * 60 * 1000,
+        activityPushIntervalMs: 120 * 1000,
+        activityAckTimeoutMs: 15 * 1000,
+        fallbackCooldownMs: 60 * 1000,
+        maxFallbacksPerHour: 6,
+        maxSnippetLength: 100,
+      },
+      config,
+    );
   }
 
   trackSession(session: Session): void {
