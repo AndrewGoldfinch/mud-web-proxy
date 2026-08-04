@@ -17,26 +17,16 @@ const WONT = 0xfc;
 const WILL = 0xfb;
 const SB = 0xfa;
 const SE = 0xf0;
-const IS = 0x00;
-const SEND = 0x01;
-const GA = 0xf9;
 
 // Protocol options
 const OPT_ECHO = 0x01;
 const OPT_SUPPRESS_GO_AHEAD = 0x03;
-const OPT_STATUS = 0x05;
-const OPT_TIMING_MARK = 0x06;
 const OPT_TERMINAL_TYPE = 0x18;
-const OPT_EOR = 0x19;
 const OPT_NAWS = 0x1f;
-const OPT_LINEMODE = 0x22;
-const OPT_NEW_ENVIRON = 0x27;
 const OPT_CHARSET = 0x2a;
 const OPT_MSDP = 0x45;
-const OPT_MSSP = 0x46;
 const OPT_MCCP2 = 0x56;
 const OPT_MCCP = 0x56; // MCCP v2
-const OPT_MSP = 0x57;
 const OPT_MXP = 0x5b;
 const OPT_GMCP = 0xc9;
 

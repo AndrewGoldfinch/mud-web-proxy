@@ -5,14 +5,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { loadE2EConfig } from './config-loader';
 import { E2EConnection } from './connection-helper';
-import {
-  MockMUDServer,
-  createIREMUD,
-  createAardwolfMUD,
-  createChaosMUD,
-} from './mock-mud';
+import { MockMUDServer, createIREMUD, createChaosMUD } from './mock-mud';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const TEST_PROXY_PORT = 6299;

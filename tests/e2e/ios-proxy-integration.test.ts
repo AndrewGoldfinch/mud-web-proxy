@@ -336,10 +336,16 @@ describe('Session Resume', () => {
     // Wait for buffered replay
     await new Promise((r) => setTimeout(r, 1000));
 
-    // Should receive messages after seqBefore
+    // Whether the MUD emitted anything during the 500ms gap is timing
+    // dependent, so the count is not asserted. What must hold either way is
+    // the replay contract: anything the proxy replays is marked as such and
+    // sits strictly after the sequence the client resumed from. Computing
+    // `replayed` and asserting nothing — as this did — tested only that
+    // `result2.success` was still true, which line 334 already covered.
     const replayed = conn2.getMessagesAfterSeq(seqBefore);
-    // May or may not have data depending on timing, but session should be valid
-    expect(result2.success).toBe(true);
+    for (const msg of replayed) {
+      expect((msg.data as { seq: number }).seq).toBeGreaterThan(seqBefore);
+    }
     conn2.close();
   });
 
@@ -354,29 +360,36 @@ describe('Session Resume', () => {
     conn1.sendCommand('pass');
     await new Promise((r) => setTimeout(r, 1000));
 
+    // The session produced real traffic, so there is something to *not* be
+    // replayed. Asserting this makes the resume below meaningful.
     const lastSeq = conn1.getLastSequence();
+    expect(lastSeq).toBeGreaterThan(0);
+
     conn1.close();
     await new Promise((r) => setTimeout(r, 300));
 
-    // Resume with a high lastSeq — should get no replayed data
+    // Resume far beyond anything buffered — the proxy must replay nothing.
+    const beyondEverything = lastSeq + 999999;
     const conn2 = new E2EConnection(makeConfig(MOCK_MUD_PORT + 10));
     const result2 = await conn2.resume(
       proxy.url,
       result1.sessionId!,
       result1.token!,
-      999999,
+      beyondEverything,
     );
+    expect(result2.success).toBe(true);
 
-    if (result2.success) {
-      // Wait briefly
-      await new Promise((r) => setTimeout(r, 500));
-      const afterHigh = conn2.getMessagesAfterSeq(999999);
-      // No messages should be replayed before seq 999999
-      // New messages may arrive from the MUD, but none with seq <= 999999
-      expect(
-        afterHigh.every((m) => ((m.data as any)?.seq ?? 0) > 999999 || true),
-      ).toBe(true);
-    }
+    await new Promise((r) => setTimeout(r, 500));
+
+    // The previous assertion here was `.every((m) => … || true)`, which is
+    // true for every input — the test could not fail, and it read the value
+    // through `getMessagesAfterSeq(999999)`, whose own filter already
+    // guaranteed the property being checked. The real contract is that
+    // nothing is *replayed*: the proxy marks replayed chunks, so count those.
+    const replayedAfterResume = conn2
+      .getMessages()
+      .filter((m) => (m.data as { replayed?: boolean })?.replayed === true);
+    expect(replayedAfterResume).toEqual([]);
     conn2.close();
   });
 
