@@ -63,7 +63,6 @@ LOG_LEVEL, ALLOWED_ORIGINS, APNS_*, APPATTEST_*.
 */
 
 import util from 'util';
-import net from 'net';
 import https from 'https';
 import http from 'http';
 import zlib from 'zlib';
@@ -80,6 +79,7 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import os from 'os';
 import { version as packageVersion } from './package.json';
 import { SessionIntegration } from './src/session-integration';
+import { connectMudTransport } from './src/mud-transport';
 import { HeartbeatMonitor } from './src/heartbeat';
 import { ShutdownCoordinator } from './src/shutdown';
 import { MessageRateLimiter } from './src/message-rate-limit';
@@ -325,6 +325,8 @@ interface MSDPRequest {
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
   socketId?: number;
+  /** Owns an upstream dial until the final socket is handed off. */
+  pendingMudTransport?: AbortController;
   ts?: TelnetSocket;
   host?: string;
   port?: number;
@@ -2312,14 +2314,6 @@ const srv: ServerConfig = {
     host?: string,
     port?: number,
   ): Promise<void> {
-    if (runtimeConfig.mudTlsMode === 'required') {
-      srv.rejectLegacy(
-        s,
-        'Legacy connections are unavailable when MUD_TLS_MODE=required.',
-      );
-      return;
-    }
-
     // One connect per socket, matching the typed protocol.
     if (s.ts || sessionIntegration.hasSession(s)) {
       srv.rejectLegacy(s, 'This connection already has a session');
@@ -2340,6 +2334,9 @@ const srv: ServerConfig = {
       srv.rejectLegacy(s, decision.reason);
       return;
     }
+
+    const controller = new AbortController();
+    s.pendingMudTransport = controller;
 
     // Established capacity is counted for the life of the connection and
     // released in closeSocket; hand off from the reservation so the same
@@ -2376,46 +2373,62 @@ const srv: ServerConfig = {
 
     s.compressed = 0;
 
+    const controller = s.pendingMudTransport ?? new AbortController();
+    s.pendingMudTransport = controller;
+    let negotiationTimeout: ReturnType<typeof setTimeout> | null = null;
+
     // Dial the address policy resolved, not the hostname — re-resolving
     // between validation and connect is the DNS rebinding hole.
-    s.ts = net.createConnection(port, dialAddress || host, function () {
-      srv.logInfo(
-        'new connection to ' + host + ':' + port + ' for ' + s.remoteAddress,
-        s,
-        'telnet',
-      );
-    }) as TelnetSocket;
-
-    s.ts.send = function (data: string | Buffer) {
-      if (srv.debug) {
-        const raw: string[] = [];
-        for (let i = 0; i < data.length; i++)
-          raw.push(
-            util.format(
-              '%d',
-              typeof data === 'string' ? data.charCodeAt(i) : data[i],
-            ),
-          );
-        srv.logDebug('write bin: ' + raw.toString(), s, 'telnet');
-      }
-
-      try {
-        data = encodeTelnetOutbound(data, Boolean(s.utf8_negotiated));
-      } catch (ex) {
-        srv.logError(
-          'iconv encode error: ' + (ex as Error).toString(),
+    void connectMudTransport({
+      requestedHost: host,
+      dialAddress: dialAddress || host,
+      port,
+      mode: runtimeConfig.mudTlsMode,
+      signal: controller.signal,
+      onDowngrade: (reason) => {
+        srv.logWarn(
+          `${reason}, using plain TCP for ${host}:${port}`,
           s,
           'telnet',
         );
-      }
+      },
+      onConnected: ({ socket }) => {
+        s.ts = socket;
+        if (s.pendingMudTransport === controller) {
+          s.pendingMudTransport = undefined;
+        }
 
-      writeTelnet(s, data);
-    };
+        socket.send = function (data: string | Buffer) {
+          if (srv.debug) {
+            const raw: string[] = [];
+            for (let i = 0; i < data.length; i++)
+              raw.push(
+                util.format(
+                  '%d',
+                  typeof data === 'string' ? data.charCodeAt(i) : data[i],
+                ),
+              );
+            srv.logDebug('write bin: ' + raw.toString(), s, 'telnet');
+          }
 
-    let negotiationTimeout: ReturnType<typeof setTimeout> | null = null;
+          try {
+            data = encodeTelnetOutbound(data, Boolean(s.utf8_negotiated));
+          } catch (ex) {
+            srv.logError(
+              'iconv encode error: ' + (ex as Error).toString(),
+              s,
+              'telnet',
+            );
+          }
 
-    s.ts
-      .on('connect', function () {
+          writeTelnet(s, data);
+        };
+
+        srv.logInfo(
+          'new connection to ' + host + ':' + port + ' for ' + s.remoteAddress,
+          s,
+          'telnet',
+        );
         srv.logInfo('new telnet socket connected', s, 'telnet');
 
         negotiationTimeout = setTimeout(function () {
@@ -2431,33 +2444,56 @@ const srv: ServerConfig = {
             s.naws_negotiated =
               1;
         }, PROTOCOL_NEGOTIATION_TIMEOUT_MS);
-      })
-      .on('data', function (data: Buffer) {
-        srv.sendClient(s, data);
-      })
-      .on('timeout', function () {
-        if (negotiationTimeout) clearTimeout(negotiationTimeout);
-        srv.logWarn('telnet socket timeout', s, 'telnet');
-        srv.sendClient(s, Buffer.from('Timeout: server port is down.\r\n'));
-        setTimeout(function () {
-          srv.closeSocket(s);
-        }, SOCKET_CLOSE_DELAY_MS);
-      })
-      .on('close', function () {
-        if (negotiationTimeout) clearTimeout(negotiationTimeout);
-        srv.logInfo('telnet socket closed', s, 'telnet');
-        setTimeout(function () {
-          srv.closeSocket(s);
-        }, SOCKET_CLOSE_DELAY_MS);
-      })
-      .on('error', function (err: Error) {
-        if (negotiationTimeout) clearTimeout(negotiationTimeout);
-        srv.logError('telnet error: ' + err.toString(), s, 'telnet');
-        srv.sendClient(s, Buffer.from('Error: maybe the mud server is down?'));
-        setTimeout(function () {
-          srv.closeSocket(s);
-        }, SOCKET_CLOSE_DELAY_MS);
-      });
+
+        socket
+          .on('data', function (data: Buffer) {
+            srv.sendClient(s, data);
+          })
+          .on('timeout', function () {
+            if (negotiationTimeout) clearTimeout(negotiationTimeout);
+            srv.logWarn('telnet socket timeout', s, 'telnet');
+            srv.sendClient(
+              s,
+              Buffer.from('Timeout: server port is down.\r\n'),
+            );
+            setTimeout(function () {
+              srv.closeSocket(s);
+            }, SOCKET_CLOSE_DELAY_MS);
+          })
+          .on('close', function () {
+            if (negotiationTimeout) clearTimeout(negotiationTimeout);
+            srv.logInfo('telnet socket closed', s, 'telnet');
+            setTimeout(function () {
+              srv.closeSocket(s);
+            }, SOCKET_CLOSE_DELAY_MS);
+          })
+          .on('error', function (err: Error) {
+            if (negotiationTimeout) clearTimeout(negotiationTimeout);
+            srv.logError('telnet error: ' + err.toString(), s, 'telnet');
+            srv.sendClient(
+              s,
+              Buffer.from('Error: maybe the mud server is down?'),
+            );
+            setTimeout(function () {
+              srv.closeSocket(s);
+            }, SOCKET_CLOSE_DELAY_MS);
+          });
+      },
+    }).catch((err: unknown) => {
+      // Abort is already being handled by closeSocket; do not send/schedule
+      // twice.
+      if (controller.signal.aborted) return;
+      if (s.pendingMudTransport === controller) {
+        s.pendingMudTransport = undefined;
+      }
+      const error = err instanceof Error ? err : new Error(String(err));
+      srv.logError(`telnet error: ${error.toString()}`, s, 'telnet');
+      const message =
+        runtimeConfig.mudTlsMode === 'required'
+          ? error.message
+          : 'Error: maybe the mud server is down?';
+      srv.rejectLegacy(s, message);
+    });
   },
 
   closeSocket: function (s: SocketExtended): void {

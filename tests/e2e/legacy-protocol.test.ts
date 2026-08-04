@@ -21,8 +21,15 @@ const PROXY_PORT = 6321;
 const AUTH_PORT = 6322;
 const REQUIRED_PROXY_PORT = 6325;
 const REQUIRED_MUD_PORT = 6326;
+const PREFER_PROXY_PORT = 6327;
+const PREFER_MUD_PORT = 6328;
+// Reserved for Task 5's stalled-dial process tests.
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const STALL_PROXY_PORT = 6329;
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const STALL_MUD_PORT = 6330;
 const LEGACY_REQUIRED_REJECTION =
-  'Legacy connections are unavailable when MUD_TLS_MODE=required.';
+  'MUD_TLS_MODE=required: TLS connection failed and plaintext fallback is not permitted.';
 const SETTLE_MS = 1500;
 
 const settle = (ms = SETTLE_MS) => new Promise((r) => setTimeout(r, ms));
@@ -289,6 +296,80 @@ describe('legacy connect protocol, process-level', () => {
   }, 15000);
 });
 
+describe('legacy connect under preferred MUD TLS', () => {
+  let mock: ReturnType<typeof createIREMUD>;
+  let proxy: Awaited<ReturnType<typeof startTestProxy>>;
+  let mudPort: number;
+
+  beforeAll(async () => {
+    mock = createIREMUD();
+    (mock as unknown as { config: { port: number } }).config.port =
+      PREFER_MUD_PORT;
+    mudPort = portOf(mock);
+    await mock.start();
+    proxy = await startTestProxy(PREFER_PROXY_PORT, {
+      TN_HOST: 'localhost',
+      TN_PORT: mudPort.toString(),
+      MUD_TLS_MODE: 'prefer',
+    });
+  });
+
+  afterAll(async () => {
+    await proxy.stop();
+    await mock.stop();
+  });
+
+  test('10. prefer mode probes TLS then relays legacy data over plaintext', async () => {
+    const before = mock.getAcceptedConnectionCount();
+    const ws = await openRaw(proxy.url);
+    const frames = collect(ws);
+
+    ws.send(JSON.stringify({ connect: 1, host: 'localhost', port: mudPort }));
+
+    const acceptedDeadline = Date.now() + 8000;
+    while (
+      Date.now() < acceptedDeadline &&
+      mock.getAcceptedConnectionCount() !== before + 2
+    ) {
+      await settle(100);
+    }
+
+    // Keep this first: the red run is valid only when this reports +1 vs +2.
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 2);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+
+    mock.clearReceivedCommands();
+    frames.length = 0;
+    ws.send('legacy-prefer-probe\r\n');
+
+    const relayDeadline = Date.now() + 8000;
+    while (
+      Date.now() < relayDeadline &&
+      !mock.getReceivedCommands().includes('legacy-prefer-probe')
+    ) {
+      await settle(100);
+    }
+
+    expect(mock.getReceivedCommands()).toContain('legacy-prefer-probe');
+
+    const responseDeadline = Date.now() + 5000;
+    while (Date.now() < responseDeadline && frames.length === 0) {
+      await settle(100);
+    }
+
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame.trimStart().startsWith('{')).toBe(false);
+      expect(frame).not.toContain('"type":"data"');
+      expect(frame).toMatch(/^[A-Za-z0-9+/=]*$/);
+    }
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 2);
+
+    ws.close();
+    await settle();
+  }, 20000);
+});
+
 describe('legacy connect under required MUD TLS', () => {
   let mock: ReturnType<typeof createIREMUD>;
   let proxy: Awaited<ReturnType<typeof startTestProxy>>;
@@ -312,7 +393,7 @@ describe('legacy connect under required MUD TLS', () => {
     await mock.stop();
   });
 
-  test('10. required mode rejects legacy before dialing upstream', async () => {
+  test('11. required mode makes one TLS attempt and rejects legacy', async () => {
     const before = mock.getAcceptedConnectionCount();
     const ws = await openRaw(proxy.url);
     const frames = collect(ws);
@@ -324,13 +405,13 @@ describe('legacy connect under required MUD TLS', () => {
     ws.send(JSON.stringify({ connect: 1, host: 'localhost', port: mudPort }));
     await settle();
 
-    // Keep this first: the red run is valid only when this reports 1 vs 0.
-    expect(mock.getAcceptedConnectionCount()).toBe(before);
+    // Keep this first: the red run is valid only when this reports 0 vs +1.
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 1);
     expect(decodeLegacy(frames)).toContain(LEGACY_REQUIRED_REJECTION);
     expect(closed).toBe(true);
   });
 
-  test('11. required mode still routes typed connects through TLS', async () => {
+  test('12. required mode still routes typed connects through TLS', async () => {
     const before = mock.getAcceptedConnectionCount();
     const ws = await openRaw(proxy.url);
     const frames = collect(ws);
