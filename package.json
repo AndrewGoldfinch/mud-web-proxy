@@ -37,6 +37,7 @@
     "format:fix": "prettier --write .",
     "check:bun-version": "bun scripts/check-bun-version.ts",
     "check:config-docs": "bun scripts/check-config-docs.ts",
+    "check:ops-docs": "bun scripts/check-ops-docs.ts",
     "typecheck": "tsc --noEmit",
     "audit": "bun audit --audit-level=moderate",
     "build:bundle": "bun scripts/build-release-bundle.ts",

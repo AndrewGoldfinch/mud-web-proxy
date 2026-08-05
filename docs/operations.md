@@ -293,18 +293,19 @@ disappears unnoticed.
 | Message                                                                                         | Cause and remedy                                                                                                                                                                                |
 | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `INBOUND_TLS_MODE=off on BIND_HOST=… is not allowed without explicit acknowledgement.`          | You are serving plaintext on a non-loopback address. Either put Caddy in front and bind loopback, or set `ALLOW_INSECURE_INBOUND_NO_TLS=true` deliberately, or use `INBOUND_TLS_MODE=required`. |
-| `TLS certificate not found at …` / `TLS key not found at …`                                     | Path is wrong or the file is absent. Both must exist under `required`.                                                                                                                          |
+| `TLS certificate not found at …` / `TLS key not found at …`                                     | `TLS_CERT_PATH` or `TLS_KEY_PATH` is wrong, or the file is absent. Both must exist under `required`.                                                                                            |
 | `TLS certificate at … is not a valid certificate:` / `TLS key at … is not a valid private key:` | Malformed or empty PEM. An empty file gives the same `NO_START_LINE` error as a corrupt one.                                                                                                    |
 | `TLS key at … could not be read:`                                                               | Permissions. The service user must be able to read it.                                                                                                                                          |
 | `TLS certificate at … does not match the private key at …`                                      | Mismatched pair — usually a half-finished renewal that replaced one file.                                                                                                                       |
 
 **Limits.**
 
-| Message                                                                           | Cause and remedy                                                                                               |
-| --------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
-| `MAX_SESSIONS_GLOBAL must be a positive integer when set`                         | `0` is not "unlimited". Leave it unset for no global bound.                                                    |
-| `WS_HEARTBEAT_TIMEOUT_MS (…) must be greater than WS_HEARTBEAT_INTERVAL_MS (…)`   | Otherwise every peer is reclaimed before it can answer a ping.                                                 |
-| `MAX_MESSAGES_PER_SECOND_PER_IP (…) must be at least MAX_MESSAGES_PER_SECOND (…)` | Otherwise one connection can never reach its own allowance and the per-connection limit is dead configuration. |
+| Message                                                                           | Cause and remedy                                                                                                                            |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MAX_SESSIONS_GLOBAL must be a positive integer when set`                         | `0` is not "unlimited". Leave it unset for no global bound.                                                                                 |
+| `WS_HEARTBEAT_TIMEOUT_MS (…) must be greater than WS_HEARTBEAT_INTERVAL_MS (…)`   | Otherwise every peer is reclaimed before it can answer a ping.                                                                              |
+| `MAX_MESSAGES_PER_SECOND_PER_IP (…) must be at least MAX_MESSAGES_PER_SECOND (…)` | Otherwise one connection can never reach its own allowance and the per-connection limit is dead configuration.                              |
+| `SHUTDOWN_DEADLINE_MS (…) must be greater than SHUTDOWN_GRACE_MS (…)`             | Otherwise the absolute deadline expires during the drain and no connection closes cleanly. Raise the deadline, or shorten the grace period. |
 
 **Origins and proxies.**
 
