@@ -1,5 +1,12 @@
 # MUD Proxy Server: Implementation Guide for MUDBasher
 
+> **Superseded, retained for context.** This document predates the v4
+> architecture and describes the proxy as it was being designed for one iOS
+> client. It is **not** the wire contract: see
+> [`protocols.md`](protocols.md), which is derived from the implementation and
+> is what an external client author should build against. Nothing here is
+> maintained against current behaviour.
+
 ## The architecture at a glance
 
 ```

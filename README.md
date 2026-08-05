@@ -145,6 +145,7 @@ commented, copyable defaults.
 | [Security model](docs/security.md)                      | Threat model, target policy, trust boundaries, and known limitations     |
 | [Operations](docs/operations.md)                        | Health, logs, certificate renewal, upgrades, backup, and troubleshooting |
 | [Configuration reference](docs/configuration.md)        | Every variable, its type, default, and when it is required               |
+| [Client protocols](docs/protocols.md)                   | The wire contract for both protocols, for client authors                 |
 | [Docker Compose deployment](docs/deployment/compose.md) | The container path in full                                               |
 | [Native systemd deployment](docs/deployment/systemd.md) | The single-VM path in full                                               |
 | [Published images](docs/deployment/images.md)           | Tag policy, digest pinning, and provenance verification                  |
