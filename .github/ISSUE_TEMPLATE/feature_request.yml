@@ -1,0 +1,40 @@
+name: Feature request
+description: Suggest a capability this proxy does not have
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Questions belong in
+        [Discussions](https://github.com/AndrewGoldfinch/mud-web-proxy/discussions),
+        not here.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that you cannot do today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you would like instead
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment path
+      options:
+        - Docker Compose
+        - Bun + systemd
+        - Not deployment-specific
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Including configuration that gets you part of the way.
+    validations:
+      required: false

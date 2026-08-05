@@ -1,0 +1,62 @@
+name: Bug report
+description: Something behaves differently from what the documentation says
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        **Do not report security vulnerabilities here.** Use a
+        [private advisory](https://github.com/AndrewGoldfinch/mud-web-proxy/security/advisories/new)
+        instead.
+
+        If the proxy refused to start, check the troubleshooting table in
+        [the operations guide](https://github.com/AndrewGoldfinch/mud-web-proxy/blob/main/docs/operations.md#troubleshooting)
+        first — every startup error has an entry there.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The `version` field from `/health`, not the tag you think you deployed.
+      placeholder: '4.0.0'
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment path
+      options:
+        - Docker Compose
+        - Bun + systemd
+        - Other (describe below)
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration
+      description: >-
+        Redact secrets. PROXY_SHARED_SECRET, ADMIN_TOKEN, and APNS material do
+        not belong in a public issue.
+      render: dotenv
+    validations:
+      required: false
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs around the failure
+      description: '`journalctl -u mud-web-proxy` or `docker compose logs proxy`.'
+      render: shell
+    validations:
+      required: false
