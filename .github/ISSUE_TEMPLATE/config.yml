@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/AndrewGoldfinch/mud-web-proxy/security/advisories/new
+    about: Report privately. Never open a public issue for a security finding.
+  - name: Question or discussion
+    url: https://github.com/AndrewGoldfinch/mud-web-proxy/discussions
+    about: Usage questions, configuration help, and anything open-ended.
+  - name: Troubleshooting guide
+    url: https://github.com/AndrewGoldfinch/mud-web-proxy/blob/main/docs/operations.md#troubleshooting
+    about: Every startup error the proxy can refuse to start with has an entry.
