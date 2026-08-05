@@ -14,6 +14,9 @@
 
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import net, { type Server, type Socket } from 'net';
+import { mkdtempSync, readFileSync, rmSync } from 'fs';
+import { tmpdir } from 'os';
+import path from 'path';
 import { inflateRawSync } from 'zlib';
 import { startMockMUDTest, type MockMUDSetup } from './mock-mud-helper';
 import { startTestProxy } from './proxy-launcher';
@@ -27,6 +30,8 @@ const PREFER_PROXY_PORT = 6327;
 const PREFER_MUD_PORT = 6328;
 const STALL_PROXY_PORT = 6329;
 const STALL_MUD_PORT = 6330;
+const TLS_PROXY_PORT = 6331;
+const TLS_MUD_PORT = 6332;
 const LEGACY_REQUIRED_REJECTION =
   'MUD_TLS_MODE=required: TLS connection failed and plaintext fallback is not permitted.';
 const SETTLE_MS = 1500;
@@ -372,6 +377,126 @@ describe('legacy connect under preferred MUD TLS', () => {
       expect(frame).toMatch(/^[A-Za-z0-9+/=]*$/);
     }
     expect(mock.getAcceptedConnectionCount()).toBe(before + 2);
+
+    ws.close();
+    await settle();
+  }, 20000);
+});
+
+describe('legacy connect over trusted real TLS', () => {
+  // Every other transport case here points at a plaintext MUD, which can only
+  // ever prove the downgrade. This is the one that proves the feature: a
+  // legacy client's bytes traversing an actual TLSSocket, through send(),
+  // encodeTelnetOutbound, writeTelnet's writable check, telnet negotiation,
+  // and base64 framing.
+  let mock: ReturnType<typeof createIREMUD>;
+  let proxy: Awaited<ReturnType<typeof startTestProxy>>;
+  let certDir: string;
+  let mudPort: number;
+
+  beforeAll(async () => {
+    certDir = mkdtempSync(path.join(tmpdir(), 'mwp135-tls-'));
+    const keyPath = path.join(certDir, 'key.pem');
+    const certPath = path.join(certDir, 'cert.pem');
+
+    // SAN DNS:localhost, because the proxy presents `localhost` as SNI and
+    // Node checks the name it asked for, not the address it dialled.
+    const openssl = Bun.spawnSync([
+      'openssl',
+      'req',
+      '-x509',
+      '-newkey',
+      'rsa:2048',
+      '-nodes',
+      '-days',
+      '1',
+      '-subj',
+      '/CN=localhost',
+      '-addext',
+      'subjectAltName=DNS:localhost',
+      '-keyout',
+      keyPath,
+      '-out',
+      certPath,
+    ]);
+    expect(openssl.exitCode).toBe(0);
+
+    mock = createIREMUD();
+    const config = (
+      mock as unknown as {
+        config: { port: number; tls?: { key: Buffer; cert: Buffer } };
+      }
+    ).config;
+    config.port = TLS_MUD_PORT;
+    config.tls = {
+      key: readFileSync(keyPath),
+      cert: readFileSync(certPath),
+    };
+    mudPort = portOf(mock);
+    await mock.start();
+
+    proxy = await startTestProxy(TLS_PROXY_PORT, {
+      TN_HOST: 'localhost',
+      TN_PORT: mudPort.toString(),
+      MUD_TLS_MODE: 'prefer',
+      NODE_EXTRA_CA_CERTS: certPath,
+    });
+  });
+
+  afterAll(async () => {
+    // The child process reads the CA from disk, so the directory outlives it.
+    await proxy.stop();
+    await mock.stop();
+    rmSync(certDir, { recursive: true, force: true });
+  });
+
+  test('13. prefer mode keeps a trusted TLS connection and relays legacy data', async () => {
+    const before = mock.getAcceptedConnectionCount();
+    const ws = await openRaw(proxy.url);
+    const frames = collect(ws);
+
+    ws.send(JSON.stringify({ connect: 1, host: 'localhost', port: mudPort }));
+
+    const acceptedDeadline = Date.now() + 8000;
+    while (
+      Date.now() < acceptedDeadline &&
+      (mock.getAcceptedConnectionCount() === before ||
+        mock.getClientCount() < 1)
+    ) {
+      await settle(100);
+    }
+
+    // Keep this first. A downgrade would also deliver data, so without the
+    // exact count this test would pass over plaintext and prove nothing —
+    // the certificate has to be trusted, not merely present.
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 1);
+    expect(mock.getClientCount()).toBeGreaterThan(0);
+    expect(ws.readyState).toBe(WebSocket.OPEN);
+
+    mock.clearReceivedCommands();
+    frames.length = 0;
+    ws.send('legacy-tls-probe\r\n');
+
+    const responseDeadline = Date.now() + 8000;
+    while (
+      Date.now() < responseDeadline &&
+      (!mock.getReceivedCommands().includes('legacy-tls-probe') ||
+        !decodeLegacyPlayer(frames).includes('Password:'))
+    ) {
+      await settle(100);
+    }
+
+    expect(mock.getReceivedCommands()).toContain('legacy-tls-probe');
+    expect(decodeLegacyPlayer(frames)).toContain('Password:');
+    expect(frames.length).toBeGreaterThan(0);
+    for (const frame of frames) {
+      expect(frame.trimStart().startsWith('{')).toBe(false);
+      expect(frame).not.toContain('"type":"data"');
+      expect(frame).toMatch(/^[A-Za-z0-9+/=]*$/);
+    }
+    // Re-asserted after the round trip: no late fallback opened a second
+    // connection once data was already flowing.
+    expect(mock.getAcceptedConnectionCount()).toBe(before + 1);
 
     ws.close();
     await settle();

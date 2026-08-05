@@ -6,6 +6,7 @@
  */
 
 import net from 'net';
+import tls from 'tls';
 import zlib from 'zlib';
 import { EventEmitter } from 'events';
 
@@ -68,6 +69,15 @@ export interface MockMUDConfig {
     charStats: object;
     roomInfo: object;
     commChannel: object;
+  };
+  /**
+   * Serve the same MUD over TLS instead of plaintext. The data plane is
+   * unchanged: `tls.Server` extends `net.Server` and hands `handleConnection`
+   * a `TLSSocket`, which is a `net.Socket`.
+   */
+  tls?: {
+    key: Buffer;
+    cert: Buffer;
   };
 }
 
@@ -163,8 +173,20 @@ export class MockMUDServer extends EventEmitter {
 
   async start(): Promise<void> {
     return new Promise((resolve, reject) => {
-      this.server = net.createServer((socket) => {
-        this.handleConnection(socket);
+      this.server = this.config.tls
+        ? tls.createServer(this.config.tls, (socket) => {
+            this.handleConnection(socket);
+          })
+        : net.createServer((socket) => {
+            this.handleConnection(socket);
+          });
+
+      // Counted on the raw TCP accept rather than inside handleConnection, so
+      // a TLS probe that never reaches secureConnection is still visible. That
+      // is exactly what a prefer-mode downgrade looks like from here: two
+      // accepts, one of which produced no client.
+      this.server.on('connection', () => {
+        this.acceptedConnectionCount += 1;
       });
 
       this.server.on('error', (err) => {
@@ -207,7 +229,6 @@ export class MockMUDServer extends EventEmitter {
   }
 
   private handleConnection(socket: net.Socket): void {
-    this.acceptedConnectionCount += 1;
     const clientId = `${socket.remoteAddress}:${socket.remotePort}`;
     console.log(`[MockMUD] Client connected: ${clientId}`);
 

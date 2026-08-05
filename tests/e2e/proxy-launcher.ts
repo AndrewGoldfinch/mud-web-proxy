@@ -23,6 +23,12 @@ export interface ProxyConfig {
   TN_HOST?: string;
   TN_PORT?: string;
   MUD_TLS_MODE?: string;
+  /**
+   * Node runtime mechanism, not a proxy setting: it makes the spawned child
+   * trust a test CA so a real TLS round trip can be asserted without
+   * disabling certificate verification anywhere in production code.
+   */
+  NODE_EXTRA_CA_CERTS?: string;
   AUTH_MODE?: string;
   PROXY_SHARED_SECRET?: string;
   MAX_MESSAGES_PER_SECOND?: string;
@@ -68,6 +74,9 @@ export async function startTestProxy(
         AUTH_MODE: extraEnv?.AUTH_MODE || 'none',
         ...(extraEnv?.PROXY_SHARED_SECRET
           ? { PROXY_SHARED_SECRET: extraEnv.PROXY_SHARED_SECRET }
+          : {}),
+        ...(extraEnv?.NODE_EXTRA_CA_CERTS
+          ? { NODE_EXTRA_CA_CERTS: extraEnv.NODE_EXTRA_CA_CERTS }
           : {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
