@@ -217,6 +217,8 @@ Everything else is set through the environment:
 
 This table is not exhaustive. Every variable — target policy, authentication, origin checks, trusted proxies, session limits, diagnostics, and the optional Apple features — is documented in the [configuration reference](docs/configuration.md), which CI keeps in step with `src/runtime-config.ts`. [`.env.example`](.env.example) carries the same settings as commented, copyable defaults.
 
+Once it is running, the [operations guide](docs/operations.md) covers health checks, logs, certificate renewal, upgrades, backup and restore, and a troubleshooting entry for every startup error the proxy can refuse to start with.
+
 Probably you will only have to set:
 
 - `TN_HOST` to your hostname (Note that `localhost` or `127.0.0.1` don't seem to work: [see conversation here](https://github.com/maldorne/mud-web-proxy/issues/5#issuecomment-866464161), although it has not been tested in deep).
