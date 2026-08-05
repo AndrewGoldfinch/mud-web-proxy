@@ -183,6 +183,11 @@ How to install the certificates is beyond the scope of this project, but you cou
 
 Configuration is environment-driven. Every setting is read once, at startup, in `src/runtime-config.ts`, and an invalid or retired value aborts the process rather than being ignored.
 
+Read the [security model and threat model](docs/security.md) before changing
+target policy, authentication, trusted-proxy, TLS, or resource-limit settings;
+it explains which protections each default provides and what loosening it
+exposes.
+
 The `srv` object in `wsproxy.ts` is populated from that parsed config, so editing values like `ws_port` or `tn_host` there has no effect — they are overwritten on every start. Two literals in `srv` are genuinely source-only, because nothing reads an environment variable for them:
 
 ```typescript
