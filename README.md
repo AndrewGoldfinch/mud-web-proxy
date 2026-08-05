@@ -140,15 +140,16 @@ commented, copyable defaults.
 
 ## Documentation
 
-| Document                                                | Covers                                                                   |
-| ------------------------------------------------------- | ------------------------------------------------------------------------ |
-| [Security model](docs/security.md)                      | Threat model, target policy, trust boundaries, and known limitations     |
-| [Operations](docs/operations.md)                        | Health, logs, certificate renewal, upgrades, backup, and troubleshooting |
-| [Configuration reference](docs/configuration.md)        | Every variable, its type, default, and when it is required               |
-| [Client protocols](docs/protocols.md)                   | The wire contract for both protocols, for client authors                 |
-| [Docker Compose deployment](docs/deployment/compose.md) | The container path in full                                               |
-| [Native systemd deployment](docs/deployment/systemd.md) | The single-VM path in full                                               |
-| [Published images](docs/deployment/images.md)           | Tag policy, digest pinning, and provenance verification                  |
+| Document                                                | Covers                                                                     |
+| ------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [Security model](docs/security.md)                      | Threat model, target policy, trust boundaries, and known limitations       |
+| [Operations](docs/operations.md)                        | Health, logs, certificate renewal, upgrades, backup, and troubleshooting   |
+| [Configuration reference](docs/configuration.md)        | Every variable, its type, default, and when it is required                 |
+| [Client protocols](docs/protocols.md)                   | The wire contract for both protocols, for client authors                   |
+| [App Attest and push](docs/app-attest-and-push.md)      | The optional Apple features: what they send, what they store, how to purge |
+| [Docker Compose deployment](docs/deployment/compose.md) | The container path in full                                                 |
+| [Native systemd deployment](docs/deployment/systemd.md) | The single-VM path in full                                                 |
+| [Published images](docs/deployment/images.md)           | Tag policy, digest pinning, and provenance verification                    |
 
 Every startup error the proxy can refuse to start with has a troubleshooting
 entry in the operations guide, and a CI gate keeps that true.
