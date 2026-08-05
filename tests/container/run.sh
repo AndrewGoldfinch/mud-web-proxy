@@ -80,7 +80,16 @@ if docker volume inspect "${STATE_VOLUME}" >/dev/null 2>&1; then
   fail "refusing to reuse existing volume ${STATE_VOLUME}"
 fi
 
-docker build --pull --tag "${IMAGE}" "${REPO_ROOT}"
+# Platform is overridable so CI can build amd64 on pull requests and both
+# architectures on tags. Unset means the host architecture, which keeps local
+# runs fast — arm64 under QEMU costs minutes, not seconds.
+if [[ -n "${MWP_BUILD_PLATFORMS:-}" ]]; then
+  docker buildx build --pull --load \
+    --platform "${MWP_BUILD_PLATFORMS}" \
+    --tag "${IMAGE}" "${REPO_ROOT}"
+else
+  docker build --pull --tag "${IMAGE}" "${REPO_ROOT}"
+fi
 
 [[ "$(docker image inspect "${IMAGE}" --format '{{.Config.User}}')" == '10001:10001' ]]
 [[ "$(docker image inspect "${IMAGE}" --format '{{json .Config.Entrypoint}}')" == '["bun","dist/wsproxy.js"]' ]]
