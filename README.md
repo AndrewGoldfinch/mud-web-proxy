@@ -91,6 +91,10 @@ loopback, with Caddy on the host in front of it.
 Install the two prerequisites:
 
 ```bash
+# unzip first — a clean Ubuntu image has no unzip, and without it the Bun
+# installer aborts with "error: unzip is required to install bun"
+sudo apt update && sudo apt install -y unzip
+
 # The pinned Bun release
 curl -fsSL https://bun.com/install | bash -s "bun-v1.3.14"
 
