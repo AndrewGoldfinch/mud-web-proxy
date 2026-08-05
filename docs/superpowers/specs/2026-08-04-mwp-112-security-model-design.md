@@ -100,12 +100,16 @@ with the implementation.
    heartbeat, challenge, and state-store bounds by threat class rather than
    restating every configuration row.
 7. **TLS boundaries** — separates client-to-proxy TLS from proxy-to-MUD TLS and
-   states the behavior of `plain`, `prefer`, and `required` modes.
+   states the behavior of `plain`, `prefer`, and `required` modes, including
+   the four conditions under which `prefer` downgrades, the fact that one of
+   them is ordinary certificate-validation failure, and that the mode governs
+   both wire protocols identically.
 8. **In-scope and out-of-scope threats** — states what the built-in controls
    mitigate and which protections require deployment infrastructure or the
    client application.
 9. **Known limitations and residual risks** — names accepted risks explicitly,
-   including downgradeable preferred TLS, bearer-secret handling, experimental
+   including downgradeable preferred TLS, the absence of any upstream
+   certificate-trust configuration, bearer-secret handling, experimental
    App Attest, malicious MUD output, and availability limits.
 10. **Evidence and regression-coverage ledger** — maps each claim to current
     source and tests and identifies Phase 4 gaps.
@@ -144,7 +148,21 @@ The final document must preserve these distinctions:
   identify individual users.
 - `TARGET_MODE=arbitrary` is authenticated and port-bounded, but intentionally
   permits client-selected destinations.
-- `MUD_TLS_MODE=prefer` is downgradeable; `required` fails closed.
+- `MUD_TLS_MODE=prefer` is downgradeable; `required` fails closed. The
+  document must enumerate all four `prefer` downgrade triggers — a classified
+  TLS negotiation error, the peer closing during the handshake, the
+  four-second handshake deadline expiring, and certificate validation failure
+  — and must say plainly that the last of these covers the untrusted and
+  self-signed certificates that most MUDs present. Stating only "falls back
+  when the MUD does not speak TLS" would understate the exposure in the
+  direction that matters.
+- Since MWP-135 the mode governs typed and legacy connections identically,
+  through one shared transport. The document must not describe upstream TLS
+  as a property of the typed protocol; that was true before v4 shipped and is
+  the defect MWP-134 and MWP-135 closed.
+- `required` refuses plaintext under every one of those triggers, including
+  the handshake deadline, and there is no configuration that relaxes it for a
+  single target.
 - App Attest is experimental and has not received an independent security
   review.
 - Resource limits bound specific exhaustion paths; they do not make the
@@ -160,6 +178,12 @@ The prose must also avoid implying that:
   also does so;
 - a process-level limit replaces host, reverse-proxy, or network-level
   controls;
+- `MUD_TLS_MODE=required` is a practical setting for an arbitrary MUD. There
+  is no custom-CA, certificate-pinning, or `rejectUnauthorized` setting, so it
+  succeeds only against certificates the runtime CA store already trusts —
+  which few MUDs have. `NODE_EXTRA_CA_CERTS` is a Node runtime mechanism the
+  operator may apply to the process; it is not a feature of this proxy and
+  must not be presented as one;
 - App Attest is required or enabled in the default deployment.
 
 ## Threat-model boundaries

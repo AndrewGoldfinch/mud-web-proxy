@@ -32,7 +32,17 @@ repository quality gates, Linear issue comments for cross-ticket handoff.
   identify individual users.
 - `TARGET_MODE=arbitrary` is authenticated and port-bounded, but intentionally
   permits client-selected destinations.
-- `MUD_TLS_MODE=prefer` is downgradeable; `required` fails closed.
+- `MUD_TLS_MODE=prefer` is downgradeable; `required` fails closed. Enumerate
+  all four `prefer` downgrade triggers — classified TLS negotiation error,
+  peer close during the handshake, the four-second handshake deadline, and
+  certificate validation failure — and say plainly that the last covers the
+  untrusted and self-signed certificates most MUDs present.
+- Since MWP-135 the mode governs typed and legacy connections identically
+  through one shared transport; do not describe upstream TLS as a typed-protocol
+  property.
+- `required` has no per-target relaxation and no custom-CA, pinning, or
+  `rejectUnauthorized` setting, so it works only against runtime-trusted
+  certificates.
 - App Attest is experimental and has not received an independent security
   review.
 - Resource limits bound specific exhaustion paths; they do not make the service
@@ -54,6 +64,7 @@ repository quality gates, Linear issue comments for cross-ticket handoff.
 - Read: `src/session-integration.ts`
 - Read: `src/session-manager.ts`
 - Read: `src/session.ts`
+- Read: `src/mud-transport.ts`
 - Read: `src/message-rate-limit.ts`
 - Read: `src/heartbeat.ts`
 - Read: `src/telnet-parser.ts`
@@ -82,6 +93,9 @@ Run these read-only searches from the worktree root:
 ```bash
 rg -n 'TARGET_MODE|ALLOWED_TARGETS|ARBITRARY_ALLOWED_PORTS|MUD_TLS_MODE' \
   src/runtime-config.ts src/target-policy.ts src/session-integration.ts
+# MWP-135 moved every TLS decision here; the mode is only read elsewhere.
+rg -n 'shouldAttemptTls|shouldFallBackToPlain|TLS_DIAGNOSTICS|TLS_HANDSHAKE_TIMEOUT_MS|sniServerName' \
+  src/mud-transport.ts
 rg -n 'AUTH_MODE|PROXY_SHARED_SECRET|ALLOWED_ORIGINS|ALLOW_MISSING_ORIGIN' \
   src/runtime-config.ts src/wsproxy-utils.ts wsproxy.ts
 rg -n 'TRUSTED_PROXY_CIDRS|resolveClientAddress|isTrustedPeer' \
@@ -170,23 +184,23 @@ claims:
 For each default with a security consequence, explain both its rationale and
 the consequence of loosening it. Cover at least this inventory:
 
-| Default                                                          | Required rationale                                                                                                                      |
-| ---------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
-| `BIND_HOST=127.0.0.1`                                            | Keeps the application listener off public interfaces in the supported edge-termination topology.                                        |
-| `INBOUND_TLS_MODE=required`                                      | Prevents silent plaintext when the application is exposed directly; non-loopback plaintext needs explicit acknowledgement.              |
-| `TARGET_MODE=fixed`                                              | Prevents the default installation from becoming a general outbound relay.                                                               |
-| `MUD_TLS_MODE=prefer`                                            | Preserves compatibility while still attempting TLS, but accepts an active downgrade risk; use `required` to refuse that risk.           |
-| `AUTH_MODE=none`                                                 | Does not protect access; it is tolerable only when target and network exposure are otherwise intentionally constrained.                 |
-| `AUTH_ALLOW_QUERY_SECRET=false`                                  | Keeps the bearer secret out of URLs and common access-log/referrer paths.                                                               |
-| empty `ALLOWED_ORIGINS`                                          | Applies no Origin restriction for compatibility; browser deployments should configure exact origins.                                    |
-| `ALLOW_MISSING_ORIGIN=false`                                     | Prevents a configured Origin policy from being bypassed by simply omitting the header; native-client support is an explicit relaxation. |
-| `TRUSTED_PROXY_CIDRS=false`                                      | Ignores client-spoofable forwarding headers by default.                                                                                 |
-| session defaults `5` per device, `10` per IP, no global cap      | Bounds common per-client abuse while preserving compatibility; production operators should set the global cap to match host capacity.   |
-| message defaults `60` per connection and `240` per IP            | Sit above human/client traffic while bounding frame floods across one or several connections.                                           |
-| `MAX_SUBNEGOTIATION_BYTES=65536` and `OUTPUT_BUFFER_BYTES=51200` | Bound per-session memory while retaining legitimate MUD protocol payloads and resume history.                                           |
-| heartbeat enabled at `30000`/`90000` ms                          | Reclaims dead sockets while tolerating missed pings.                                                                                    |
-| diagnostics disabled                                             | Avoids exposing operational state unless explicitly enabled and bearer-authorized.                                                      |
-| App Attest and APNS disabled                                     | Avoids experimental verification and Apple-bound device data unless explicitly configured.                                              |
+| Default                                                          | Required rationale                                                                                                                                                                                                                                                                                                                               |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `BIND_HOST=127.0.0.1`                                            | Keeps the application listener off public interfaces in the supported edge-termination topology.                                                                                                                                                                                                                                                 |
+| `INBOUND_TLS_MODE=required`                                      | Prevents silent plaintext when the application is exposed directly; non-loopback plaintext needs explicit acknowledgement.                                                                                                                                                                                                                       |
+| `TARGET_MODE=fixed`                                              | Prevents the default installation from becoming a general outbound relay.                                                                                                                                                                                                                                                                        |
+| `MUD_TLS_MODE=prefer`                                            | Preserves compatibility while still attempting TLS, but downgrades on negotiation failure, peer close, handshake-deadline expiry, or certificate validation failure — the last covering the self-signed certificates most MUDs present. `required` refuses every one of those, at the cost of only working against runtime-trusted certificates. |
+| `AUTH_MODE=none`                                                 | Does not protect access; it is tolerable only when target and network exposure are otherwise intentionally constrained.                                                                                                                                                                                                                          |
+| `AUTH_ALLOW_QUERY_SECRET=false`                                  | Keeps the bearer secret out of URLs and common access-log/referrer paths.                                                                                                                                                                                                                                                                        |
+| empty `ALLOWED_ORIGINS`                                          | Applies no Origin restriction for compatibility; browser deployments should configure exact origins.                                                                                                                                                                                                                                             |
+| `ALLOW_MISSING_ORIGIN=false`                                     | Prevents a configured Origin policy from being bypassed by simply omitting the header; native-client support is an explicit relaxation.                                                                                                                                                                                                          |
+| `TRUSTED_PROXY_CIDRS=false`                                      | Ignores client-spoofable forwarding headers by default.                                                                                                                                                                                                                                                                                          |
+| session defaults `5` per device, `10` per IP, no global cap      | Bounds common per-client abuse while preserving compatibility; production operators should set the global cap to match host capacity.                                                                                                                                                                                                            |
+| message defaults `60` per connection and `240` per IP            | Sit above human/client traffic while bounding frame floods across one or several connections.                                                                                                                                                                                                                                                    |
+| `MAX_SUBNEGOTIATION_BYTES=65536` and `OUTPUT_BUFFER_BYTES=51200` | Bound per-session memory while retaining legitimate MUD protocol payloads and resume history.                                                                                                                                                                                                                                                    |
+| heartbeat enabled at `30000`/`90000` ms                          | Reclaims dead sockets while tolerating missed pings.                                                                                                                                                                                                                                                                                             |
+| diagnostics disabled                                             | Avoids exposing operational state unless explicitly enabled and bearer-authorized.                                                                                                                                                                                                                                                               |
+| App Attest and APNS disabled                                     | Avoids experimental verification and Apple-bound device data unless explicitly configured.                                                                                                                                                                                                                                                       |
 
 - [ ] **Step 4: State the threat model and limitations without marketing language**
 
