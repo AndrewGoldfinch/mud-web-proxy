@@ -148,6 +148,45 @@ describe('arbitrary mode resolves before dialling', () => {
     expect(dialled).toBe('203.0.113.10');
   });
 
+  /**
+   * The rebinding guard is "resolve once, dial that answer". The test above
+   * proves the dial uses what the resolver returned, but its resolver returns
+   * the same address every time — so a regression that re-resolved immediately
+   * before dialling would return the same constant and still pass.
+   *
+   * This one makes re-resolution observable two ways: the second answer is a
+   * different address, and the call count is asserted. Either alone would
+   * catch it; both together say why it matters.
+   */
+  test('resolves exactly once and never re-resolves before dialling', async () => {
+    let calls = 0;
+    const answers = ['203.0.113.10', '203.0.113.99'];
+    const si = build(ARBITRARY, async () => ({
+      allowed: true,
+      address: answers[Math.min(calls++, answers.length - 1)],
+    }));
+
+    let dialled: string | undefined;
+    const originalCreate = si.sessionManager.create.bind(si.sessionManager);
+    si.sessionManager.create = ((...args: unknown[]) => {
+      const session = originalCreate(
+        ...(args as Parameters<typeof originalCreate>),
+      );
+      dialled = session.dialAddress;
+      return session;
+    }) as typeof si.sessionManager.create;
+
+    const socket = makeSocket();
+    connect(si, socket, 'rebind.example', 4000);
+    await Bun.sleep(10);
+
+    // The first answer, and only the first answer, may be dialled.
+    expect(dialled).toBe('203.0.113.10');
+    expect(dialled).not.toBe('203.0.113.99');
+    // A second resolution is the rebinding hole even if the answer matched.
+    expect(calls).toBe(1);
+  });
+
   test('rejects a port outside the range before resolving at all', async () => {
     let called = false;
     const si = build(ARBITRARY, async () => {

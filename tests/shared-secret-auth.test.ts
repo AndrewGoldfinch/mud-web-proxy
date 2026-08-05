@@ -7,6 +7,9 @@
  */
 
 import { describe, expect, test } from 'bun:test';
+import { readFileSync } from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import {
   FailedAuthLimiter,
   authorizeSharedSecret,
@@ -288,5 +291,60 @@ describe('a blocked source must not lock out valid credentials', () => {
     );
     expect(result.authorized).toBe(false);
     expect(limiter.isBlocked('203.0.113.7')).toBe(true);
+  });
+});
+
+/**
+ * Pins the comparison primitive itself.
+ *
+ * Every other assertion in this file is about correctness: a wrong secret is
+ * rejected. None of them distinguish `timingSafeEqual` from `===`, so swapping
+ * the primitive passes the whole suite and the timing property disappears
+ * silently. MWP-112's evidence ledger recorded that as an uncovered claim.
+ *
+ * A real timing measurement is not stable in CI. Asserting over the source is
+ * the achievable form: it proves the constant-time primitive is on the
+ * comparison path, not that the path is measurably constant-time.
+ */
+describe('secret comparison is constant-time', () => {
+  const source = readFileSync(
+    path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      'src',
+      'wsproxy-utils.ts',
+    ),
+    'utf8',
+  );
+
+  const secretsMatch = source.slice(
+    source.indexOf('const secretsMatch'),
+    source.indexOf('const secretsMatch') === -1
+      ? 0
+      : source.indexOf('};', source.indexOf('const secretsMatch')) + 2,
+  );
+
+  test('the comparison helper exists and is found by this test', () => {
+    // Guards the two assertions below: if the helper is renamed, an empty
+    // slice would make them vacuously pass.
+    expect(secretsMatch.length).toBeGreaterThan(80);
+    expect(secretsMatch).toContain('a.length !== b.length');
+  });
+
+  test('it calls timingSafeEqual', () => {
+    expect(secretsMatch).toContain('timingSafeEqual(a, b)');
+  });
+
+  test('it does not compare the secrets with a short-circuiting operator', () => {
+    // `a.length !== b.length` is legitimate — the length is not secret and
+    // timingSafeEqual throws on a mismatch. Comparing the values is not.
+    expect(secretsMatch).not.toMatch(/\b(supplied|a)\s*===\s*(expected|b)\b/);
+    expect(secretsMatch).not.toMatch(/\bexpected\s*===\s*supplied\b/);
+  });
+
+  test('timingSafeEqual is imported from crypto', () => {
+    expect(source).toMatch(
+      /import\s*\{[^}]*timingSafeEqual[^}]*\}\s*from\s*'crypto'/,
+    );
   });
 });
