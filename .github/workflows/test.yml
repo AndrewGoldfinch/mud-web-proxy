@@ -53,10 +53,40 @@ jobs:
 
   container:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # QEMU only where arm64 is actually built. On pull requests this step is
+      # skipped and the job stays fast.
+      - uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        if: startsWith(github.ref, 'refs/tags/')
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
       - run: bash tests/container/run.sh
+        env:
+          # amd64 on pull requests; both architectures on tags, where
+          # release.yml publishes multi-arch. Catches Dockerfile breakage on
+          # every PR without paying QEMU cost on every push.
+          MWP_BUILD_PLATFORMS: >-
+            ${{ startsWith(github.ref, 'refs/tags/')
+                && 'linux/amd64,linux/arm64' || 'linux/amd64' }}
+
+  image-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash tests/container/scan.sh
+
+  compose-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version-file: .bun-version
+      - run: bun install --frozen-lockfile
+      - run: bash tests/compose/run.sh
 
   secret-scan:
     runs-on: ubuntu-latest

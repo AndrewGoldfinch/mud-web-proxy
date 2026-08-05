@@ -77,6 +77,8 @@ if ((FULL)); then
     [mock-e2e]="cmd:bun run test:e2e:mock"
     [dependency-scan]="cmd:bun run audit"
     [container]="docker:bash tests/container/run.sh"
+    [image-scan]="docker:bash tests/container/scan.sh"
+    [compose-e2e]="docker:bash tests/compose/run.sh"
     [secret-scan]="skip:gitleaks GitHub Action, no local invocation"
   )
 

@@ -1,0 +1,22 @@
+# Test override for the Caddy smoke test. Not for production use.
+#
+# Two things differ from the real stack, and only two:
+#
+#   * MWP_DOMAIN is localhost, which makes Caddy issue from its internal CA.
+#     A publicly trusted certificate needs public DNS, which CI does not have.
+#   * The proxy targets a mock MUD running on the host rather than a real one.
+#
+# Everything the test asserts — the forwarded-header configuration, the trusted
+# CIDR, the internal network, which ports are published — is inherited from
+# compose.yaml unchanged. Overriding any of those would make the test prove
+# something about this file instead of about the deployment.
+services:
+  proxy:
+    environment:
+      TN_HOST: host.docker.internal
+      TN_PORT: '6450'
+      TARGET_MODE: fixed
+      MUD_TLS_MODE: plain
+      LOG_LEVEL: info
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
