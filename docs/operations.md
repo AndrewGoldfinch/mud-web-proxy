@@ -53,7 +53,22 @@ that is a third topology and `INBOUND_TLS_MODE=required` applies to it.
 
 `version` is the package version of the running build — the one thing that
 tells you which release is actually live, as opposed to which one you think you
-deployed. Check it after every upgrade and every rollback.
+deployed. Check it after every upgrade and every rollback. Verified: swapping
+the `current` symlink and restarting moves this field, and rolling back moves
+it straight back.
+
+One caveat worth knowing. The value is **compiled into `dist/wsproxy.js` at
+build time**; it is not read from the release directory's name or its
+`package.json` at startup. For a properly released bundle those always agree,
+because the release workflow builds immediately before packaging. They can
+disagree if someone hand-assembles a release directory or repackages a stale
+`dist/` — and then `/health` will confidently report the wrong version. If the
+version looks wrong after an upgrade, check what is inside the bundle before
+suspecting the symlink:
+
+```bash
+grep -o '4\.0\.0[^"]*' /opt/mud-web-proxy/current/dist/wsproxy.js | head -1
+```
 
 The `503` appears the moment shutdown begins and persists through the drain, so
 a load balancer or uptime check sees the instance leave rotation before
@@ -220,6 +235,25 @@ tradeoff is stated in [`security.md`](security.md#resource-limits).
 Every setting is validated at startup and an invalid one aborts the process.
 Failures are reported together under a `Configuration errors:` header, so fix
 all listed lines before restarting rather than one at a time.
+
+**Two things will mislead you before you even read the message.**
+
+_The unit reports `activating`, not `failed`._ systemd restarts the service on
+failure, so it cycles rather than settling. `systemctl is-active` answering
+`activating` after a config change means the process is aborting and being
+restarted, not that it is slow to come up.
+
+_An unanchored `journalctl` shows you the previous attempt._ While the unit is
+restart-looping the journal holds every failed start, so `--since '1 min ago'`
+happily returns the error you already fixed and you conclude the fix did not
+work. Anchor to one invocation:
+
+```bash
+systemctl stop mud-web-proxy
+CUR=$(journalctl -u mud-web-proxy -n 0 --show-cursor -q | sed -n 's/^-- cursor: //p')
+systemctl start mud-web-proxy; sleep 3
+journalctl -u mud-web-proxy --after-cursor "$CUR" -o cat
+```
 
 Each message below is the literal text the process prints.
 
