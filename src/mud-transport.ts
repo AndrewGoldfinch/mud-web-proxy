@@ -85,6 +85,22 @@ export const sniServerName = (host: string): string | undefined => {
   return host;
 };
 
+/**
+ * The message to log for a dial that failed before handoff.
+ *
+ * `required` mode deliberately replaces the underlying error with stable
+ * policy text, so the player never sees a Node TLS diagnostic. That text alone
+ * cannot be debugged — "TLS connection failed" reads identically for a refused
+ * port and for an expired certificate — so the operator log gets both. The
+ * client-facing message stays the policy text.
+ */
+export const describeTransportError = (err: unknown): string => {
+  const error = err instanceof Error ? err : new Error(String(err));
+  return error.cause instanceof Error
+    ? `${error.message} (${error.cause.message})`
+    : error.message;
+};
+
 export const connectMudTransport = (
   options: MudTransportOptions,
 ): Promise<void> => {

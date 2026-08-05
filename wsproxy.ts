@@ -79,7 +79,10 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import os from 'os';
 import { version as packageVersion } from './package.json';
 import { SessionIntegration } from './src/session-integration';
-import { connectMudTransport } from './src/mud-transport';
+import {
+  connectMudTransport,
+  describeTransportError,
+} from './src/mud-transport';
 import { HeartbeatMonitor } from './src/heartbeat';
 import { ShutdownCoordinator } from './src/shutdown';
 import { MessageRateLimiter } from './src/message-rate-limit';
@@ -2515,7 +2518,12 @@ const srv: ServerConfig = {
         s.pendingMudTransport = undefined;
       }
       const error = err instanceof Error ? err : new Error(String(err));
-      srv.logError(`telnet error: ${error.toString()}`, s, 'telnet');
+      // The log carries the underlying cause; the player gets the stable text.
+      srv.logError(
+        `telnet error: ${describeTransportError(error)}`,
+        s,
+        'telnet',
+      );
       const message =
         runtimeConfig.mudTlsMode === 'required'
           ? error.message

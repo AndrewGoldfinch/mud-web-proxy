@@ -4,6 +4,7 @@ import net from 'net';
 import tls from 'tls';
 import {
   connectMudTransport,
+  describeTransportError,
   type ConnectedMudTransport,
 } from '../src/mud-transport.js';
 import type { TelnetSocket } from '../src/types/index.js';
@@ -877,5 +878,38 @@ describe('connectMudTransport abort and callback ownership', () => {
     expect(tlsSocket.destroyCalls).toBe(0);
     expect(connected).toHaveLength(1);
     expect(downgrades).toEqual([]);
+  });
+});
+
+describe('describeTransportError', () => {
+  // required mode replaces the underlying error with stable policy text so the
+  // player never sees a Node TLS diagnostic. That text alone cannot be
+  // debugged: "TLS connection failed" reads identically for a refused port and
+  // for an expired certificate. The log has to carry both.
+  test('appends the cause when a policy error wraps one', () => {
+    const cause = new Error('connect ECONNREFUSED 127.0.0.1:4000');
+    const wrapped = new Error(
+      'MUD_TLS_MODE=required: TLS connection failed and plaintext fallback is not permitted.',
+      { cause },
+    );
+
+    expect(describeTransportError(wrapped)).toBe(
+      'MUD_TLS_MODE=required: TLS connection failed and plaintext fallback is not permitted. (connect ECONNREFUSED 127.0.0.1:4000)',
+    );
+  });
+
+  test('returns the message alone when there is no cause', () => {
+    expect(describeTransportError(new Error('plain failure'))).toBe(
+      'plain failure',
+    );
+  });
+
+  test('ignores a non-Error cause rather than printing [object Object]', () => {
+    const wrapped = new Error('policy text', { cause: { code: 'NOPE' } });
+    expect(describeTransportError(wrapped)).toBe('policy text');
+  });
+
+  test('accepts a thrown non-Error', () => {
+    expect(describeTransportError('just a string')).toBe('just a string');
   });
 });

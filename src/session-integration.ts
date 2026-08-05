@@ -23,6 +23,7 @@ import type {
   SessionLimitsConfig,
   TelnetLimitsConfig,
 } from './runtime-config';
+import { describeTransportError } from './mud-transport';
 import { resolveSocketAddress } from './wsproxy-utils';
 import { neutralizeControlSequences } from './log-redaction';
 import { withDefaults } from './with-defaults';
@@ -623,7 +624,12 @@ export class SessionIntegration {
       // The dial failed, so nothing was counted as established — release the
       // reservation here or it is capacity that never returns until restart.
       this.sessionManager.releasePendingDial(ip);
-      this.log(`connect failed: ${(err as Error).message}`, ip, session.id);
+      // The log carries the underlying cause; the client gets the stable text.
+      this.log(
+        `connect failed: ${describeTransportError(err)}`,
+        ip,
+        session.id,
+      );
       this.sendError(socket, 'connection_failed', (err as Error).message);
       this.removeSessionAndCleanup(session.id);
     }
