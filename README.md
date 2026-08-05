@@ -152,6 +152,15 @@ commented, copyable defaults.
 Every startup error the proxy can refuse to start with has a troubleshooting
 entry in the operations guide, and a CI gate keeps that true.
 
+For reporting and contributing:
+
+| Document                        | Covers                                                                        |
+| ------------------------------- | ----------------------------------------------------------------------------- |
+| [Security policy](SECURITY.md)  | How to report a vulnerability privately, response windows, and scope          |
+| [Support](SUPPORT.md)           | Where questions, bugs, and security findings each go, and what is unsupported |
+| [Contributing](CONTRIBUTING.md) | Development setup, the checks to run, conventions, and licensing              |
+| [Changelog](CHANGELOG.md)       | What changed in each release, including every retired configuration variable  |
+
 ## Project lineage
 
 This project is a fork of
