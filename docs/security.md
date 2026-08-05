@@ -313,7 +313,9 @@ nothing in the application substitutes for a correctly configured edge.
   mechanism an operator may apply to the process; it is not a feature of this
   proxy and is not tested as one.
 - **App Attest is experimental and unreviewed.** Pair it with shared-secret
-  authentication rather than relying on it alone.
+  authentication rather than relying on it alone. What it and APNS send, store,
+  and retain — and how to purge it — is in
+  [App Attest and push](app-attest-and-push.md).
 - **Untrusted MUD output is relayed verbatim** and must be rendered safely by
   the client.
 - **No global session cap by default.** Per-IP limits do not bound a
