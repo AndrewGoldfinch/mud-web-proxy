@@ -57,6 +57,7 @@ run_gate "check:bun-version" bun run check:bun-version
 run_gate "install (frozen lockfile)" bun install --frozen-lockfile
 run_gate "format" bun run format
 run_gate "check:config-docs" bun run check:config-docs
+run_gate "check:ops-docs" bun run check:ops-docs
 run_gate "check:defect-classes" bun run check:defect-classes
 run_gate "typecheck" bun run typecheck
 run_gate "lint" bun run lint
