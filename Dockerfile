@@ -23,6 +23,28 @@ FROM base AS runtime
 ENV NODE_ENV=production \
     ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
 
+# Patch the base image's packages ahead of upstream.
+#
+# oven/bun:1.3.14 ships packages that carry HIGH findings with fixes already
+# published by Debian — CVE-2026-45447 in libssl3t64 (heap use-after-free in
+# PKCS7_verify) and CVE-2026-4878 in libcap2 (privilege escalation via a
+# TOCTOU race in cap_set_file), at the time of writing. Upstream has not
+# rebuilt, and the digest pinned above is still what the tag resolves to, so
+# there is no newer base to move to.
+#
+# This started as `--only-upgrade libssl3t64`, and the scanner immediately
+# surfaced the next package behind it. A per-package list needs editing every
+# time that happens, which is the maintenance burden that gets security gates
+# switched off. Upgrading everything with a published fix is the version that
+# stays correct without attention.
+#
+# The cost is strict reproducibility: this layer changes as Debian publishes.
+# That is the accepted trade for not shipping known HIGHs that are already
+# fixed in the archive. `tests/container/scan.sh` is what keeps it honest.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN groupadd --gid 10001 mwp \
     && useradd --uid 10001 --gid 10001 --no-create-home \
       --home-dir /nonexistent --shell /usr/sbin/nologin mwp \
