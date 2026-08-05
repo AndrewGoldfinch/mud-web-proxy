@@ -434,21 +434,44 @@ export class SessionIntegration {
       const resolve = this.config.resolveTarget ?? resolveTargetAddress;
       const host = target.host;
       const port = target.port;
-      return resolve(host).then((resolved) => {
-        if (!resolved.allowed || !resolved.address) {
+      return resolve(host).then(
+        (resolved) => {
+          if (!resolved.allowed || !resolved.address) {
+            this.sessionManager.releasePendingDial(ip);
+            const reason =
+              resolved.reason || 'Target address is not permitted';
+            this.log(`connect rejected: ${reason}`, ip);
+            return { allowed: false, code: 'invalid_request', reason };
+          }
+          return {
+            allowed: true,
+            host,
+            port,
+            dialAddress: resolved.address,
+            ip,
+          };
+        },
+        // The reservation above is released on every other path out of this
+        // function, and a rejection must not be the exception: neither caller
+        // can release it, because neither has the IP this reserved under.
+        // `resolveTargetAddress` turns DNS failures into denied decisions and
+        // never rejects, so this only fires for an injected or future
+        // resolver — but a leaked reservation is capacity that never returns
+        // (MWP-92), so it fails closed as a denial rather than propagating.
+        //
+        // A rejection handler rather than a trailing `.catch`: `.catch` would
+        // also see a throw from the fulfilment handler above, which has
+        // already released, and release a second time.
+        (err: unknown) => {
           this.sessionManager.releasePendingDial(ip);
-          const reason = resolved.reason || 'Target address is not permitted';
-          this.log(`connect rejected: ${reason}`, ip);
+          const reason = 'Target hostname could not be resolved';
+          this.log(
+            `connect rejected: ${reason} (${(err as Error).message})`,
+            ip,
+          );
           return { allowed: false, code: 'invalid_request', reason };
-        }
-        return {
-          allowed: true,
-          host,
-          port,
-          dialAddress: resolved.address,
-          ip,
-        };
-      });
+        },
+      );
     }
 
     return {

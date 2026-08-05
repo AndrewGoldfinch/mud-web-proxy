@@ -212,3 +212,41 @@ describe('other modes do not resolve', () => {
     expect(findMsg(socket, 'session')).toBeDefined();
   });
 });
+
+describe('a rejecting resolver releases the reservation', () => {
+  // The reservation is taken before resolution and released on every other
+  // path out of authorizeConnect — its own comment says so. A rejecting
+  // resolver was the one exception: the rejection propagated past the release
+  // in the fulfilment handler, leaving capacity that never returns (MWP-92).
+  // Neither caller can clean up after it. openTelnetSession does not catch at
+  // all, and openLegacyConnection's catch has no IP to release with.
+  test('denies the connect rather than rejecting, holding no pending dial', async () => {
+    const si = build(ARBITRARY, async () => {
+      throw new Error('resolver exploded');
+    });
+
+    const socket = makeSocket();
+    const decision = await si.authorizeConnect(socket, {
+      host: 'good.example',
+      port: 4000,
+    });
+
+    expect(decision.allowed).toBe(false);
+    expect(si.sessionManager.pendingDials('127.0.0.1')).toBe(0);
+  });
+
+  test('a resolver that throws does not leak capacity across retries', async () => {
+    const si = build(ARBITRARY, async () => {
+      throw new Error('resolver exploded');
+    });
+
+    const socket = makeSocket();
+    for (let i = 0; i < 5; i++) {
+      await si.authorizeConnect(socket, { host: 'good.example', port: 4000 });
+    }
+
+    // A leak is cumulative: five failed dials would exhaust a real per-IP
+    // quota permanently, which is what makes this worse than a lost connect.
+    expect(si.sessionManager.pendingDials('127.0.0.1')).toBe(0);
+  });
+});
