@@ -13,7 +13,7 @@
  */
 
 import { describe, expect, test } from 'bun:test';
-import { sniServerName } from '../src/session.js';
+import { sniServerName } from '../src/mud-transport.js';
 
 describe('sniServerName', () => {
   test('returns a hostname unchanged', () => {

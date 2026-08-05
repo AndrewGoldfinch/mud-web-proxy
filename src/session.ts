@@ -10,12 +10,10 @@
  * - Device token for push notifications
  */
 
-import net from 'net';
-import tls from 'tls';
 import crypto from 'crypto';
 import { WebSocket } from 'ws';
 import type { MudTlsMode } from './runtime-config';
-import { parseIPv4 } from './wsproxy-utils';
+import { connectMudTransport } from './mud-transport';
 import type {
   BufferChunk,
   ProcessedData,
@@ -25,116 +23,6 @@ import type {
 } from './types';
 import { CircularBuffer } from './circular-buffer';
 import { TelnetParser } from './telnet-parser';
-
-/**
- * The value to present as TLS SNI, or undefined when there is none.
- *
- * Node rejects an IP address outright ("Setting the TLS ServerName to an IP
- * address is not permitted"), so a target given as a literal must be dialled
- * without SNI rather than with its own address.
- */
-export type TlsFallbackTrigger = 'error' | 'close';
-
-/**
- * Is this error evidence that the peer does not speak TLS, as opposed to a
- * transport problem?
- *
- * Fails closed: an error we cannot classify is not evidence of plaintext, so
- * it is not grounds to retry without encryption.
- */
-/**
- * Node reports a peer closing during the TLS handshake as an *error* carrying
- * ECONNRESET, not as a close event. It is the primary signal that a MUD does
- * not speak TLS, so it has to be recognized before transport codes are used
- * to rule an error out.
- */
-const TLS_HANDSHAKE_CLOSE =
-  /socket disconnected before secure tls connection was established/;
-
-/**
- * Diagnostics that only a TLS stack produces. Deliberately specific: matching
- * a bare "tls" or "ssl" substring also matches the *hostname* in messages like
- * `getaddrinfo ENOTFOUND ssl.example.org`, which would turn a DNS failure into
- * grounds for a plaintext retry.
- */
-const TLS_DIAGNOSTICS = [
-  'wrong version number',
-  'packet length',
-  'unable to verify',
-  'certificate',
-  'ssl routines',
-  'tls_process',
-  'tlsv1',
-  'sslv3',
-  'alert handshake failure',
-  'unsupported protocol',
-  'no cipher',
-  'decryption failed',
-  'bad record mac',
-];
-
-/** Transport failures: the host is unreachable, not asking for cleartext. */
-const TRANSPORT_CODES = new Set([
-  'ECONNREFUSED',
-  'ECONNRESET',
-  'ETIMEDOUT',
-  'ENOTFOUND',
-  'EAI_AGAIN',
-  'EHOSTUNREACH',
-  'ENETUNREACH',
-]);
-
-/**
- * Is this error evidence that the peer does not speak TLS, as opposed to a
- * transport problem?
- *
- * Fails closed: an error we cannot classify is not evidence of plaintext, so
- * it is not grounds to retry without encryption.
- */
-export const isTlsNegotiationError = (err: Error): boolean => {
-  const msg = err.message.toLowerCase();
-
-  // The one transport-coded error that genuinely is a TLS signal.
-  if (TLS_HANDSHAKE_CLOSE.test(msg)) return true;
-
-  // Otherwise a transport code settles it, before any substring matching can
-  // be fooled by a hostname.
-  const code = (err as NodeJS.ErrnoException).code;
-  if (code && TRANSPORT_CODES.has(code)) return false;
-
-  return TLS_DIAGNOSTICS.some((pattern) => msg.includes(pattern));
-};
-
-/** Should a TLS connection be attempted at all? */
-export const shouldAttemptTls = (mode: MudTlsMode): boolean =>
-  mode !== 'plain';
-
-/**
- * May this connection retry in plaintext?
- *
- * `required` never may — that is the whole point of the mode, and it holds for
- * a peer that closes mid-handshake as much as for one that errors. `prefer`
- * may, but only on evidence the peer does not speak TLS: a negotiation error,
- * or a close during the handshake, which is how a plaintext server typically
- * answers a ClientHello.
- */
-export const shouldFallBackToPlain = (
-  mode: MudTlsMode,
-  trigger: TlsFallbackTrigger,
-  err?: Error,
-): boolean => {
-  if (mode !== 'prefer') return false;
-  if (trigger === 'close') return true;
-  return err ? isTlsNegotiationError(err) : false;
-};
-
-export const sniServerName = (host: string): string | undefined => {
-  if (!host) return undefined;
-  const bare = host.startsWith('::ffff:') ? host.slice(7) : host;
-  if (parseIPv4(bare)) return undefined;
-  if (host.includes(':')) return undefined; // IPv6 literal
-  return host;
-};
 
 export class Session {
   id: string;
@@ -151,7 +39,7 @@ export class Session {
 
   telnet: TelnetSocket | null = null;
   telnetConnected = false;
-  private closing = false;
+  private connectAbortController?: AbortController;
 
   clients: Set<SocketExtended> = new Set();
   clientConnected = false;
@@ -217,144 +105,57 @@ export class Session {
    * Returns a promise that resolves when connected or rejects on error
    */
   async connect(): Promise<void> {
-    this.closing = false;
+    if (this.telnetConnected) {
+      throw new Error('Session is already connected');
+    }
 
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let triedPlain = false;
+    this.connectAbortController?.abort();
+    const controller = new AbortController();
+    this.connectAbortController = controller;
 
-      const abortIfClosing = (socket: TelnetSocket): boolean => {
-        if (!this.closing) return false;
-        socket.removeAllListeners();
-        socket.destroy();
-        if (this.telnet === socket) {
-          this.telnet = null;
-        }
-        if (!settled) {
-          settled = true;
-          reject(new Error('Session closed during connect'));
-        }
-        return true;
-      };
+    if (this.tlsMode === 'plain') {
+      // eslint-disable-next-line no-console
+      console.log(
+        `[session] INFO MUD_TLS_MODE=plain, using plain TCP for ${this.mudHost}:${this.mudPort}`,
+      );
+    }
 
-      const tryPlain = (reason = 'TLS failed') => {
-        if (triedPlain) return;
-        triedPlain = true;
-
-        if (this.closing) {
-          if (!settled) {
-            settled = true;
-            reject(new Error('Session closed during connect'));
-          }
-          return;
-        }
-
-        // A downgrade must be conspicuous. Logged at WARN with the reason,
-        // because the failure this mode guards against is one that looks
-        // exactly like normal operation.
-        const level = this.tlsDowngraded ? 'WARN ' : 'INFO ';
-        // eslint-disable-next-line no-console
-        console.log(
-          `[session] ${level}${reason}, using plain TCP for ${this.mudHost}:${this.mudPort}`,
-        );
-
-        // Destroy the old TLS socket to prevent stale handlers
-        if (this.telnet) {
-          this.telnet.removeAllListeners();
-          this.telnet.destroy();
-          this.telnet = null;
-        }
-
-        try {
-          const plainSocket = net.createConnection(
-            this.mudPort,
-            this.dialAddress,
-            () => {
-              if (abortIfClosing(plainSocket)) return;
-              this.telnetConnected = true;
-              settled = true;
-              resolve();
-            },
-          ) as TelnetSocket;
-          this.telnet = plainSocket;
-
-          this.setupTelnetHandlers((err: Error) => {
-            if (!settled) reject(err);
-          });
-        } catch (err) {
-          if (!settled) reject(err as Error);
-        }
-      };
-
-      if (!shouldAttemptTls(this.tlsMode)) {
-        tryPlain('MUD_TLS_MODE=plain');
-        return;
-      }
-
-      try {
-        const onTlsConnectError = (err: Error): void => {
-          if (settled) return;
-          if (shouldFallBackToPlain(this.tlsMode, 'error', err)) {
-            this.tlsDowngraded = true;
-            tryPlain(`TLS failed (${err.message})`);
-          } else {
-            settled = true;
-            reject(err);
-          }
-        };
-        const onTlsConnectClose = (): void => {
-          if (settled || this.closing) return;
-          if (!shouldFallBackToPlain(this.tlsMode, 'close')) {
-            settled = true;
-            reject(
-              new Error(
-                'MUD_TLS_MODE=required: peer closed the connection during the ' +
-                  'TLS handshake and plaintext fallback is not permitted',
-              ),
-            );
-            return;
-          }
-          this.tlsDowngraded = true;
-          tryPlain('peer closed during TLS handshake');
-        };
-
-        const tlsSocket = tls.connect(this.mudPort, this.dialAddress, {
-          // Present the requested hostname so certificate verification still
-          // works against the name the user asked for, not the IP we dialled.
-          // Omitted when the target is itself a literal — Node rejects an IP
-          // as SNI.
-          servername: sniServerName(this.mudHost),
-        }) as unknown as TelnetSocket;
-        this.telnet = tlsSocket;
-        tlsSocket.once('secureConnect', () => {
-          tlsSocket.off('error', onTlsConnectError);
-          tlsSocket.off('close', onTlsConnectClose);
-          if (abortIfClosing(tlsSocket)) return;
-          this.setupTelnetHandlers((err: Error) => {
-            if (!settled) reject(err);
-          });
+    try {
+      await connectMudTransport({
+        requestedHost: this.mudHost,
+        dialAddress: this.dialAddress,
+        port: this.mudPort,
+        mode: this.tlsMode,
+        signal: controller.signal,
+        onDowngrade: (reason) => {
+          // eslint-disable-next-line no-console
+          console.log(
+            `[session] WARN ${reason}, using plain TCP for ${this.mudHost}:${this.mudPort}`,
+          );
+        },
+        onConnected: ({ socket, downgraded }) => {
+          this.telnet = socket;
+          this.tlsDowngraded = downgraded;
+          this.setupTelnetHandlers();
           this.telnetConnected = true;
-          settled = true;
-          resolve();
-        });
-        tlsSocket.once('error', onTlsConnectError);
-        tlsSocket.once('close', onTlsConnectClose);
-      } catch (err) {
-        reject(err);
+          if (this.connectAbortController === controller) {
+            this.connectAbortController = undefined;
+          }
+        },
+      });
+    } finally {
+      if (this.connectAbortController === controller) {
+        this.connectAbortController = undefined;
       }
-    });
+    }
   }
 
-  private setupTelnetHandlers(onConnectError: (err: Error) => void): void {
+  private setupTelnetHandlers(): void {
     if (!this.telnet) return;
 
     this.telnet.send = (data: string | Buffer) => {
       this.telnet?.write(data);
     };
-
-    this.telnet.on('connect', () => {
-      this.telnetConnected = true;
-    });
 
     this.telnet.on('data', (data: Buffer) => {
       if (this.onDataCallback) {
@@ -377,7 +178,6 @@ export class Session {
       if (this.onErrorCallback) {
         this.onErrorCallback(err);
       }
-      onConnectError(err);
     });
   }
 
@@ -612,7 +412,9 @@ export class Session {
    * Gracefully close the session
    */
   close(): void {
-    this.closing = true;
+    const pendingController = this.connectAbortController;
+    this.connectAbortController = undefined;
+    pendingController?.abort();
 
     // Close all WebSocket clients
     for (const client of this.clients) {

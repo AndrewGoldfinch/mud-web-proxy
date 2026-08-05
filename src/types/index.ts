@@ -13,6 +13,11 @@ import type { Socket } from 'net';
  */
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
+  /**
+   * Owns and latches an upstream dial until the final socket is handed off.
+   * closeSocket aborts it when a legacy WebSocket closes during setup.
+   */
+  pendingMudTransport?: AbortController;
   ts?: TelnetSocket;
   host?: string;
   port?: number;
