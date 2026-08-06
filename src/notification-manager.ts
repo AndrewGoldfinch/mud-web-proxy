@@ -731,11 +731,12 @@ export class NotificationManager {
   }
 
   private logFailure(message: string): void {
-    // Mirror to both stdout/stderr so PM2 setups that only show one stream
-    // still capture APNS failure diagnostics.
+    // Single stream. This used to write to both stdout and stderr because PM2
+    // setups could be configured to show only one, and PM2 is no longer a
+    // supported deployment path (MWP-106). Both supported topologies capture
+    // stderr — journald under systemd, the json-file driver under Compose —
+    // so the second write only duplicated every APNS failure in the log.
     // eslint-disable-next-line no-console
     console.error(message);
-    // eslint-disable-next-line no-console
-    console.log(message);
   }
 }

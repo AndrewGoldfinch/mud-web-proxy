@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Removed
+
+- `ecosystem.config.cjs`. PM2 was removed from the supported deployment matrix
+  in 4.0.0; the file was the last thing in the repository that could be
+  mistaken for a supported path.
+
+### Changed
+
+- APNS failure diagnostics are written once, to stderr. They were written to
+  both stdout and stderr so that PM2 setups showing only one stream still
+  captured them. Both supported topologies capture stderr — journald under
+  systemd, the json-file driver under Compose — so the second write only
+  duplicated every failure.
+
 ## [4.0.0] - 2026-08-05
 
 First public release. Version numbers below 4.0.0 exist only in this
