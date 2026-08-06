@@ -50,13 +50,29 @@ Attest assertion. That path is experimental — see
 
 ### Failures before the socket opens
 
-Upgrade rejections are **HTTP responses, not JSON envelopes**. Your error
-handling needs to cover both layers, because these never reach `onmessage`:
+A refused connection is closed with a **WebSocket close frame, not a JSON
+envelope**. Read `event.code` and `event.reason` in your `onclose` handler;
+none of this reaches `onmessage`.
 
-| Status | Meaning                                                          |
-| ------ | ---------------------------------------------------------------- |
-| `401`  | Missing, malformed, or wrong shared secret; or App Attest failed |
-| `403`  | Origin not in `ALLOWED_ORIGINS`, or absent when required         |
+The reason string is the HTTP status the refusal corresponds to, so it stays
+greppable in client logs alongside server logs:
+
+| Close code | Reason                    | Meaning                                                          |
+| ---------- | ------------------------- | ---------------------------------------------------------------- |
+| `1008`     | `401 Unauthorized`        | Missing, malformed, or wrong shared secret; or App Attest failed |
+| `1008`     | `403 Forbidden`           | Origin not in `ALLOWED_ORIGINS`, or absent when required         |
+| `1013`     | `429 Too Many Requests`   | Too many failed attempts from your address; back off and retry   |
+| `1013`     | `503 Service Unavailable` | The proxy is shutting down or draining                           |
+
+The split is the one that matters for retry logic: **`1008` will not succeed
+on retry** — the credential or the Origin has to change — while **`1013` is
+temporary** and worth retrying after a wait.
+
+Do not expect an HTTP status. The proxy runs on Bun, which discards writes to
+the upgrade socket, so a status line would never reach you; the handshake is
+completed and immediately closed with the code above instead. This also gives
+browsers more than a status could: JavaScript cannot read the status of a
+failed WebSocket handshake, but it can read a close code and reason.
 
 `ALLOWED_ORIGINS` constrains browsers only — a native client sets whatever
 Origin it likes, so this is hardening, never authentication.

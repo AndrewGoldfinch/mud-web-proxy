@@ -286,17 +286,21 @@ const attestRegisterLimiter = new SlidingWindowLimiter({
   windowMs: 60_000,
 });
 
-const rejectUpgrade = (
-  socket: Socket,
-  code: number,
-  message: string,
-): void => {
-  if (socket.destroyed) return;
-  socket.write(
-    `HTTP/1.1 ${code} ${message}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`,
-  );
-  socket.destroy();
-};
+/**
+ * WebSocket close code to reject an upgrade with.
+ *
+ * Rejections used to be an HTTP status written straight to the upgrade
+ * socket. Under Bun those bytes are discarded — see `rejectUpgrade` — so the
+ * refusal is delivered as a close frame instead, and needs a close code.
+ *
+ * 1013 for the two conditions that are temporary and worth retrying after a
+ * wait; 1008 for a policy decision that retrying will not change.
+ */
+const closeCodeForStatus = (status: number): number =>
+  status === 503 || status === 429 ? 1013 : 1008;
+
+/** How long to wait for a rejected client's closing handshake before cutting it. */
+const REJECT_CLOSE_TIMEOUT_MS = 1000;
 
 export const writeTelnet = (
   s: SocketExtended,
@@ -1860,6 +1864,44 @@ const srv: ServerConfig = {
     }
 
     webserver.on('upgrade', (req: IncomingMessage, socket: Socket, head) => {
+      /**
+       * Refuse this upgrade, telling the client why.
+       *
+       * The obvious implementation — write `HTTP/1.1 401 ...` to the upgrade
+       * socket and destroy it — is what this used to do, and under Bun 1.3.14
+       * it delivers nothing at all. Every rejection arrived as a bare
+       * connection reset: indistinguishable from a crash, from a network
+       * fault, and from each other. Verified against the runtime rather than
+       * guessed: the identical server on Node 24 delivers the status, Bun
+       * delivers zero bytes, and no variation of write/end/cork/delayed
+       * destroy changes that. Nor does answering from the request handler,
+       * which Bun never reaches for an upgrade.
+       *
+       * So the handshake is completed and the refusal sent as a close frame,
+       * which does arrive. That is also more than the old code ever gave a
+       * browser: JavaScript cannot read the status of a failed WebSocket
+       * handshake, but it can read `event.code` and `event.reason`.
+       *
+       * The ordering guarantee this file depends on is preserved. The socket
+       * is never emitted as a `connection` — contrast the success path below,
+       * which calls `wsServer.emit('connection', ...)` — so a refused client
+       * still allocates no session and reserves no connection capacity.
+       */
+      const rejectUpgrade = (status: number, message: string): void => {
+        if (socket.destroyed) return;
+        wsServer.handleUpgrade(req, socket, head, (rejected) => {
+          rejected.close(closeCodeForStatus(status), `${status} ${message}`);
+          // A client that never answers the closing handshake would otherwise
+          // hold the socket for the `ws` default of 30 seconds, which the old
+          // reset never did. Bound it.
+          const cut = setTimeout(
+            () => rejected.terminate(),
+            REJECT_CLOSE_TIMEOUT_MS,
+          );
+          rejected.once('close', () => clearTimeout(cut));
+        });
+      };
+
       void (async () => {
         srv.logInfo(
           `Upgrade request peer=${requestPeer(req)} path=${req.url || '/'} requireAppAuth=${requireAppAuth} ${summarizeUpgradeHeaders(req)}`,
@@ -1867,12 +1909,12 @@ const srv: ServerConfig = {
           'auth',
         );
         if (!srv.open) {
-          rejectUpgrade(socket, 503, 'Service Unavailable');
+          rejectUpgrade(503, 'Service Unavailable');
           return;
         }
 
         if (!srv.originAllowed(req)) {
-          rejectUpgrade(socket, 403, 'Forbidden');
+          rejectUpgrade(403, 'Forbidden');
           return;
         }
 
@@ -1906,9 +1948,9 @@ const srv: ServerConfig = {
               'auth',
             );
             if (throttled) {
-              rejectUpgrade(socket, 429, 'Too Many Requests');
+              rejectUpgrade(429, 'Too Many Requests');
             } else {
-              rejectUpgrade(socket, 401, 'Unauthorized');
+              rejectUpgrade(401, 'Unauthorized');
             }
             return;
           }
@@ -1931,7 +1973,7 @@ const srv: ServerConfig = {
                 undefined,
                 'auth',
               );
-              rejectUpgrade(socket, 401, 'Invalid nonce');
+              rejectUpgrade(401, 'Invalid nonce');
               return;
             }
 
@@ -1942,7 +1984,7 @@ const srv: ServerConfig = {
                 undefined,
                 'auth',
               );
-              rejectUpgrade(socket, 401, 'Unknown key');
+              rejectUpgrade(401, 'Unknown key');
               return;
             }
 
@@ -2014,7 +2056,7 @@ const srv: ServerConfig = {
                   'auth',
                 );
               }
-              rejectUpgrade(socket, 401, 'Assertion verification failed');
+              rejectUpgrade(401, 'Assertion verification failed');
               return;
             }
           } else {
@@ -2027,7 +2069,7 @@ const srv: ServerConfig = {
               undefined,
               'auth',
             );
-            rejectUpgrade(socket, 401, 'App authentication required');
+            rejectUpgrade(401, 'App authentication required');
             return;
           }
         }
@@ -2041,7 +2083,7 @@ const srv: ServerConfig = {
           undefined,
           'auth',
         );
-        rejectUpgrade(socket, 401, 'Unauthorized');
+        rejectUpgrade(401, 'Unauthorized');
       });
     });
 
