@@ -369,12 +369,12 @@ export const ciJobCoverageGate: CorpusGate = {
           line: 1,
           message: `CI job "${job}" has no entry in preflight.sh's CI_JOB_COVERAGE map. Add [${job}]="cmd:…" or [${job}]="skip:reason".`,
         });
-      } else if (!/^(inline|cmd:.+|docker:.+|skip:.+)$/.test(spec)) {
+      } else if (!/^(inline|cmd:.+|docker:.+|root:.+|skip:.+)$/.test(spec)) {
         findings.push({
           gate: 'ci-job-coverage',
           file: 'scripts/preflight.sh',
           line: 1,
-          message: `CI job "${job}" has an unrecognised coverage spec "${spec}". Use inline, cmd:<command>, docker:<command>, or skip:<reason>.`,
+          message: `CI job "${job}" has an unrecognised coverage spec "${spec}". Use inline, cmd:<command>, docker:<command>, root:<command>, or skip:<reason>.`,
         });
       }
     }

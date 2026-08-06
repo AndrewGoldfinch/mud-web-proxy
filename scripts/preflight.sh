@@ -79,6 +79,7 @@ if ((FULL)); then
     [container]="docker:bash tests/container/run.sh"
     [image-scan]="docker:bash tests/container/scan.sh"
     [compose-e2e]="docker:bash tests/compose/run.sh"
+    [systemd-native]="root:bash tests/deployment/systemd-ci.sh"
     [secret-scan]="skip:gitleaks GitHub Action, no local invocation"
   )
 
@@ -93,6 +94,17 @@ if ((FULL)); then
         else
           printf '\n\033[1m── %s\033[0m\n  SKIPPED — no Docker daemon.\n' "$job"
           SKIPPED+=("$job (no Docker daemon)")
+        fi
+        ;;
+      root:*)
+        # Needs root and systemd as PID 1. Available on CI runners and on a
+        # disposable host; usually neither on a developer's machine, so skip
+        # with a notice rather than prompting for a password mid-run.
+        if [[ "$(id -u)" -eq 0 && "$(ps -p 1 -o comm=)" == systemd ]]; then
+          run_gate "$job" bash -c "${spec#root:}"
+        else
+          printf '\n\033[1m── %s\033[0m\n  SKIPPED — needs root and systemd as PID 1.\n' "$job"
+          SKIPPED+=("$job (needs root and systemd as PID 1)")
         fi
         ;;
       skip:*) SKIPPED+=("$job (${spec#skip:})") ;;
