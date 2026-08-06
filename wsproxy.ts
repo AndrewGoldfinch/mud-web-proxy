@@ -240,7 +240,6 @@ const ONLY_ALLOW_DEFAULT_SERVER = runtimeConfig.onlyAllowDefaultServer;
  * else from it.
  */
 const PACKAGE_VERSION: string = packageVersion;
-const MCCP_NEGOTIATION_DELAY_MS = 6000;
 const PROTOCOL_NEGOTIATION_TIMEOUT_MS = 12000;
 const SOCKET_CLOSE_DELAY_MS = 500;
 
@@ -350,11 +349,8 @@ export interface SocketExtended extends WS {
   ttype: string[];
   name?: string;
   client?: string;
-  mccp?: boolean;
   utf8?: boolean;
   debug?: boolean;
-  compressed: number;
-  mccp_negotiated?: number;
   mxp_negotiated?: number;
   gmcp_negotiated?: number;
   utf8_negotiated?: number;
@@ -508,9 +504,7 @@ const getDiagnosticData = () => {
     port: s.port || null,
     name: s.name ? escapeDiagnosticHtml(s.name) : null,
     client: s.client ? escapeDiagnosticHtml(s.client) : null,
-    compressed: s.compressed,
     protocols: {
-      mccp: !!s.mccp_negotiated,
       mxp: !!s.mxp_negotiated,
       gmcp: !!s.gmcp_negotiated,
       utf8: !!s.utf8_negotiated,
@@ -1043,7 +1037,18 @@ const srv: ServerConfig = {
   tn_port: runtimeConfig.tnPort,
   /* enable additional debugging */
   debug: false,
-  /* use node zlib (different from mccp) - you want this turned off unless your server can't do MCCP and your client can inflate data */
+  /*
+   * Deflate legacy-protocol frames with node zlib before base64-encoding
+   * them. Legacy clients inflate them; the typed protocol does not go through
+   * this path.
+   *
+   * The old comment here told you to turn this off if your MUD could do MCCP.
+   * It never applied: the MCCP negotiation was unreachable and was removed in
+   * MWP-128, so this is the only compression the proxy performs. Hardcoded
+   * rather than configurable, so the `!srv.compress` branch below is
+   * currently unreachable — left in place because it is the seam where a
+   * setting would land, not because anything sets it today.
+   */
   compress: true,
   /* set to false while server is shutting down */
   open: true,
@@ -2445,8 +2450,6 @@ const srv: ServerConfig = {
     s.ttype.push(s.remoteAddress);
     s.ttype.push(s.remoteAddress);
 
-    s.compressed = 0;
-
     const controller = s.pendingMudTransport ?? new AbortController();
     s.pendingMudTransport = controller;
     let negotiationTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -2507,11 +2510,7 @@ const srv: ServerConfig = {
         srv.logInfo('new telnet socket connected', s, 'telnet');
 
         negotiationTimeout = setTimeout(function () {
-          s.utf8_negotiated =
-            s.mccp_negotiated =
-            s.mxp_negotiated =
-            s.gmcp_negotiated =
-              1;
+          s.utf8_negotiated = s.mxp_negotiated = s.gmcp_negotiated = 1;
           s.new_negotiated =
             s.new_handshake =
             s.sga_negotiated =
@@ -2637,7 +2636,6 @@ const srv: ServerConfig = {
 
     // Skip all negotiation loops when every protocol is settled
     const negotiationDone =
-      (!s.mccp || s.mccp_negotiated || s.compressed) &&
       !s.ttype.length &&
       s.gmcp_negotiated &&
       s.msdp_negotiated &&
@@ -2650,33 +2648,6 @@ const srv: ServerConfig = {
       s.utf8_negotiated;
 
     if (!negotiationDone) {
-      if (s.mccp && !s.mccp_negotiated && !s.compressed) {
-        for (let i = 0; i < data.length; i++) {
-          if (
-            data[i] === p.IAC &&
-            data[i + 1] === p.WILL &&
-            data[i + 2] === p.MCCP2
-          ) {
-            setTimeout(function () {
-              srv.logInfo('IAC DO MCCP2', s, 'proto');
-              writeTelnet(s, p.DO_MCCP);
-            }, MCCP_NEGOTIATION_DELAY_MS);
-          } else if (
-            data[i] === p.IAC &&
-            data[i + 1] === p.SB &&
-            data[i + 2] === p.MCCP2
-          ) {
-            if (i) srv.sendClient(s, data.slice(0, i));
-
-            data = data.slice(i + 5);
-            s.compressed = 1;
-            srv.logInfo('MCCP compression started', s, 'proto');
-
-            if (!data.length) return;
-          }
-        }
-      }
-
       if (s.ttype.length) {
         for (let i = 0; i < data.length; i++) {
           if (
@@ -2882,7 +2853,7 @@ const srv: ServerConfig = {
       srv.logDebug('raw bin: ' + raw, s, 'proto');
     }
 
-    if (!srv.compress || (s.mccp && s.compressed)) {
+    if (!srv.compress) {
       sendBase64IfOpen(s, data);
       return;
     }

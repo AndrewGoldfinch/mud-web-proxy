@@ -3,7 +3,6 @@ export interface ProtocolConstants {
   WILL_ATCP: Buffer;
   WILL_GMCP: Buffer;
   DO_GMCP: Buffer;
-  DO_MCCP: Buffer;
   DO_MSDP: Buffer;
   DO_MXP: Buffer;
   WILL_MXP: Buffer;
@@ -15,7 +14,6 @@ export interface ProtocolConstants {
   SGA: number;
   NEW: number;
   TTYPE: number;
-  MCCP2: number;
   MSDP: number;
   MSDP_VAR: number;
   MSDP_VAL: number;
@@ -47,7 +45,6 @@ export const PROTOCOL_CONSTANTS: ProtocolConstants = {
   WILL_ATCP: Buffer.from([255, 251, 200]),
   WILL_GMCP: Buffer.from([255, 251, 201]),
   DO_GMCP: Buffer.from([255, 253, 201]),
-  DO_MCCP: Buffer.from([255, 253, 86]),
   DO_MSDP: Buffer.from([255, 253, 69]),
   DO_MXP: Buffer.from([255, 253, 91]),
   WILL_MXP: Buffer.from([255, 251, 91]),
@@ -59,7 +56,6 @@ export const PROTOCOL_CONSTANTS: ProtocolConstants = {
   SGA: 3,
   NEW: 39,
   TTYPE: 24,
-  MCCP2: 86,
   MSDP: 69,
   MSDP_VAR: 1,
   MSDP_VAL: 2,

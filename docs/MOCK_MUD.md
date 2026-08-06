@@ -193,13 +193,20 @@ it('should handle commands', async () => {
 
 ### 4. Compression (MCCP)
 
-```typescript
-it('should use MCCP', async () => {
-  // Server compresses all data
-  // Client decompresses correctly
-  // No errors in protocol handling
-});
-```
+The mock offers `IAC WILL MCCP2`, but **the proxy declines it** — MWP-128
+removed an unreachable negotiation branch rather than wiring it up, so refusal
+is the decided behaviour on both wire protocols.
+
+Do not try to assert this from an e2e test here. This suite drives the typed
+protocol, which goes through the session stack's `TelnetParser`; the legacy
+`sendClient` path is never exercised, so an e2e assertion stays green even if
+legacy MCCP is reintroduced. That mistake was made and reverted while writing
+MWP-128.
+
+The refusal is pinned where it can actually fail, in
+`tests/telnet-mccp-declined.test.ts`, by feeding the parser a real offer and
+asserting no `IAC DO MCCP2` goes back — with controls proving the harness sees
+replies for other options.
 
 ### 5. Chaos Mode
 

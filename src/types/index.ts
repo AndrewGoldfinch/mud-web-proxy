@@ -30,11 +30,8 @@ export interface SocketExtended extends WS {
   ttype: string[];
   name?: string;
   client?: string;
-  mccp?: boolean;
   utf8?: boolean;
   debug?: boolean;
-  compressed: number;
-  mccp_negotiated?: number;
   mxp_negotiated?: number;
   gmcp_negotiated?: number;
   utf8_negotiated?: number;
