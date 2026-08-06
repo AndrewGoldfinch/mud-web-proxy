@@ -11,6 +11,8 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { decode, decodeMultiple } from 'cbor-x';
 
+import { neutralizeControlSequences } from './log-redaction.js';
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 // ---------- Nonce store ----------
@@ -441,6 +443,34 @@ export interface AttestationResult {
   coseKeyExtracted: boolean;
 }
 
+/**
+ * Render a certificate subject safe to interpolate into a log line.
+ *
+ * Exported so the property can be tested directly: the branch that logs this
+ * sits deep inside `verifyAttestation` and reaching it needs a full crafted
+ * Apple attestation blob, which is a lot of machinery to protect one string.
+ *
+ * Two transformations, and the order between them matters:
+ *
+ * 1. `X509Certificate.subject` is newline-separated between RDN components
+ *    ("CN=…\nOU=…\nO=Apple Inc.\nST=California"), so interpolating it raw
+ *    splits one warning across four journal entries and detaches the
+ *    continuation lines from their context. Flattened to RFC 4514 style.
+ * 2. Then neutralized. This must come second: neutralization *deletes*
+ *    newlines rather than replacing them, so running it first would run the
+ *    components together into "CN=…OU=…O=Apple Inc.".
+ *
+ * Step 2 is not optional. The subject comes from a client-supplied
+ * certificate, and the caller reaches it precisely when that certificate is
+ * *not* the expected Apple one — the adversarial case, which fires routinely
+ * in production. Replacing newlines alone blocks a forged log line but leaves
+ * ANSI and cursor-movement sequences intact, and those let attacker input
+ * rewrite what an operator has already read.
+ */
+export function formatCertSubjectForLog(subject: string): string {
+  return neutralizeControlSequences(subject.replace(/\r?\n/g, ', '));
+}
+
 export async function verifyAttestation(
   opts: AttestationInput,
 ): Promise<AttestationResult> {
@@ -523,15 +553,9 @@ export async function verifyAttestation(
     !credCert.subject.includes(teamId) ||
     !credCert.subject.includes(bundleId)
   ) {
-    // X509Certificate.subject is newline-separated between RDN components
-    // ("CN=…\nOU=…\nO=Apple Inc.\nST=California"), so interpolating it raw
-    // splits this warning across four journal entries and detaches the
-    // continuation lines from their context. Flatten to RFC 4514 style so one
-    // event is one line.
-    const flatSubject = credCert.subject.replace(/\r?\n/g, ', ');
     // eslint-disable-next-line no-console
     console.warn(
-      `[app-attest] Certificate subject mismatch; continuing. expected=${teamId}.${bundleId} subject=${flatSubject}`,
+      `[app-attest] Certificate subject mismatch; continuing. expected=${teamId}.${bundleId} subject=${formatCertSubjectForLog(credCert.subject)}`,
     );
   }
 
