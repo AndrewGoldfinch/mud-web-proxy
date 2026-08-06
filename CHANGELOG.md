@@ -7,19 +7,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Removed
-
-- `ecosystem.config.cjs`. PM2 was removed from the supported deployment matrix
-  in 4.0.0; the file was the last thing in the repository that could be
-  mistaken for a supported path.
-
 ### Changed
 
+- **Connections refused at the WebSocket upgrade now close with a WebSocket
+  close code instead of an HTTP status.** `1008` for a refusal that retrying
+  will not fix (`401 Unauthorized`, `403 Forbidden`), `1013` for a temporary
+  one worth retrying after a wait (`429 Too Many Requests`,
+  `503 Service Unavailable`); the reason string carries the corresponding HTTP
+  status. Clients that inspected the handshake status must read `event.code`
+  and `event.reason` instead. This is not a preference: the proxy runs on Bun,
+  which discards writes to the upgrade socket, so the status line never
+  reached clients at all — every refusal arrived as a bare connection reset,
+  indistinguishable from a crash. See `docs/protocols.md`.
 - APNS failure diagnostics are written once, to stderr. They were written to
   both stdout and stderr so that PM2 setups showing only one stream still
   captured them. Both supported topologies capture stderr — journald under
   systemd, the json-file driver under Compose — so the second write only
   duplicated every failure.
+- App Attest certificate subjects are neutralised before being logged. The
+  subject is client-supplied and was stripped of newlines only, leaving ANSI
+  and cursor-movement sequences intact in a warning that fires precisely when
+  the certificate is not the expected Apple one.
+
+### Removed
+
+- **MCCP negotiation, which never worked.** The flag gating it was declared
+  and never assigned, so the branch answering `IAC WILL MCCP2` was
+  unreachable. The diagnostics surface nevertheless reported
+  `protocols.mccp: true` for every connection older than the 12-second
+  negotiation timeout. Both that field and `compressed` — which was likewise
+  permanently zero once the dead branch was gone — are removed from the
+  diagnostics payload. Traffic to the MUD was never compressed, so nothing
+  about the data path changes.
+- `ecosystem.config.cjs`. PM2 was removed from the supported deployment matrix
+  in 4.0.0; the file was the last thing in the repository that could be
+  mistaken for a supported path.
+
+### Fixed
+
+- Legacy connections honour `MUD_TLS_MODE`. `required` previously fell back to
+  plaintext on the legacy path.
+- An upstream dial that never completes no longer holds connection capacity
+  for the life of the process.
+- A frame the client has already acknowledged is no longer replayed on resume.
 
 ## [4.0.0] - 2026-08-05
 

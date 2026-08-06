@@ -46,10 +46,10 @@ that is a third topology and `INBOUND_TLS_MODE=required` applies to it.
 
 `/health` is unauthenticated and always available. Observed responses:
 
-| State    | Status | Body                                           |
-| -------- | ------ | ---------------------------------------------- |
-| Serving  | `200`  | `{"status":"healthy","version":"4.0.0-rc.9"}`  |
-| Draining | `503`  | `{"status":"draining","version":"4.0.0-rc.9"}` |
+| State    | Status | Body                                          |
+| -------- | ------ | --------------------------------------------- |
+| Serving  | `200`  | `{"status":"healthy","version":"<version>"}`  |
+| Draining | `503`  | `{"status":"draining","version":"<version>"}` |
 
 `version` is the package version of the running build — the one thing that
 tells you which release is actually live, as opposed to which one you think you
