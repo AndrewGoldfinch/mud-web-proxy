@@ -59,6 +59,7 @@ never second-guessed.
 | `ALLOWED_TARGETS`         | comma-separated `host:port` list     | empty               | `TARGET_MODE=allowlist` | Allowed targets; malformed entries are ignored.                             |
 | `ARBITRARY_ALLOWED_PORTS` | comma-separated ports/ranges         | empty               | `TARGET_MODE=arbitrary` | Allowed ports and ranges for arbitrary targets, for example `23,4000-4100`. |
 | `MUD_TLS_MODE`            | `plain`, `required`, or `prefer`     | `prefer`            | Never                   | Controls how the proxy connects to the upstream MUD.                        |
+| `MUD_DIAL_TIMEOUT_MS`     | positive integer (ms)                | `10000`             | Never                   | How long an upstream dial may take before it is abandoned.                  |
 
 `TARGET_MODE=arbitrary` lets the client name the host. Without enforced
 authentication it is an open relay, so startup rejects it unless either
@@ -74,6 +75,15 @@ non-empty list item, but startup does not verify that any item is a valid port
 or range. Malformed items and ranges are ignored during enforcement. This fails
 closed—an entirely malformed list permits no ports—but a typo can leave the
 proxy running while denying intended targets.
+
+`MUD_DIAL_TIMEOUT_MS` bounds the TCP connect, not the idle socket. A refused
+connection fails immediately, but a routable address that silently drops SYNs
+hangs until the operating system's retry budget runs out — roughly two minutes
+on Linux. That matters because an in-flight dial holds a connection
+reservation, and under `TARGET_MODE=arbitrary` the client chooses the address,
+so one cheap frame would otherwise buy two minutes of held capacity. Lower it
+if your MUDs are close and you want faster failure; raise it only if a
+legitimate target is genuinely slow to accept.
 
 `MUD_TLS_MODE` defaults to `prefer` — attempt TLS, fall back to plaintext —
 because that is the historical behaviour. Defaulting to `plain` would silently

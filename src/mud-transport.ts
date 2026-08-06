@@ -52,6 +52,13 @@ export interface MudTransportOptions {
   port: number;
   mode: MudTlsMode;
   signal: AbortSignal;
+  /**
+   * How long the TCP connect may take before the dial is abandoned. Distinct
+   * from TLS_HANDSHAKE_TIMEOUT_MS, which bounds the handshake *after* the
+   * connection is up: a peer that silently drops SYNs never reaches that
+   * point, so the handshake deadline can never fire for it.
+   */
+  dialTimeoutMs: number;
   onDowngrade: (reason: string) => void;
   onConnected: (connection: ConnectedMudTransport) => void;
 }
@@ -112,9 +119,11 @@ export const connectMudTransport = (
     let plaintextAttempted = false;
     let downgraded = false;
     let tlsHandshakeTimer: ReturnType<typeof setTimeout> | undefined;
+    let dialTimer: ReturnType<typeof setTimeout> | undefined;
 
     const onPlainConnect = (): void => {
       if (!plainSocket || provisionalSocket !== plainSocket) return;
+      clearDialTimer();
       handoff({
         socket: plainSocket,
         transport: 'plain',
@@ -129,6 +138,8 @@ export const connectMudTransport = (
     };
     const onTlsTcpConnect = (): void => {
       if (settled || tlsHandshakeTimer) return;
+      // Connected, so the dial is done; the handshake deadline takes over.
+      clearDialTimer();
       tlsHandshakeTimer = setTimeout(
         onTlsHandshakeDeadline,
         TLS_HANDSHAKE_TIMEOUT_MS,
@@ -207,6 +218,23 @@ export const connectMudTransport = (
     const removeAbortListener = (): void => {
       options.signal.removeEventListener('abort', onAbort);
     };
+    const clearDialTimer = (): void => {
+      if (!dialTimer) return;
+      clearTimeout(dialTimer);
+      dialTimer = undefined;
+    };
+    const armDialTimer = (): void => {
+      clearDialTimer();
+      dialTimer = setTimeout(() => {
+        if (settled) return;
+        fail(
+          new Error(
+            `MUD dial to ${options.dialAddress}:${options.port} timed out ` +
+              `after ${options.dialTimeoutMs}ms`,
+          ),
+        );
+      }, options.dialTimeoutMs);
+    };
     const clearTlsHandshakeTimer = (): void => {
       if (!tlsHandshakeTimer) return;
       clearTimeout(tlsHandshakeTimer);
@@ -216,6 +244,7 @@ export const connectMudTransport = (
       if (settled) return;
       settled = true;
       clearTlsHandshakeTimer();
+      clearDialTimer();
       removeConnectorListeners();
       removeAbortListener();
       try {
@@ -231,6 +260,7 @@ export const connectMudTransport = (
       if (settled) return;
       settled = true;
       clearTlsHandshakeTimer();
+      clearDialTimer();
       removeConnectorListeners();
       removeAbortListener();
       provisionalSocket?.destroy();
@@ -240,6 +270,7 @@ export const connectMudTransport = (
       if (settled) return;
       settled = true;
       clearTlsHandshakeTimer();
+      clearDialTimer();
       removeConnectorListeners();
       removeAbortListener();
       provisionalSocket?.destroy();
@@ -252,6 +283,7 @@ export const connectMudTransport = (
           options.dialAddress,
         ) as TelnetSocket;
         provisionalSocket = plainSocket;
+        armDialTimer();
         plainSocket.once('connect', onPlainConnect);
         plainSocket.once('error', onPlainError);
         plainSocket.once('close', onPlainClose);
@@ -293,6 +325,7 @@ export const connectMudTransport = (
         servername: sniServerName(options.requestedHost),
       }) as unknown as TelnetSocket;
       provisionalSocket = tlsSocket;
+      armDialTimer();
       tlsSocket.once('connect', onTlsTcpConnect);
       tlsSocket.once('secureConnect', onTlsSecureConnect);
       tlsSocket.once('error', onTlsError);

@@ -33,6 +33,7 @@ export class Session {
   mudHost: string;
   dialAddress: string;
   tlsMode: MudTlsMode;
+  dialTimeoutMs: number;
   /** True when a `prefer` connection ended up in plaintext. */
   tlsDowngraded = false;
   mudPort: number;
@@ -77,6 +78,7 @@ export class Session {
     bufferSizeBytes: number = 50 * 1024,
     dialAddress?: string,
     tlsMode: MudTlsMode = 'prefer',
+    dialTimeoutMs = 10_000,
     maxSubnegotiationBytes?: number,
   ) {
     this.id = crypto.randomUUID();
@@ -91,6 +93,7 @@ export class Session {
     // so every other mode is unchanged.
     this.dialAddress = dialAddress || host;
     this.tlsMode = tlsMode;
+    this.dialTimeoutMs = dialTimeoutMs;
     this.buffer = new CircularBuffer(bufferSizeBytes);
     // Threaded from configuration rather than left to the parser's default, so
     // MAX_SUBNEGOTIATION_BYTES is a setting that is actually consulted. A value
@@ -126,6 +129,7 @@ export class Session {
         dialAddress: this.dialAddress,
         port: this.mudPort,
         mode: this.tlsMode,
+        dialTimeoutMs: this.dialTimeoutMs,
         signal: controller.signal,
         onDowngrade: (reason) => {
           // eslint-disable-next-line no-console
