@@ -1,5 +1,14 @@
 # Product Requirements Document: MUD Proxy Server for MUDBasher
 
+> **Superseded, retained for context.** This is the original planning document
+> for the MUDBasher iOS client, written before the v4 architecture. It predates
+> the current target policy, authentication, transport, and deployment model,
+> and it recommends PM2, which is **no longer a supported deployment path** —
+> see [`deployment/systemd.md`](deployment/systemd.md) and
+> [`deployment/compose.md`](deployment/compose.md). Nothing here is maintained
+> against current behaviour; [`protocols.md`](protocols.md) is the wire
+> contract and [`security.md`](security.md) is the security model.
+
 ## Product Overview
 
 MUDBasher needs a proxy server that sits between the iOS client and MUD servers. The proxy maintains persistent telnet connections while the mobile app connects via WebSocket. When the app backgrounds, the proxy buffers MUD output and sends push notifications. When the user returns, the app reconnects and replays what was missed.
