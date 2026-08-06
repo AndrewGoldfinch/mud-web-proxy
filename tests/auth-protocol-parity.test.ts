@@ -13,10 +13,11 @@
  *    code twice and proves nothing; written naively it is a vacuous test that
  *    would pass even if one protocol were wide open.
  *
- *    What is worth pinning is that structure: rejection happens at the HTTP
- *    layer, so the socket never opens and *no* client of any protocol gets
- *    through. That fails the moment someone moves enforcement inside a
- *    protocol handler, which is the realistic regression.
+ *    What is worth pinning is that structure: the refusal is decided before
+ *    the client sends anything at all, so it cannot depend on the protocol.
+ *    These clients send no frames and are still refused. That fails the
+ *    moment someone moves enforcement inside a protocol handler, which is the
+ *    realistic regression.
  *
  *  - **Policy genuinely runs twice.** `openLegacyConnection` and the typed
  *    connect path are separate code that both call
@@ -26,8 +27,6 @@
  */
 
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
-import { randomBytes } from 'crypto';
-import { connect } from 'net';
 import WebSocket from 'ws';
 import {
   startMockMud,
@@ -47,62 +46,57 @@ let mud: MockMud;
 const settle = (ms = 700): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
 
-interface Attempt {
-  opened: boolean;
-  status?: number;
+/**
+ * Open a socket and report whether it is still connected a moment later.
+ *
+ * The counterpart to `closeReason`: proves an accepted credential is not
+ * merely admitted to the handshake but left connected, which is what
+ * distinguishes acceptance from the reject path — that one also completes
+ * the handshake, then closes.
+ */
+function staysOpen(headers: Record<string, string>): Promise<boolean> {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(`ws://127.0.0.1:${WS_PORT}/`, { headers });
+    let closed = false;
+    ws.on('close', () => {
+      closed = true;
+    });
+    ws.on('error', () => {
+      closed = true;
+    });
+    setTimeout(() => {
+      const open = !closed && ws.readyState === WebSocket.OPEN;
+      ws.terminate();
+      resolve(open);
+    }, 1500);
+  });
+}
+
+interface CloseInfo {
+  code?: number;
+  reason: string;
 }
 
 /**
- * Perform the upgrade handshake over a raw socket and read the status line.
+ * Attempt an upgrade with a WebSocket client and report how it was closed.
  *
- * Two client libraries were tried first and both obscured what was happening:
- * the `ws` client emits `error` before `unexpected-response`, and Bun's
- * `http.request` reports a connection error for a rejection while surfacing a
- * successful 101 as a `response` rather than an `upgrade`. Reading the bytes
- * directly takes every client parser out of the question and states the claim
- * as literally as it can be: this is what the server put on the wire.
- *
- * Which turned out to matter — on a rejection it puts nothing there at all.
- * See the Bun defect test below.
+ * Sends nothing: it opens and waits. The refusal arrives as a close frame
+ * rather than an HTTP status, for the reason set out on `rejectUpgrade`.
  */
-function attempt(headers: Record<string, string>): Promise<Attempt> {
-  const lines = [
-    'GET / HTTP/1.1',
-    `Host: 127.0.0.1:${WS_PORT}`,
-    'Connection: Upgrade',
-    'Upgrade: websocket',
-    'Sec-WebSocket-Version: 13',
-    `Sec-WebSocket-Key: ${randomBytes(16).toString('base64')}`,
-    ...Object.entries(headers).map(([k, v]) => `${k}: ${v}`),
-    '',
-    '',
-  ].join('\r\n');
-
+function closeReason(headers: Record<string, string>): Promise<CloseInfo> {
   return new Promise((resolve) => {
-    const sock = connect(WS_PORT, '127.0.0.1');
-    let buf = '';
-
-    const done = (): void => {
+    const ws = new WebSocket(`ws://127.0.0.1:${WS_PORT}/`, { headers });
+    const timer = setTimeout(() => {
+      ws.terminate();
+      resolve({ reason: 'timeout' });
+    }, 8000);
+    ws.on('close', (code: number, reason: Buffer) => {
       clearTimeout(timer);
-      sock.destroy();
-      const status = Number(/^HTTP\/1\.1 (\d{3})/.exec(buf)?.[1]);
-      resolve(
-        Number.isFinite(status)
-          ? { opened: status === 101, status }
-          : { opened: false },
-      );
-    };
-
-    const timer = setTimeout(done, 8000);
-
-    sock.on('connect', () => sock.write(lines));
-    sock.on('data', (d: Buffer) => {
-      buf += d.toString('latin1');
-      // The status line is all this needs, and it is in the first packet.
-      if (buf.includes('\r\n')) done();
+      resolve({ code, reason: reason.toString() });
     });
-    sock.on('close', done);
-    sock.on('error', done);
+    ws.on('error', () => {
+      // A close frame still arrives; `close` resolves us.
+    });
   });
 }
 
@@ -147,14 +141,16 @@ afterAll(async () => {
 });
 
 describe('authentication is settled before a protocol exists', () => {
-  test('a valid secret is admitted', async () => {
-    const r = await attempt({ Authorization: `Bearer ${SECRET}` });
-    expect(r.opened).toBe(true);
+  test('a valid secret is admitted and stays connected', async () => {
+    const r = await staysOpen({ Authorization: `Bearer ${SECRET}` });
+    expect(r).toBe(true);
   });
 
-  // Each of these is rejected at the HTTP layer. The absence of a 101 is the
-  // assertion that carries the parity claim: the socket never opened, so no
-  // frame was ever read, so no protocol was ever selected.
+  // Each of these is refused without the client ever sending a frame — which
+  // is what carries the parity claim. The protocol is chosen from the shape
+  // of the first frame, so a decision reached before any frame arrives cannot
+  // depend on the protocol. Move enforcement into a protocol handler and
+  // these clients, which send nothing, would simply sit there instead.
   const rejected: ReadonlyArray<[string, Record<string, string>]> = [
     [
       'a wrong secret of the same length',
@@ -179,13 +175,9 @@ describe('authentication is settled before a protocol exists', () => {
   ];
 
   for (const [name, headers] of rejected) {
-    test(`${name} never completes the upgrade`, async () => {
-      const r = await attempt(headers);
-      // No 101 means no WebSocket, so no frame is ever read and no protocol
-      // is ever chosen. That is the whole parity claim, and it is what goes
-      // red if enforcement moves into a protocol handler.
-      expect(r.opened).toBe(false);
-      expect(r.status).not.toBe(101);
+    test(`${name} is refused before any frame is sent`, async () => {
+      const r = await closeReason(headers);
+      expect([1008, 1013]).toContain(r.code);
     });
   }
 
@@ -195,23 +187,37 @@ describe('authentication is settled before a protocol exists', () => {
     expect(proxy.output()).toMatch(/Rejected upgrade/);
   });
 
-  test('the rejection status never reaches the client (Bun defect)', async () => {
-    // Documented rather than asserted away, because it is a real operational
-    // problem and not a property of this codebase.
-    //
-    // `rejectUpgrade` writes `HTTP/1.1 401 ...` to the upgrade socket. Under
-    // Bun 1.3.14 those bytes are silently discarded: the client gets a bare
-    // connection reset with no status. The same server code on Node 24
-    // delivers all 67 bytes, so this is the runtime, not the write. Switching
-    // `write`+`destroy` to `end()` does not change it either — that was
-    // tried.
-    //
-    // The cost is diagnostic: an operator with a wrong token sees a reset
-    // instead of 401, and an edge proxy in front of it turns a reset into
-    // 502. This test is here so that the day Bun fixes it, this file fails
-    // and someone tightens the assertions above to check for 401 and 429.
-    const r = await attempt({ Authorization: 'Bearer definitely-wrong' });
-    expect(r.status).toBeUndefined();
+  test('the client is told why, not just disconnected', async () => {
+    // The regression this guards: rejections used to be an HTTP status
+    // written to the upgrade socket, which Bun discards, so every refusal —
+    // 503, 403, 401, 429 — arrived as a bare reset. Indistinguishable from a
+    // crash, from a network fault, and from each other.
+    const r = await closeReason({ Authorization: 'Bearer definitely-wrong' });
+    expect(r.code).toBe(1008);
+    expect(r.reason).toContain('401');
+  });
+
+  test('a throttled client is told to retry, distinctly from a refused one', async () => {
+    // 1008 says "policy, do not bother retrying"; 1013 says "later". A client
+    // that cannot tell them apart either hammers a wall or gives up too soon.
+    let seen: CloseInfo | undefined;
+    for (let i = 0; i < 12; i++) {
+      seen = await closeReason({ Authorization: 'Bearer definitely-wrong' });
+      if (seen.code === 1013) break;
+    }
+    expect(seen?.code).toBe(1013);
+    expect(seen?.reason).toContain('429');
+  });
+
+  test('refusing still allocates no session and no capacity', async () => {
+    // The property the old reset gave for free and the close frame must not
+    // cost: completing the handshake to say why must not register the socket.
+    // `/health` is the cheapest proof the process is unencumbered, and the
+    // MUD count proves nothing was dialled.
+    const res = await fetch(`http://127.0.0.1:${WS_PORT}/health`);
+    expect(res.status).toBe(200);
+    expect(mud.connections()).toBe(0);
+    expect(proxy.output()).not.toMatch(/session created/);
   });
 
   test('a refused attempt never reaches the MUD', () => {

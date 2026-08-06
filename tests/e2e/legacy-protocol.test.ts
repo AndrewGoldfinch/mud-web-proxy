@@ -714,9 +714,33 @@ describe('legacy connect under shared-secret auth', () => {
     mock.clearReceivedCommands();
 
     // MWP-90 requires the legacy path to enforce identical authentication.
-    // Auth lives at the upgrade, so the socket never opens without it — and
-    // the rejection must consume no session or limit capacity.
-    await expect(openRaw(proxy.url)).rejects.toThrow();
+    // Auth lives at the upgrade, so the refusal is decided before this client
+    // sends a single frame — and it must consume no session or limit capacity.
+    //
+    // This asserted `rejects.toThrow()` until MWP-136. The refusal used to be
+    // an HTTP status written to the upgrade socket, which Bun discards, so
+    // the client got a bare reset and the handshake failed. It is now
+    // completed and immediately closed with a code that says why, so the
+    // socket opens and then goes away. Same refusal, delivered legibly.
+    const closed = await new Promise<{ code: number; reason: string }>(
+      (resolve) => {
+        const ws = new WebSocket(proxy.url);
+        const timer = setTimeout(
+          () => resolve({ code: -1, reason: 'never closed' }),
+          8000,
+        );
+        ws.onclose = (ev) => {
+          clearTimeout(timer);
+          resolve({ code: ev.code, reason: ev.reason });
+        };
+        ws.onerror = () => {
+          // The close event still arrives and resolves this.
+        };
+      },
+    );
+
+    expect(closed.code).toBe(1008);
+    expect(closed.reason).toContain('401');
     await settle(500);
 
     expect(mock.getClientCount()).toBe(0);
