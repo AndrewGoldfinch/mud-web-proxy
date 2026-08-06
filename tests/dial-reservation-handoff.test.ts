@@ -15,6 +15,7 @@
 
 import { afterEach, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'events';
+import net from 'net';
 import { SessionIntegration } from '../src/session-integration.js';
 import type { SocketExtended } from '../src/types/index.js';
 
@@ -126,4 +127,73 @@ describe('an in-flight dial still occupies capacity', () => {
     expect(errorsOf(sockets[0]).length).toBe(0);
     expect(errorsOf(sockets[1]).length).toBe(0);
   });
+});
+
+/**
+ * A dial that times out must return its capacity (MWP-127).
+ *
+ * The refused-connection path already released correctly. The gap was a
+ * routable address that silently drops SYNs: nothing bounded the connect, so
+ * the reservation was held for the OS retry budget — roughly two minutes.
+ * Under TARGET_MODE=arbitrary the client picks the address, so that is a cheap
+ * way to exhaust both the per-IP and global dimensions.
+ *
+ * Asserted against the integration rather than SessionManager, for the same
+ * reason as the tests above: the counters were never wrong in isolation.
+ */
+describe('a timed-out dial releases its reservation', () => {
+  test('capacity after repeated timeouts equals capacity before', async () => {
+    const originalCreateConnection = net.createConnection;
+    try {
+      // A socket that connects to nothing and never errors — the black hole.
+      net.createConnection = (() => {
+        const s = new EventEmitter() as unknown as net.Socket;
+        (s as unknown as { destroy: () => void }).destroy = () => {};
+        (s as unknown as { off: () => void }).off = () => {};
+        (
+          s as unknown as { once: (e: string, f: () => void) => unknown }
+        ).once = () => s;
+        return s;
+      }) as typeof net.createConnection;
+
+      const si = new SessionIntegration({
+        sessions: { maxPerIP: 2, maxPerDevice: 5, timeoutHours: 24 },
+        targets: {
+          targetMode: 'fixed',
+          defaultHost: 'mud.example.org',
+          defaultPort: 4000,
+        } as never,
+        mudTlsMode: 'plain',
+        mudDialTimeoutMs: 20,
+      });
+
+      const before = si.sessionManager.pendingDials('127.0.0.1');
+
+      for (let i = 0; i < 4; i++) {
+        const socket = makeSocket();
+        si.parseNewMessage(
+          socket,
+          Buffer.from(
+            JSON.stringify({
+              type: 'connect',
+              host: 'mud.example.org',
+              port: 4000,
+            }),
+          ),
+        );
+        await Bun.sleep(80);
+      }
+
+      // The decisive assertion: four black-holed dials, no capacity consumed.
+      expect(si.sessionManager.pendingDials('127.0.0.1')).toBe(before);
+
+      // And the budget is genuinely usable afterwards, not merely zeroed.
+      expect(si.sessionManager.reservePendingDial('127.0.0.1').allowed).toBe(
+        true,
+      );
+      si.shutdown();
+    } finally {
+      net.createConnection = originalCreateConnection;
+    }
+  }, 15000);
 });

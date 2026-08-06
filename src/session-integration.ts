@@ -104,6 +104,8 @@ export interface SessionIntegrationConfig {
   resolveTarget?: (host: string) => Promise<ResolvedTarget>;
   /** Upstream TLS policy. Defaults to `prefer`, matching prior behaviour. */
   mudTlsMode?: MudTlsMode;
+  /** Bounds the upstream dial (MWP-127). */
+  mudDialTimeoutMs?: number;
   trustedProxyCidrs?: boolean | string[];
   /** Telnet-side byte caps (MWP-93). Omitted keeps the built-in defaults. */
   telnet?: TelnetLimitsConfig;
@@ -548,6 +550,7 @@ export class SessionIntegration {
         this.config.buffer.sizeKB * 1024,
       dialAddress,
       this.config.mudTlsMode ?? 'prefer',
+      this.config.mudDialTimeoutMs ?? 10_000,
       this.config.telnet?.maxSubnegotiationBytes,
     );
     // The reservation is deliberately NOT released here. Creating the Session

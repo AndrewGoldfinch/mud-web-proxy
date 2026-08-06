@@ -93,6 +93,7 @@ export class SessionManager {
     bufferSizeBytes: number = 50 * 1024,
     dialAddress?: string,
     tlsMode?: MudTlsMode,
+    dialTimeoutMs?: number,
     maxSubnegotiationBytes?: number,
   ): Session {
     const session = new Session(
@@ -101,6 +102,7 @@ export class SessionManager {
       bufferSizeBytes,
       dialAddress,
       tlsMode,
+      dialTimeoutMs,
       maxSubnegotiationBytes,
     );
 

@@ -208,6 +208,7 @@ const sessionIntegration = new SessionIntegration({
   },
   trustedProxyCidrs: runtimeConfig.trustedProxyCidrs,
   mudTlsMode: runtimeConfig.mudTlsMode,
+  mudDialTimeoutMs: runtimeConfig.mudDialTimeoutMs,
   // APNS config from environment
   apns: runtimeConfig.apns,
 });
@@ -2415,6 +2416,7 @@ const srv: ServerConfig = {
       dialAddress: dialAddress || host,
       port,
       mode: runtimeConfig.mudTlsMode,
+      dialTimeoutMs: runtimeConfig.mudDialTimeoutMs,
       signal: controller.signal,
       onDowngrade: (reason) => {
         srv.logWarn(

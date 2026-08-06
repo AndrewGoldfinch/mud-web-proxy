@@ -179,11 +179,10 @@ describe('Fresh Connection', () => {
   // far longer than any reasonable test. The refused-connection path is
   // still covered by 'should return error for invalid port'.
   //
-  // This matters beyond tests: with TARGET_MODE=arbitrary the client names
-  // the host, so a black-holed target holds its reserved dial slot for the
-  // full OS timeout. Left as a skip so it starts passing once a dial
-  // timeout exists.
-  it.skip('should return error for unreachable host', async () => {
+  // Un-skipped by MWP-127: MUD_DIAL_TIMEOUT_MS now bounds the connect, so a
+  // black-holed target fails in seconds instead of holding its reserved dial
+  // slot for the full OS retry budget.
+  it('should return error for unreachable host', async () => {
     // PROXY_PORT + 1 is MOCK_MUD_PORT, so this used to try to bind the port
     // the mock MUD already held and fail before asserting anything.
     const badProxy = await startTestProxy(PROXY_PORT + 60, {

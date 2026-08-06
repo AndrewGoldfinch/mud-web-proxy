@@ -310,6 +310,7 @@ export interface RuntimeConfig {
 
   // MUD upstream TLS (sibling MWP-89)
   mudTlsMode: MudTlsMode;
+  mudDialTimeoutMs: number;
 
   // Legacy / migration flags
   onlyAllowDefaultServer: boolean;
@@ -897,6 +898,16 @@ export const parseRuntimeConfig = (
   );
   const outputBufferBytes = readPositive('OUTPUT_BUFFER_BYTES', 50 * 1024);
 
+  // How long a dial to the MUD may take before it is abandoned (MWP-127).
+  //
+  // A refused connection fails immediately, but a routable address that
+  // silently drops SYNs hangs until the OS retry budget runs out — about two
+  // minutes on Linux. That is a capacity problem rather than a slow request:
+  // an in-flight dial holds a reservation in both the per-IP and global
+  // dimensions, and under TARGET_MODE=arbitrary the client chooses the
+  // address, so one cheap frame buys two minutes of held capacity.
+  const mudDialTimeoutMs = readPositive('MUD_DIAL_TIMEOUT_MS', 10_000);
+
   // ---- Inbound message rate (MWP-124) ----
   // Connection caps bound how many sessions a client may hold; these bound how
   // fast it may talk through them. Each `input` frame becomes a telnet write, so
@@ -991,6 +1002,7 @@ export const parseRuntimeConfig = (
     allowQuerySecret,
     inboundTlsMode,
     mudTlsMode,
+    mudDialTimeoutMs,
     onlyAllowDefaultServer: targetMode === 'fixed',
     allowedTargets,
     allowedOrigins,

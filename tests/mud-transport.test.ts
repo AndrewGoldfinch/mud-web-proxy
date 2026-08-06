@@ -35,6 +35,29 @@ afterEach(() => {
 const asTelnetSocket = (socket: TestSocket): TelnetSocket =>
   socket as unknown as TelnetSocket;
 
+/** Distinct from the 4,000 ms handshake deadline so the two never collide. */
+const DIAL_TIMEOUT_FOR_TESTS = 30_000;
+
+/**
+ * The handshake timers only. Since MWP-127 a dial timer is armed first on
+ * every connect, so a bare view of every timer no longer isolates the
+ * handshake deadline these tests are about.
+ */
+const handshakeOnly = (timers: {
+  callbacks: Array<() => void>;
+  delays: number[];
+  handles: Array<ReturnType<typeof setTimeout>>;
+}) => {
+  const idx = timers.delays
+    .map((d, i) => (d !== DIAL_TIMEOUT_FOR_TESTS ? i : -1))
+    .filter((i) => i >= 0);
+  return {
+    callbacks: idx.map((i) => timers.callbacks[i]),
+    delays: idx.map((i) => timers.delays[i]),
+    handles: idx.map((i) => timers.handles[i]),
+  };
+};
+
 const connectionOptions = (
   mode: 'plain' | 'prefer' | 'required',
   signal: AbortSignal,
@@ -46,6 +69,9 @@ const connectionOptions = (
   port: 4000,
   mode,
   signal,
+  // Distinct from TLS_HANDSHAKE_TIMEOUT_MS so a test can always tell which
+  // timer it is looking at. MWP-127 added a second one.
+  dialTimeoutMs: DIAL_TIMEOUT_FOR_TESTS,
   onDowngrade: (reason: string) => downgrades.push(reason),
   onConnected: (connection: ConnectedMudTransport) =>
     connected.push(connection),
@@ -544,19 +570,20 @@ describe('connectMudTransport TLS handshake deadline', () => {
       connectionOptions('prefer', controller.signal, connected, downgrades),
     );
 
-    expect(timers.callbacks).toHaveLength(0);
-    expect(timers.delays).toEqual([]);
+    expect(handshakeOnly(timers).callbacks).toHaveLength(0);
+    expect(handshakeOnly(timers).delays).toEqual([]);
 
     tlsSocket.emit('connect');
     tlsSocket.emit('connect');
 
-    expect(timers.callbacks).toHaveLength(1);
-    expect(timers.delays).toEqual([4_000]);
+    expect(handshakeOnly(timers).callbacks).toHaveLength(1);
+    expect(handshakeOnly(timers).delays).toEqual([4_000]);
 
     tlsSocket.emit('secureConnect');
     await pending;
 
-    expect(timers.cleared).toEqual([timers.handles[0]]);
+    const hsHandle = handshakeOnly(timers).handles[0];
+    expect(timers.cleared.filter((h) => h === hsHandle)).toHaveLength(1);
     expect(connected).toHaveLength(1);
     expect(downgrades).toEqual([]);
   });
@@ -579,14 +606,15 @@ describe('connectMudTransport TLS handshake deadline', () => {
       connectionOptions('prefer', controller.signal, connected, downgrades),
     );
 
-    expect(timers.callbacks).toHaveLength(0);
+    expect(handshakeOnly(timers).callbacks).toHaveLength(0);
     tlsSocket.emit('connect');
-    expect(timers.delays).toEqual([4_000]);
+    expect(handshakeOnly(timers).delays).toEqual([4_000]);
 
-    timers.callbacks[0]?.();
-    timers.callbacks[0]?.();
+    handshakeOnly(timers).callbacks[0]?.();
+    handshakeOnly(timers).callbacks[0]?.();
 
-    expect(timers.cleared).toEqual([timers.handles[0]]);
+    const hsHandle = handshakeOnly(timers).handles[0];
+    expect(timers.cleared.filter((h) => h === hsHandle)).toHaveLength(1);
     expect(tlsSocket.destroyCalls).toBe(1);
     expect(plainCalls).toBe(1);
     expect(downgrades).toHaveLength(1);
@@ -621,16 +649,17 @@ describe('connectMudTransport TLS handshake deadline', () => {
     );
     const observation = observeRejection(pending);
 
-    expect(timers.callbacks).toHaveLength(0);
+    expect(handshakeOnly(timers).callbacks).toHaveLength(0);
     tlsSocket.emit('connect');
-    expect(timers.delays).toEqual([4_000]);
-    timers.callbacks[0]?.();
+    expect(handshakeOnly(timers).delays).toEqual([4_000]);
+    handshakeOnly(timers).callbacks[0]?.();
     await Promise.resolve();
 
     expect(observation.rejection?.message).toBe(
       'MUD_TLS_MODE=required: TLS handshake timed out after 4000ms and plaintext fallback is not permitted.',
     );
-    expect(timers.cleared).toEqual([timers.handles[0]]);
+    const hsHandle = handshakeOnly(timers).handles[0];
+    expect(timers.cleared.filter((h) => h === hsHandle)).toHaveLength(1);
     expect(tlsSocket.destroyCalls).toBe(1);
     expect(plainCalls).toBe(0);
     expect(downgrades).toEqual([]);
@@ -658,7 +687,8 @@ describe('connectMudTransport TLS handshake deadline', () => {
     tlsSocket.emit('error', transportError);
     await Promise.resolve();
 
-    expect(timers.cleared).toEqual([timers.handles[0]]);
+    const hsHandle = handshakeOnly(timers).handles[0];
+    expect(timers.cleared.filter((h) => h === hsHandle)).toHaveLength(1);
     expect(observation.rejection).toBe(transportError);
     await observation.observed;
   });
@@ -680,7 +710,8 @@ describe('connectMudTransport TLS handshake deadline', () => {
     tlsSocket.emit('close');
     await Promise.resolve();
 
-    expect(timers.cleared).toEqual([timers.handles[0]]);
+    const hsHandle = handshakeOnly(timers).handles[0];
+    expect(timers.cleared.filter((h) => h === hsHandle)).toHaveLength(1);
     expect(observation.rejection?.message).toBe(
       'MUD_TLS_MODE=required: TLS connection failed and plaintext fallback is not permitted.',
     );
@@ -746,14 +777,15 @@ describe('connectMudTransport abort and callback ownership', () => {
     tlsSocket.emit('error', new Error('wrong version number'));
     tlsSocket.emit('close');
     tlsSocket.emit('secureConnect');
-    timers.callbacks[0]?.();
+    handshakeOnly(timers).callbacks[0]?.();
     await Promise.resolve();
 
     expect(observation.rejection?.message).toBe(
       'MUD transport connection aborted',
     );
     expect(tlsSocket.destroyCalls).toBe(1);
-    expect(timers.cleared).toEqual([timers.handles[0]]);
+    const hsHandle = handshakeOnly(timers).handles[0];
+    expect(timers.cleared.filter((h) => h === hsHandle)).toHaveLength(1);
     expect(plainCalls).toBe(0);
     expect(downgrades).toEqual([]);
     expect(connected).toEqual([]);
@@ -911,5 +943,79 @@ describe('describeTransportError', () => {
 
   test('accepts a thrown non-Error', () => {
     expect(describeTransportError('just a string')).toBe('just a string');
+  });
+});
+
+/**
+ * MWP-127. Nothing bounded how long a dial could take. A refused connection
+ * fails fast, but a routable target that silently drops SYNs hangs until the
+ * OS retry budget runs out — roughly two minutes on Linux.
+ *
+ * That is a capacity problem, not just a slow request: an in-flight dial holds
+ * a reservation in both the per-IP and global dimensions (MWP-92), and under
+ * TARGET_MODE=arbitrary the client picks the address. One cheap WebSocket
+ * frame buys two minutes of held capacity.
+ *
+ * The issue predates MWP-135 and says to fix this in Session.connect(). That
+ * would only cover typed sessions; dialling now lives here, so bounding it
+ * here covers the legacy protocol too.
+ */
+describe('dial timeout', () => {
+  test('a silent plain dial is abandoned at the deadline', async () => {
+    const socket = new TestSocket(); // never emits connect
+    const connected: ConnectedMudTransport[] = [];
+    const downgrades: string[] = [];
+    let armed: number | undefined;
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      if (armed === undefined) armed = ms;
+      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof globalThis.setTimeout;
+    let fire: (() => void) | undefined;
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
+      if (armed === undefined) {
+        armed = ms;
+        fire = fn;
+      }
+      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof globalThis.setTimeout;
+
+    net.createConnection = (() => asTelnetSocket(socket)) as never;
+
+    const controller = new AbortController();
+    const pending = connectMudTransport({
+      ...connectionOptions('plain', controller.signal, connected, downgrades),
+      dialTimeoutMs: 10_000,
+    });
+
+    expect(armed).toBe(10_000);
+    fire?.();
+
+    await expect(pending).rejects.toThrow(/dial.*timed out|timed out/i);
+    expect(socket.destroyCalls).toBeGreaterThan(0);
+    expect(connected).toHaveLength(0);
+  });
+
+  test('a dial that connects in time clears the deadline', async () => {
+    const socket = new TestSocket();
+    const connected: ConnectedMudTransport[] = [];
+    const downgrades: string[] = [];
+    let cleared = 0;
+    globalThis.clearTimeout = (() => {
+      cleared++;
+    }) as typeof globalThis.clearTimeout;
+
+    net.createConnection = (() => asTelnetSocket(socket)) as never;
+    const controller = new AbortController();
+    const pending = connectMudTransport({
+      ...connectionOptions('plain', controller.signal, connected, downgrades),
+      dialTimeoutMs: 10_000,
+    });
+
+    socket.emit('connect');
+    await pending;
+
+    expect(connected).toHaveLength(1);
+    expect(cleared).toBeGreaterThan(0);
+    expect(socket.destroyCalls).toBe(0);
   });
 });
