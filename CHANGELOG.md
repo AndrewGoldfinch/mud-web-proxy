@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Refusals at the WebSocket upgrade now record a reason in the log. A rejected
+  Origin names the value that was received — the usual cause is one that is
+  nearly right, a trailing slash or `http` for `https` — and a missing Origin
+  is reported distinctly, because the two have different fixes. Draining
+  refusals log too. Previously an operator saw the upgrade request and then
+  silence, while the client was told `1008 403 Forbidden`, so the person who
+  could fix the configuration knew less than the person hitting it.
+
 - **Connections refused at the WebSocket upgrade now close with a WebSocket
   close code instead of an HTTP status.** `1008` for a refusal that retrying
   will not fix (`401 Unauthorized`, `403 Forbidden`), `1013` for a temporary
