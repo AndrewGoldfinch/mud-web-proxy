@@ -1913,12 +1913,38 @@ const srv: ServerConfig = {
           undefined,
           'auth',
         );
+        // Both refusals below log for the same reason the auth refusals
+        // further down do, and they did not until MWP-138: an operator saw
+        // the "Upgrade request" line above and then silence, with no reason
+        // recorded anywhere. Since MWP-136 the *client* is told `1008
+        // 403 Forbidden`, so the person who can actually fix a wrong
+        // ALLOWED_ORIGINS knew less than the person hitting it.
+        //
+        // The received Origin is client-supplied and reaches the log through
+        // `srv.log`, which routes every message through `redactLogMessage`
+        // and so neutralizes control sequences. Do not add a second
+        // neutralize call here; do not bypass `srv.log` to add one.
         if (!srv.open) {
+          srv.logWarn(
+            'Rejected upgrade: server is draining',
+            undefined,
+            'auth',
+          );
           rejectUpgrade(503, 'Service Unavailable');
           return;
         }
 
         if (!srv.originAllowed(req)) {
+          // Naming the received value is the whole point: the usual cause is
+          // a value that is nearly right — a trailing slash, http for https,
+          // a missing port — which is invisible without seeing it. The
+          // allowlist itself is deliberately not logged on every rejection.
+          const receivedOrigin = getHeaderValue(req.headers.origin);
+          srv.logWarn(
+            `Rejected upgrade: origin not allowed (received ${receivedOrigin || '<missing>'})`,
+            undefined,
+            'auth',
+          );
           rejectUpgrade(403, 'Forbidden');
           return;
         }
@@ -2108,12 +2134,32 @@ const srv: ServerConfig = {
           undefined,
           'ws',
         );
+        // Defence in depth: the upgrade handler already applied both checks,
+        // so reaching either of these means something upstream changed and
+        // that is worth a line rather than a silent disconnect.
+        //
+        // `terminate()` is kept rather than switched to a close code. By this
+        // point the upgrade has completed, so a code *would* reach the
+        // client — but a client arriving here has already passed the same
+        // check moments earlier, so this is a should-never-happen path and
+        // the log is what matters, not the courtesy. Revisit if it ever fires.
         if (!srv.open) {
+          srv.logWarn(
+            'Refused connection: server is draining',
+            undefined,
+            'ws',
+          );
           socket.terminate();
           return;
         }
 
         if (!srv.originAllowed(req)) {
+          const lateOrigin = getHeaderValue(req.headers.origin);
+          srv.logWarn(
+            `Refused connection: origin not allowed (received ${lateOrigin || '<missing>'})`,
+            undefined,
+            'ws',
+          );
           socket.terminate();
           return;
         }
