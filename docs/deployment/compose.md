@@ -15,8 +15,23 @@ immutable published image, a host you do not manage packages on, or a
 platform that already speaks Compose.
 
 Both paths share the same architecture — Caddy in front, one Bun process
-behind, plaintext only on the internal hop — so the security properties are
-equivalent. Only the packaging differs.
+behind, plaintext only on the internal hop — so the boundary is the same.
+Only the packaging differs.
+
+One default does not match, and it is worth knowing before you go public:
+the systemd environment example sets `ALLOWED_ORIGINS` and the documented
+render fills in your hostname, while `.env.compose.example` ships it
+commented out. A Compose stack brought up unedited therefore accepts **any**
+Origin, and says so at startup:
+
+```
+WARN [init] ALLOWED_ORIGINS is not set: connections from any Origin are
+accepted. Set it for internet-facing deployments.
+```
+
+Origin is browser hardening rather than authentication — a native client
+sends whatever it likes — so this is not a hole on its own. Set it anyway if
+browsers are your clients; see [Configuration](#configuration).
 
 ## Requirements
 
