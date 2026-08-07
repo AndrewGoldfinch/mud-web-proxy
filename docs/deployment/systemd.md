@@ -599,6 +599,60 @@ After the current-link procedure exits zero, run the separate
 `Apply an activated release` phase, then validate `/health`, WSS, and a
 mock-MUD session.
 
+## Release canary
+
+Before a stable release, MWP-123 asks for seven days of evidence that memory,
+file descriptors, reconnects, and session cleanup are flat under real traffic.
+Growth in any of them is a blocker, and "it seemed fine" does not clear the
+bar — so it is sampled rather than watched.
+
+Install the sampler and its timer on the host running the release candidate:
+
+```bash
+install -m 0755 scripts/canary-sample.sh \
+  /usr/local/bin/mud-web-proxy-canary-sample
+install -m 0644 deploy/systemd/mud-web-proxy-canary.service \
+  /etc/systemd/system/mud-web-proxy-canary.service
+install -m 0644 deploy/systemd/mud-web-proxy-canary.timer \
+  /etc/systemd/system/mud-web-proxy-canary.timer
+systemctl daemon-reload
+systemctl enable --now mud-web-proxy-canary.timer
+```
+
+The sampler is installed to `/usr/local/bin` rather than the release
+directory on purpose: the release bundle ships a deliberate six-file
+allowlist, and a one-week diagnostic does not belong in every published
+artifact.
+
+It is read-only — `/proc`, `systemctl show`, and the journal — and needs no
+configuration change to the service it watches. One row every five minutes
+lands in `/var/lib/mud-web-proxy-canary/samples.csv`, roughly 2,000 rows over
+a week.
+
+After seven days:
+
+```bash
+bun scripts/canary-report.ts /var/lib/mud-web-proxy-canary/samples.csv
+```
+
+| Exit | Meaning                                                         |
+| ---- | --------------------------------------------------------------- |
+| `0`  | Pass. Seven unbroken days, no growth, no restarts.              |
+| `1`  | Fail. A trend or a restart the gate treats as a blocker.        |
+| `2`  | Incomplete. Not enough elapsed time or usable data to conclude. |
+
+**`2` is not a pass.** A window shorter than seven days is an unfinished
+measurement, and the script refuses to call it green rather than letting the
+canary become a formality.
+
+The thresholds come from the limits the unit already enforces — `MemoryMax`
+and `LimitNOFILE` — set so that the observed trend would not reach the
+ceiling within a year of uptime. Restarts are handled by judging the longest
+unbroken run: a service that keeps dying looks flat, because each restart
+resets the counters, and flatness earned that way is not health.
+
+Attach the CSV and the report to MWP-123 before closing it.
+
 ## Retention and pruning
 
 Retain the active release, the release named by the non-empty root-only

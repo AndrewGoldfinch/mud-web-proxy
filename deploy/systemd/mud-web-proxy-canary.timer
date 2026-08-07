@@ -1,0 +1,14 @@
+# Five minutes: fine enough that a leak is visible well before seven days,
+# coarse enough that a week is ~2000 rows rather than a log-sized artifact.
+[Unit]
+Description=Periodic mud-web-proxy canary sampling
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+# Samples missed while the host was down are gaps in the evidence, not
+# something to backfill in a burst on boot.
+Persistent=false
+
+[Install]
+WantedBy=timers.target
