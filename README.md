@@ -55,9 +55,14 @@ HTTPS/WSS and obtain certificates automatically.
 The portable path. Caddy and the proxy run as two containers; only 80 and 443
 are published.
 
+A clean Ubuntu image has neither Docker nor the Compose plugin; install them
+from [Docker's own repository](https://docs.docker.com/engine/install/) first.
+The distribution's `docker.io` package will not do — it omits Compose v2.
+
 ```bash
 git clone https://github.com/AndrewGoldfinch/mud-web-proxy
 cd mud-web-proxy
+git checkout v4.0.0     # a release; omit to track unreleased main
 cp .env.compose.example .env
 ```
 

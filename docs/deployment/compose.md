@@ -15,8 +15,23 @@ immutable published image, a host you do not manage packages on, or a
 platform that already speaks Compose.
 
 Both paths share the same architecture — Caddy in front, one Bun process
-behind, plaintext only on the internal hop — so the security properties are
-equivalent. Only the packaging differs.
+behind, plaintext only on the internal hop — so the boundary is the same.
+Only the packaging differs.
+
+One default does not match, and it is worth knowing before you go public:
+the systemd environment example sets `ALLOWED_ORIGINS` and the documented
+render fills in your hostname, while `.env.compose.example` ships it
+commented out. A Compose stack brought up unedited therefore accepts **any**
+Origin, and says so at startup:
+
+```
+WARN [init] ALLOWED_ORIGINS is not set: connections from any Origin are
+accepted. Set it for internet-facing deployments.
+```
+
+Origin is browser hardening rather than authentication — a native client
+sends whatever it likes — so this is not a hole on its own. Set it anyway if
+browsers are your clients; see [Configuration](#configuration).
 
 ## Requirements
 
@@ -27,13 +42,37 @@ equivalent. Only the packaging differs.
 Port 80 is not optional. Caddy uses the HTTP-01 challenge, so closing 80
 after issuance breaks **renewal**, not just the initial certificate.
 
+A clean Ubuntu image has neither Docker nor the Compose plugin, and the
+distribution's `docker.io` package does not include Compose v2. Install from
+Docker's own repository, following
+[their instructions](https://docs.docker.com/engine/install/), then confirm
+both halves are present — `docker compose version` failing while
+`docker --version` succeeds is the usual symptom of installing the engine
+alone:
+
+```bash
+docker --version
+docker compose version
+```
+
 ## Quickstart
 
 ```bash
+git clone https://github.com/AndrewGoldfinch/mud-web-proxy
+cd mud-web-proxy
+git checkout v4.0.0            # omit to track main, which is unreleased
 cp .env.compose.example .env
-$EDITOR .env          # fill in the required values
+$EDITOR .env                   # fill in the required values
 docker compose up -d
 ```
+
+**Check out a release tag.** Cloning without one leaves you on `main`, and
+because `MWP_IMAGE` is unset by default the stack _builds that working tree
+from source_ rather than pulling a published image — so an operator who
+skipped this step is running unreleased code without being told. Setting
+`MWP_IMAGE` to a published digest, as
+[images.md](images.md) describes, is the better answer for anything you
+intend to keep running; see [Upgrading](#upgrading).
 
 The example ships with its required values empty and `compose.yaml` declares
 them as `${VAR:?...}`, so an unedited copy fails immediately with a named
@@ -60,13 +99,13 @@ deliberate: enumerating a subset here would silently gate which of the ~58
 documented variables are usable, and drift out of step the moment either
 side changed.
 
-| Variable         | Required | Purpose                                            |
-| ---------------- | -------- | -------------------------------------------------- |
-| `MWP_DOMAIN`     | yes      | Public hostname; the certificate is issued for it  |
-| `MWP_ACME_EMAIL` | yes      | Let's Encrypt account contact, for expiry warnings |
-| `TN_HOST`        | yes      | The MUD to front, under the default `TARGET_MODE`  |
-| `TN_PORT`        | no       | Defaults to `4000`                                 |
-| `MWP_IMAGE`      | no       | Published image; unset builds from source          |
+| Variable         | Required | Purpose                                              |
+| ---------------- | -------- | ---------------------------------------------------- |
+| `MWP_DOMAIN`     | yes      | Public hostname; the certificate is issued for it    |
+| `MWP_ACME_EMAIL` | yes      | Let's Encrypt account contact, for expiry warnings   |
+| `TN_HOST`        | yes      | The MUD to front, under the default `TARGET_MODE`    |
+| `TN_PORT`        | no       | The example ships `5010`; unset falls back to `4000` |
+| `MWP_IMAGE`      | no       | Published image; unset builds from source            |
 
 `TN_HOST` is required rather than defaulted because the proxy's built-in
 default is a real third-party server (`muds.maldorne.org`). Leaving it

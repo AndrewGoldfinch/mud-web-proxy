@@ -108,6 +108,23 @@ release asset; verify its published SHA-256; install it under
 `/opt/mud-web-proxy/runtimes/bun/$BUN_VERSION/bin/bun --version` to print
 `$BUN_VERSION`. The initial pinned version is Bun 1.3.14.
 
+Those are the requirements; this is the sequence that satisfies them. Nothing
+else on this page installs the runtime, and the `curl … | bash` installer in
+the README puts Bun in `~/.bun`, which is **not** the path the unit executes —
+so skipping this leaves `$BUN` below pointing at a file that does not exist:
+
+```bash
+BUN_VERSION="$(cat "$RELEASE_DIR/.bun-version")"
+DEST="/opt/mud-web-proxy/runtimes/bun/$BUN_VERSION"
+cd "$(mktemp -d)"
+curl -fsSLO "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/bun-linux-x64.zip"
+curl -fsSLO "https://github.com/oven-sh/bun/releases/download/bun-v${BUN_VERSION}/SHASUMS256.txt"
+grep " bun-linux-x64.zip$" SHASUMS256.txt | sha256sum -c -
+unzip -q bun-linux-x64.zip
+install -D -o root -g root -m 0755 bun-linux-x64/bun "$DEST/bin/bun"
+[[ "$("$DEST/bin/bun" --version)" == "$BUN_VERSION" ]]
+```
+
 Bun's global package-download cache is disposable installer state, not
 immutable release content, backup data, or a rollback dependency.
 
@@ -272,15 +289,27 @@ A clean Ubuntu 26.04 image ships with neither of the tools this section
 requires. Install them before anything else:
 
 ```bash
-apt-get update && apt-get install -y unzip gh
+apt-get update && apt-get install -y unzip
 ```
 
 `unzip` is not optional — the Bun installer aborts with `error: unzip is
 required to install bun`, so the runtime install below fails outright rather
-than degrading. `gh` is needed for the attestation check; without it the
-provenance step cannot run at all.
+than degrading.
 
-Both were confirmed missing on a fresh Ubuntu 26.04 Droplet on 2026-08-01.
+**Do not install `gh` from apt.** Ubuntu 26.04 ships `gh` 2.46, and
+`gh attestation` was added in 2.47, so the apt package cannot run the
+provenance check this page requires — verified on a clean 26.04 Droplet on
+2026-08-07, where `gh attestation --help` exits non-zero. Install a current
+release from GitHub instead:
+
+```bash
+GH_VERSION=2.63.2
+curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.deb"
+apt-get install -y "./gh_${GH_VERSION}_linux_amd64.deb"
+gh attestation --help >/dev/null    # must succeed before continuing
+```
+
+`unzip` was confirmed missing on a fresh Ubuntu 26.04 Droplet on 2026-08-01.
 
 ### Obtain and verify the bundle
 
@@ -291,10 +320,16 @@ Verification is a required step, not an optional one. Both checks run
 **before extraction**, because extracting first means an unverified archive
 has already written to the filesystem:
 
+`gh release download` authenticates even against a public repository, so on a
+clean host it stops with `To get started with GitHub CLI, please run:
+gh auth login`. Downloading needs no account; fetch the assets directly and
+keep `gh` for the attestation step, which does require a token:
+
 ```bash
 VERSION=4.0.0
-gh release download "v${VERSION}" --repo AndrewGoldfinch/mud-web-proxy \
-  --pattern 'mud-web-proxy-*.tar.gz' --pattern 'SHA256SUMS'
+BASE="https://github.com/AndrewGoldfinch/mud-web-proxy/releases/download/v${VERSION}"
+curl -fsSLO "${BASE}/mud-web-proxy-${VERSION}.tar.gz"
+curl -fsSLO "${BASE}/SHA256SUMS"
 
 # 1. Integrity: the archive is the one the checksum names.
 sha256sum -c SHA256SUMS
