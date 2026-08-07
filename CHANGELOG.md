@@ -51,7 +51,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for the life of the process.
 - A frame the client has already acknowledged is no longer replayed on resume.
 
-## [4.0.0] - 2026-08-05
+## [4.0.0] - unreleased
+
+Not yet published. This section is complete and the date is stamped when the
+release is tagged; until then there is no `v4.0.0` tag and no GitHub release.
+Release candidates are published as `v4.0.0-rc.N` and are not listed here.
 
 First public release. Version numbers below 4.0.0 exist only in this
 repository's history and were never published, so there is no migration path
@@ -115,6 +119,13 @@ security setting is a protection that disappears without anyone noticing.
 
 - **PM2** was removed from the supported deployment matrix. The native path is
   systemd.
+
+<!--
+  Both links below point at a v4.0.0 tag that does not exist yet, so they are
+  deliberately left as the destinations they will have once it does rather
+  than pointed somewhere temporarily correct. Stamp the date above and these
+  resolve on their own.
+-->
 
 [unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.0...HEAD
 [4.0.0]: https://github.com/AndrewGoldfinch/mud-web-proxy/releases/tag/v4.0.0
