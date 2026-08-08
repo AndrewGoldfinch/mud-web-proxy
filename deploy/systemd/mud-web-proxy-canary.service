@@ -1,0 +1,21 @@
+# One canary sample. Driven by mud-web-proxy-canary.timer.
+#
+# Separate from the proxy unit on purpose: it must not be able to affect the
+# thing it is measuring, and a sampler that crashed the service it watches
+# would be a poor canary.
+[Unit]
+Description=Sample mud-web-proxy resource usage for the release canary
+After=mud-web-proxy.service
+
+[Service]
+Type=oneshot
+# /usr/local/bin, not the release directory: the release bundle ships a
+# six-file allowlist that deliberately excludes scripts/, and a one-week
+# diagnostic does not belong in every published artifact. Install with
+#   install -m 0755 scripts/canary-sample.sh /usr/local/bin/mud-web-proxy-canary-sample
+ExecStart=/usr/local/bin/mud-web-proxy-canary-sample
+# Reads /proc and the journal, writes one CSV. Nothing else.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mud-web-proxy-canary
+PrivateTmp=yes
+NoNewPrivileges=yes
