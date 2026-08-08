@@ -24,6 +24,7 @@ interface Sample {
   nrestarts: number | null;
   memMaxBytes: number | null;
   nofileLimit: number | null;
+  memPeakBytes: number | null;
 }
 
 const num = (v: string): number | null => {
@@ -50,6 +51,9 @@ function parse(csv: string): Sample[] {
         nrestarts: num(f[6]),
         memMaxBytes: num(f[8]),
         nofileLimit: num(f[9]),
+        // Added after the first canary began; rows written before it are
+        // shorter, so this is absent rather than zero for them.
+        memPeakBytes: f.length > 10 ? num(f[10]) : null,
       },
     ];
   });
@@ -151,6 +155,19 @@ if (memMax !== null) {
 console.log(
   `  rss trend        ${rssSlope === null ? 'n/a' : `${fmt(rssSlope / 1024)} MiB/day`}`,
 );
+// systemd's own high-water mark. Reported alongside sampled RSS because a
+// five-minute sample can step over a transient spike, and because it is the
+// figure directly comparable to the "Consumed ... memory peak" line systemd
+// prints when a unit stops — the only number available for runs that predate
+// this sampler.
+const peaks = longest
+  .map((s2) => s2.memPeakBytes)
+  .filter((v): v is number => v !== null);
+if (peaks.length > 0) {
+  const p = Math.max(...peaks);
+  const pct = memMax !== null ? ` (${fmt((p / memMax) * 100)}% of limit)` : '';
+  console.log(`  systemd peak     ${fmt(p / 1048576)} MiB${pct}`);
+}
 if (nofile !== null) {
   console.log(
     `  fd peak          ${fmt(peak(fdValues), 0)} of ${nofile} limit`,

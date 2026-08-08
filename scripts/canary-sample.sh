@@ -20,7 +20,7 @@ mkdir -p "$(dirname "$OUT")"
 
 # Header once, so the file is self-describing when it is attached as evidence.
 if [[ ! -s "$OUT" ]]; then
-  echo 'iso8601,unix,pid,rss_kib,fds,threads,nrestarts,active_sockets,mem_max_bytes,nofile_limit' >"$OUT"
+  echo 'iso8601,unix,pid,rss_kib,fds,threads,nrestarts,active_sockets,mem_max_bytes,nofile_limit,mem_peak_bytes,cpu_nsec' >"$OUT"
 fi
 
 now_iso="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -61,6 +61,18 @@ mem_max="$(systemctl show -p MemoryMax --value "$SERVICE" 2>/dev/null)"
 nofile="$(systemctl show -p LimitNOFILE --value "$SERVICE" 2>/dev/null)"
 [[ "$nofile" =~ ^[0-9]+$ ]] || nofile=""
 
-printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+# systemd's own high-water mark, and cumulative CPU. MemoryPeak matters
+# because sampled RSS can step straight over a transient spike between two
+# five-minute reads, and a peak cannot be missed that way. It also lets a
+# finished run be compared against the `Consumed ... memory peak` line systemd
+# prints on stop, which is the only figure available for runs that predate
+# this sampler — rc.9 reported 151.6M over 5d 10h that way.
+mem_peak="$(systemctl show -p MemoryPeak --value "$SERVICE" 2>/dev/null)"
+[[ "$mem_peak" =~ ^[0-9]+$ ]] || mem_peak=""
+cpu_nsec="$(systemctl show -p CPUUsageNSec --value "$SERVICE" 2>/dev/null)"
+[[ "$cpu_nsec" =~ ^[0-9]+$ ]] || cpu_nsec=""
+
+printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
   "$now_iso" "$now_unix" "$pid" "$rss" "$fds" "$threads" \
-  "$nrestarts" "$active_sockets" "$mem_max" "$nofile" >>"$OUT"
+  "$nrestarts" "$active_sockets" "$mem_max" "$nofile" \
+  "$mem_peak" "$cpu_nsec" >>"$OUT"
