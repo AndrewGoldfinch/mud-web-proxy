@@ -16,6 +16,14 @@ Type=oneshot
 ExecStart=/usr/local/bin/mud-web-proxy-canary-sample
 # Reads /proc and the journal, writes one CSV. Nothing else.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/mud-web-proxy-canary
+# StateDirectory, not ReadWritePaths. `ReadWritePaths` requires the path to
+# exist already: systemd builds the mount namespace before ExecStart runs, so
+# the script's own `mkdir -p` never gets the chance and the unit dies with
+#   Failed to set up mount namespacing: /var/lib/mud-web-proxy-canary:
+#   No such file or directory   (status 226/NAMESPACE)
+# `systemd-analyze verify` does not catch this — the unit is syntactically
+# fine — so it only shows up on a host. StateDirectory creates the directory,
+# owns it correctly, and implies the write path.
+StateDirectory=mud-web-proxy-canary
 PrivateTmp=yes
 NoNewPrivileges=yes
