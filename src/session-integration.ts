@@ -10,9 +10,6 @@ import { SessionManager } from './session-manager';
 import { errorText } from './error-text';
 import type { Session } from './session';
 import type { SocketExtended } from './types';
-
-/** Membership test over the known types; a Set needs no widening assertion. */
-const KNOWN_TYPE_NAMES: ReadonlySet<string> = new Set(KNOWN_TYPES);
 import { TriggerMatcher } from './trigger-matcher';
 import { NotificationManager } from './notification-manager';
 import { BackgroundPushScheduler } from './background-push-scheduler';
@@ -41,6 +38,9 @@ import {
   type JsonValue,
   type ParseOutcome,
 } from './client-protocol';
+
+/** Membership test over the known types; a Set needs no widening assertion. */
+const KNOWN_TYPE_NAMES: ReadonlySet<string> = new Set(KNOWN_TYPES);
 
 import type {
   ConnectRequest,
