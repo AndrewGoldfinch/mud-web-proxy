@@ -57,7 +57,7 @@
   "homepage": "https://github.com/AndrewGoldfinch/mud-web-proxy#readme",
   "devDependencies": {
     "@oxlint/plugins": "1.78.0",
-    "@types/node": "^26.1.2",
+    "@types/node": "^26.2.0",
     "@types/uglify-js": "^3.17.5",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.2",
