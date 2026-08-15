@@ -1816,7 +1816,11 @@ const srv: ServerConfig = {
               'auth',
             );
             res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: errorText(err) }));
+            res.end(
+              JSON.stringify({
+                error: 'Invalid attestation registration request',
+              }),
+            );
           }
         })();
       } else {
