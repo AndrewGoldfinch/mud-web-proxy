@@ -198,6 +198,35 @@ describe('the key store survives an interrupted write', () => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   });
 
+  test('one malformed entry does not deregister the whole fleet', () => {
+    // Review on #155. Validating the file as a single unit meant a truncated
+    // or hand-edited record threw, the catch swallowed it, and the store came
+    // up empty — every device that had ever registered then failed with
+    // "Unknown key", and clients cache their keyId and never re-register on
+    // their own. One bad record must cost one key, not the fleet.
+    const good = {
+      publicKey: '---PEM---',
+      signCount: 1,
+      registeredAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(
+      keysFile,
+      JSON.stringify({
+        healthy1: good,
+        // signCount arrived as a string; the record is half-written.
+        damaged: { ...good, signCount: 'not-a-number' },
+        healthy2: good,
+      }),
+    );
+
+    loadAttestedKeys(keysFile);
+
+    expect(getAttestedKey('healthy1')?.signCount).toBe(1);
+    expect(getAttestedKey('healthy2')?.signCount).toBe(1);
+    expect(getAttestedKey('damaged')).toBeUndefined();
+  });
+
   test('a completed write round-trips', () => {
     setAttestedKey('key1', {
       publicKey: '---PEM---',

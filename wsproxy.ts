@@ -130,6 +130,7 @@ import {
   verifyAssertion,
   getAttestedKey,
   updateSignCount,
+  AttestationUnavailableError,
 } from './src/app-attest';
 
 // Unhandled-request log rate limiting. Module-level: the counter must
@@ -1558,13 +1559,17 @@ const srv: ServerConfig = {
               }),
             );
           } catch (err) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error: 'Invalid JSON body',
-                detail: errorText(err),
-              }),
+            // The reason goes to the operator, not the caller. It is a parser
+            // message about a request body, which is exactly the kind of
+            // internal detail CodeQL flagged being echoed back on the
+            // attestation route (review on #155); same class, same treatment.
+            srv.logWarn(
+              'rejected JSON body: ' + errorText(err),
+              undefined,
+              'http',
             );
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
           }
         })();
       } else if (
@@ -1703,13 +1708,17 @@ const srv: ServerConfig = {
               }),
             );
           } catch (err) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error: 'Invalid JSON body',
-                detail: errorText(err),
-              }),
+            // The reason goes to the operator, not the caller. It is a parser
+            // message about a request body, which is exactly the kind of
+            // internal detail CodeQL flagged being echoed back on the
+            // attestation route (review on #155); same class, same treatment.
+            srv.logWarn(
+              'rejected JSON body: ' + errorText(err),
+              undefined,
+              'http',
             );
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
           }
         })();
       } else if (
@@ -1815,11 +1824,26 @@ const srv: ServerConfig = {
               undefined,
               'auth',
             );
-            res.writeHead(400, { 'Content-Type': 'application/json' });
+            // The message stays in the log. What the caller gets is a stable
+            // code, because the reason is either "your attestation is bad" —
+            // which the code already says — or a detail about this server's
+            // configuration, which is what CodeQL flagged being echoed back.
+            const unavailable = err instanceof AttestationUnavailableError;
+            res.writeHead(unavailable ? 503 : 400, {
+              'Content-Type': 'application/json',
+            });
             res.end(
-              JSON.stringify({
-                error: 'Invalid attestation registration request',
-              }),
+              JSON.stringify(
+                unavailable
+                  ? {
+                      error: 'Attestation verification is unavailable',
+                      code: 'attestation_unavailable',
+                    }
+                  : {
+                      error: 'Invalid attestation registration request',
+                      code: 'attestation_rejected',
+                    },
+              ),
             );
           }
         })();

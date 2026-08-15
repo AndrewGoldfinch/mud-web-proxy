@@ -532,6 +532,17 @@ export function formatCertSubjectForLog(subject: string): string {
   return neutralizeControlSequences(subject.replace(/\r?\n/g, ', '));
 }
 
+/**
+ * The server cannot verify attestations at all — the Apple root CA is missing.
+ *
+ * Distinct from a rejected attestation: nothing the caller sends will succeed,
+ * so the route answers 503 rather than 400, and the container acceptance test
+ * uses that distinction instead of reading the error text.
+ */
+export class AttestationUnavailableError extends Error {
+  override readonly name = 'AttestationUnavailableError';
+}
+
 export async function verifyAttestation(
   opts: AttestationInput,
 ): Promise<AttestationResult> {
@@ -572,7 +583,13 @@ export async function verifyAttestation(
   // 3. Verify certificate chain against Apple root CA
   const rootCaPem = opts.rootCa ?? loadAppleRootCa();
   if (!rootCaPem) {
-    throw new Error('Apple root CA not found at ' + APPLE_ROOT_CA_PATH);
+    // A distinct class from "this attestation is bad": the server is
+    // misconfigured, and the caller can do nothing about it. Tagged so the
+    // route can say so without echoing the message back — see
+    // ATTESTATION_UNAVAILABLE in wsproxy.ts.
+    throw new AttestationUnavailableError(
+      'Apple root CA not found at ' + APPLE_ROOT_CA_PATH,
+    );
   }
 
   const certs = x5c.map((d: Buffer) => new X509Certificate(d));
@@ -1142,23 +1159,29 @@ export interface AttestedKeyEntry {
 }
 
 /**
- * The on-disk form of the key store, keyed by keyId.
+ * One entry of the on-disk key store.
  *
- * `catchall`-free and non-strict: unknown keys inside an entry are dropped
- * rather than rejected, so a file written by a newer version still loads the
- * fields this version understands.
+ * Non-strict: unknown keys inside an entry are dropped rather than rejected,
+ * so a file written by a newer version still loads the fields this version
+ * understands.
  */
-const attestedKeyFileSchema = z.record(
-  z.string(),
-  z.object({
-    publicKey: z.string(),
-    alternatePublicKey: z.string().optional(),
-    signCount: z.number(),
-    registeredAt: z.string(),
-    lastUsedAt: z.string().optional(),
-    lastAssertedAt: z.string().optional(),
-  }),
-);
+const attestedKeyEntrySchema = z.object({
+  publicKey: z.string(),
+  alternatePublicKey: z.string().optional(),
+  signCount: z.number(),
+  registeredAt: z.string(),
+  lastUsedAt: z.string().optional(),
+  lastAssertedAt: z.string().optional(),
+});
+
+/**
+ * The store's container, keyed by keyId.
+ *
+ * The entries are deliberately left unvalidated here so `loadAttestedKeys` can
+ * check them one at a time — see the comment there for why validating the file
+ * as a whole is the wrong shape for this data.
+ */
+const attestedKeyFileSchema = z.record(z.string(), z.unknown());
 
 /**
  * Bounds on the attested-key store (MWP-95).
@@ -1301,15 +1324,36 @@ export function attestedKeyStoreSummary(): AttestedKeyStoreSummary {
 export function loadAttestedKeys(filePath: string): void {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    // The store is written by this process, but it is a file on disk: a
-    // truncated write or a hand-edit must not put a half-formed entry into
-    // the live key set. Entries that do not satisfy the schema are dropped,
-    // which lands in the same place as the catch below — start without them.
-    const obj = attestedKeyFileSchema.parse(JSON.parse(raw));
+    const file = attestedKeyFileSchema.parse(JSON.parse(raw));
     const now = Date.now();
     const nowStamp = new Date(now).toISOString();
 
-    const migrated = Object.entries(obj).map(
+    // Validated per entry, never as a whole file.
+    //
+    // Registration is what puts a key here, and a client caches its keyId in
+    // the Keychain and never registers again. So dropping the store costs the
+    // entire fleet a round of "Unknown key" failures until every device
+    // re-registers — and validating the file as one unit means a single
+    // truncated or hand-edited record does exactly that. One bad entry is
+    // dropped; the rest of the fleet keeps working.
+    const valid: [string, AttestedKeyEntry][] = [];
+    let dropped = 0;
+    for (const [keyId, value] of Object.entries(file)) {
+      const entry = attestedKeyEntrySchema.safeParse(value);
+      if (!entry.success) {
+        dropped++;
+        continue;
+      }
+      valid.push([keyId, entry.data]);
+    }
+    if (dropped > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `app-attest: dropped ${dropped} malformed attested-key ${dropped === 1 ? 'entry' : 'entries'} from ${filePath}; the remaining ${valid.length} were loaded`,
+      );
+    }
+
+    const migrated = valid.map(
       ([keyId, entry]): [string, AttestedKeyEntry] => {
         if (entry.lastUsedAt) return [keyId, entry];
         // Grandfather entries written before the TTL existed.

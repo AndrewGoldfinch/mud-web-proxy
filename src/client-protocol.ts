@@ -88,23 +88,21 @@ const MAX_PORT = 65535;
 const MIN_DIMENSION = 1;
 const MAX_DIMENSION = 65535;
 
-const jsonValueSchema: z.ZodType<JsonValue> = z.lazy(() =>
-  z.union([
-    z.string(),
-    z.number(),
-    z.boolean(),
-    z.null(),
-    z.array(jsonValueSchema),
-    z.record(z.string(), jsonValueSchema),
-  ]),
-);
-
 /**
  * A JSON object, rejecting arrays, null and primitives. `z.record` is what
  * draws that line, so the "is this even an object" question is answered by the
  * schema rather than by a null check and an `Array.isArray` at each caller.
+ *
+ * The value schema is deliberately `z.custom` — a check that accepts anything
+ * without descending into it. A recursive value schema walks the whole decoded
+ * tree on the JavaScript call stack, and a 40 KB frame of nested arrays (well
+ * inside the 64 KiB message cap) is enough to exhaust it. `safeParse` does not
+ * catch a `RangeError`, and neither does `parseNewMessage`, so that was an
+ * unauthenticated frame that could kill the process. Nothing here needs the
+ * nested values validated: the protocol reads named top-level fields, and each
+ * of those is checked by its own schema at the point of use.
  */
-const jsonObjectSchema = z.record(z.string(), jsonValueSchema);
+const jsonObjectSchema = z.record(z.string(), z.custom<JsonValue>());
 
 const stringSchema = z.string();
 const numberSchema = z.number();
@@ -342,6 +340,19 @@ export const validateTyped = (
 };
 
 /**
+ * An optional field a client may also send as an explicit `null`.
+ *
+ * `isAbsent` — and so `validateTyped` — treats `null` as "not supplied", so a
+ * decoder that accepted only `undefined` would reject a message field
+ * validation had just passed. The frame then failed to decode and came back to
+ * the client as an unknown message type, and the connection never opened.
+ * Normalising to `undefined` keeps the two halves agreeing on what absent
+ * means.
+ */
+const optionalField = <T>(schema: z.ZodType<T>) =>
+  schema.nullish().transform((value) => value ?? undefined);
+
+/**
  * The request a validated typed message decodes to.
  *
  * Only the seven types SessionIntegration dispatches; the App Attest requests
@@ -373,12 +384,12 @@ const TYPED_SCHEMAS = new Map<string, z.ZodType<TypedRequest>>([
       type: z.literal('connect'),
       host: z.string(),
       port: z.number(),
-      deviceToken: z.string().optional(),
-      apiKey: z.string().optional(),
-      appToken: z.string().optional(),
-      width: z.number().optional(),
-      height: z.number().optional(),
-      debug: z.boolean().optional(),
+      deviceToken: optionalField(z.string()),
+      apiKey: optionalField(z.string()),
+      appToken: optionalField(z.string()),
+      width: optionalField(z.number()),
+      height: optionalField(z.number()),
+      debug: optionalField(z.boolean()),
     }),
   ],
   [
@@ -388,8 +399,8 @@ const TYPED_SCHEMAS = new Map<string, z.ZodType<TypedRequest>>([
       sessionId: z.string(),
       token: z.string(),
       lastSeq: z.number(),
-      deviceToken: z.string().optional(),
-      appToken: z.string().optional(),
+      deviceToken: optionalField(z.string()),
+      appToken: optionalField(z.string()),
     }),
   ],
   [

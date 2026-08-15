@@ -1,10 +1,13 @@
 import { describe, test, expect } from 'bun:test';
 import {
+  asClientObject,
+  parseTypedRequest,
   recognize,
   validateTyped,
   validateLegacy,
   safeTypeName,
   KNOWN_TYPES,
+  type JsonValue,
 } from '../src/client-protocol';
 
 describe('recognize', () => {
@@ -256,5 +259,67 @@ describe('safeTypeName', () => {
   test('renders a non-string as its type', () => {
     expect(safeTypeName(42)).toBe('<number>');
     expect(safeTypeName(null)).toBe('<object>');
+  });
+});
+
+describe('deeply nested frames do not exhaust the stack', () => {
+  // Review on #155. The first zod rewrite validated the decoded value
+  // recursively, so a frame of nested arrays — 40 KB, well inside the 64 KiB
+  // message cap — threw a RangeError out of safeParse. parseNewMessage only
+  // wraps JSON.parse, and the ws message handler wraps nothing, so an
+  // unauthenticated frame could kill the process.
+  const deeplyNested = (depth: number): JsonValue =>
+    JSON.parse(
+      `{"type":"input","text":"x","deep":${'['.repeat(depth)}${']'.repeat(depth)}}`,
+    );
+
+  test('recognize survives a frame that would overflow a recursive walk', () => {
+    expect(recognize(deeplyNested(20000))).toEqual({
+      kind: 'typed',
+      type: 'input',
+    });
+  });
+
+  test('validateTyped survives one too', () => {
+    const o = asClientObject(deeplyNested(20000));
+    expect(o).toBeDefined();
+    expect(validateTyped('input', o!)).toEqual({ ok: true });
+  });
+});
+
+describe('optional fields sent as null', () => {
+  // Review on #155. `isAbsent` counts null as "not supplied", so validateTyped
+  // accepts these — the decoder has to agree, or the message passes validation
+  // and then fails to decode, and the client is told its type is unknown.
+  const connectWithNulls = {
+    type: 'connect',
+    host: 'a.example',
+    port: 23,
+    deviceToken: null,
+    width: null,
+    height: null,
+  };
+
+  test('validateTyped accepts them', () => {
+    expect(validateTyped('connect', connectWithNulls)).toEqual({ ok: true });
+  });
+
+  test('and parseTypedRequest decodes them as absent', () => {
+    const request = parseTypedRequest('connect', connectWithNulls);
+    expect(request).toBeDefined();
+    expect(request).toMatchObject({ type: 'connect', host: 'a.example' });
+    expect(request?.type === 'connect' && request.deviceToken).toBeUndefined();
+  });
+
+  test('resume tolerates a null deviceToken the same way', () => {
+    const resume = {
+      type: 'resume',
+      sessionId: 's1',
+      token: 't1',
+      lastSeq: 0,
+      deviceToken: null,
+    };
+    expect(validateTyped('resume', resume)).toEqual({ ok: true });
+    expect(parseTypedRequest('resume', resume)).toBeDefined();
   });
 });
