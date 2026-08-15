@@ -38,7 +38,7 @@ describe('Stress Tests', () => {
 
   it('should survive chaos mode MUD', async () => {
     const mock = createChaosMUD();
-    (mock as any).config.port = STRESS_MUD_PORT;
+    mock.setPort(STRESS_MUD_PORT);
     await mock.start();
     const proxy = await startTestProxy(STRESS_PROXY_PORT, {
       TN_HOST: 'localhost',
@@ -231,10 +231,9 @@ describe('Stress Tests', () => {
 
   it('should handle resume under continuous load', async () => {
     const mock = createBufferTestMUD();
-    (mock as any).config.port = STRESS_MUD_PORT + 3;
+    mock.setPort(STRESS_MUD_PORT + 3);
     // Faster output for stress
-    (mock as any).config.continuousOutput.intervalMs = 100;
-    (mock as any).config.continuousOutput.count = 100;
+    mock.setContinuousOutput(100, 100);
     await mock.start();
     const proxy = await startTestProxy(STRESS_PROXY_PORT + 3, {
       TN_HOST: 'localhost',

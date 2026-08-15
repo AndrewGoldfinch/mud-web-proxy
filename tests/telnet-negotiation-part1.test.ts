@@ -3,6 +3,7 @@
  * Tests for TTYPE, GMCP, and MSDP protocol handlers
  */
 
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach } from 'bun:test';
 import type { IncomingMessage } from 'http';
 
@@ -73,9 +74,11 @@ function createMockSocket(
   overrides: Partial<MockSocketExtended> = {},
 ): MockSocketExtended {
   return {
-    req: {
+    req: asDouble<
+      IncomingMessage & { connection: { remoteAddress: string } }
+    >()({
       connection: { remoteAddress: '127.0.0.1' },
-    } as IncomingMessage & { connection: { remoteAddress: string } },
+    }),
     ts: undefined,
     host: 'localhost',
     port: 7000,
@@ -702,9 +705,7 @@ describe('Telnet Negotiation Handlers - Part 1', () => {
     });
 
     test('sendMSDP does nothing when key is missing', () => {
-      srv.sendMSDP(mockSocket, { val: 'value_without_key' } as {
-        val: string;
-      });
+      srv.sendMSDP(mockSocket, { val: 'value_without_key' });
 
       const writes = srv.writes.filter((w) => w.socket === mockSocket);
       expect(writes.length).toBe(0);

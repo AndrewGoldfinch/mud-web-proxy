@@ -70,6 +70,8 @@ import fs from 'fs';
 import { X509Certificate } from 'crypto';
 import { fileURLToPath } from 'url';
 import path from 'path';
+import { z } from 'zod';
+import { errorText } from './src/error-text';
 const { dirname } = path;
 import type { WebSocket as WS, WebSocketServer } from 'ws';
 import type { Socket } from 'net';
@@ -89,6 +91,7 @@ import { MessageRateLimiter } from './src/message-rate-limit';
 import {
   redactLogMessage,
   tokenSummary as summarizeToken,
+  type LogMessage,
 } from './src/log-redaction';
 import {
   escapeDiagnosticHtml,
@@ -127,8 +130,8 @@ import {
   verifyAssertion,
   getAttestedKey,
   updateSignCount,
+  AttestationUnavailableError,
 } from './src/app-attest';
-import type { AssertionVerificationError } from './src/app-attest';
 
 // Unhandled-request log rate limiting. Module-level: the counter must
 // survive across requests, and there is exactly one HTTP server per process.
@@ -324,10 +327,15 @@ interface GMCPConfig {
   portal: string[];
 }
 
-interface MSDPRequest {
+/**
+ * A type alias rather than an interface so it carries an implicit index
+ * signature, which is what lets it be logged through `LogMessage` without an
+ * assertion. Its fields are already plain JSON values.
+ */
+type MSDPRequest = {
   key?: string;
   val?: string | string[];
-}
+};
 
 export interface SocketExtended extends WS {
   req: IncomingMessage & { connection: { remoteAddress: string } };
@@ -361,6 +369,20 @@ export interface SocketExtended extends WS {
   naws_negotiated?: number;
   msdp_negotiated?: number;
   password_mode?: boolean;
+  /**
+   * Present only on a legacy raw socket, never on a ws one. Declared here so
+   * the shutdown broadcast can ask for it directly: it used to reach it
+   * through `as unknown as { write?: ... }`, which is what let an earlier
+   * version call `sock.write()` on every socket and silently tell WebSocket
+   * clients nothing at all.
+   */
+  write?: (msg: string) => void;
+  /**
+   * The transport wrapper older `ws` releases put between this object and the
+   * underlying socket. `terminate` is the modern path; this is the fallback
+   * closeSocket uses when it is absent.
+   */
+  socket?: { terminate: () => void };
   sendUTF: (data: string | Buffer) => void;
   terminate: () => void;
   /**
@@ -400,10 +422,41 @@ let nextSocketId = 1;
 const getHeaderValue = (
   value: string | string[] | undefined,
 ): string | undefined => {
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value) && value.length > 0) return value[0];
-  return undefined;
+  // Node gives a repeated header as an array; everything else is already the
+  // single value or absent, so Array.isArray is the only branch needed.
+  if (Array.isArray(value)) return value.length > 0 ? value[0] : undefined;
+  return value;
 };
+
+/**
+ * Bodies of the JSON HTTP endpoints.
+ *
+ * `looseObject` keeps unknown fields rather than rejecting them, matching what
+ * the casts these replaced allowed. Fields stay optional so the handlers keep
+ * emitting their own field-specific errors; a body that fails these schemas is
+ * malformed JSON as far as the caller is concerned, and lands in the same
+ * "Invalid JSON body" branch the parse error already used.
+ */
+const cancelPushBodySchema = z.looseObject({
+  sessionId: z.string().optional(),
+  deviceToken: z.string().optional(),
+});
+
+const testPushBodySchema = z.looseObject({
+  sessionId: z.string().optional(),
+  deviceToken: z.string().optional(),
+  title: z.string().optional(),
+  message: z.string().optional(),
+});
+
+/** The attempt list an enriched assertion failure carries, when it has one. */
+const attemptDetailsSchema = z.array(z.string());
+
+const attestBodySchema = z.looseObject({
+  keyId: z.string().optional(),
+  attestation: z.string().optional(),
+  nonce: z.string().optional(),
+});
 
 const formatWsSocketContext = (s: SocketExtended): string => {
   const wsId = `ws#${s.socketId ?? '?'}`;
@@ -458,10 +511,15 @@ const formatWsSocketContext = (s: SocketExtended): string => {
   );
 };
 
-const stringify = function (A: unknown): string {
-  const cache = new Set<unknown>();
-  const val = JSON.stringify(A, function (_k: string, v: unknown) {
-    if (typeof v === 'object' && v !== null) {
+/** One shared schema; the logger runs on every message, including hot paths. */
+const stringValueSchema = z.string();
+
+const stringify = function (value: LogMessage): string {
+  const cache = new Set<LogMessage>();
+  const val = JSON.stringify(value, function (_k: string, v: LogMessage) {
+    // Only non-primitives can form a cycle, and `Object(v) === v` is true for
+    // exactly those — no narrowing on a representation test required.
+    if (v !== null && v !== undefined && Object(v) === v) {
       if (cache.has(v)) return;
       cache.add(v);
     }
@@ -1012,15 +1070,15 @@ interface ServerConfig {
   sendClient: (s: SocketExtended, data: Buffer) => void;
   originAllowed: (req?: IncomingMessage) => number;
   log: (
-    msg: unknown,
+    msg: LogMessage,
     s?: SocketExtended,
     level?: LogLevel,
     context?: string,
   ) => void;
-  logDebug: (msg: unknown, s?: SocketExtended, context?: string) => void;
-  logInfo: (msg: unknown, s?: SocketExtended, context?: string) => void;
-  logWarn: (msg: unknown, s?: SocketExtended, context?: string) => void;
-  logError: (msg: unknown, s?: SocketExtended, context?: string) => void;
+  logDebug: (msg: LogMessage, s?: SocketExtended, context?: string) => void;
+  logInfo: (msg: LogMessage, s?: SocketExtended, context?: string) => void;
+  logWarn: (msg: LogMessage, s?: SocketExtended, context?: string) => void;
+  logError: (msg: LogMessage, s?: SocketExtended, context?: string) => void;
   die: (core?: boolean) => void;
   newSocket: (s: SocketExtended) => void;
   forward: (s: SocketExtended, d: Buffer) => void;
@@ -1059,12 +1117,12 @@ const srv: ServerConfig = {
   ttype: {
     enabled: 1,
     portal: ['maldorne.org', 'XTERM-256color', 'MTTS 141'],
-  } as TTypeConfig,
+  },
 
   gmcp: {
     enabled: 1,
     portal: ['client maldorne.org', 'client_version 1.0'],
-  } as GMCPConfig,
+  },
 
   prt: PROTOCOL_CONSTANTS,
 
@@ -1251,10 +1309,10 @@ const srv: ServerConfig = {
       const assertion = req.headers['x-app-assert-data'];
       const nonce = req.headers['x-app-assert-nonce'];
       const clientHash = req.headers['x-app-assert-clienthash'];
-      const keyIdStr = typeof keyId === 'string' ? keyId : '';
-      const assertionStr = typeof assertion === 'string' ? assertion : '';
-      const nonceStr = typeof nonce === 'string' ? nonce : '';
-      const clientHashStr = typeof clientHash === 'string' ? clientHash : '';
+      const keyIdStr = getHeaderValue(keyId) ?? '';
+      const assertionStr = getHeaderValue(assertion) ?? '';
+      const nonceStr = getHeaderValue(nonce) ?? '';
+      const clientHashStr = getHeaderValue(clientHash) ?? '';
       const keySummary = keyIdStr ? summarizeToken(keyIdStr) : '<missing>';
       const assertionHasSpaces = assertionStr.includes(' ');
       return `keyId=${keySummary} assertionLen=${assertionStr.length} nonceLen=${nonceStr.length} clientHashLen=${clientHashStr.length} assertionHasSpaces=${assertionHasSpaces}`;
@@ -1423,10 +1481,9 @@ const srv: ServerConfig = {
             );
             if (!requestBody) return;
 
-            const body = JSON.parse(requestBody.toString('utf-8')) as {
-              sessionId?: string;
-              deviceToken?: string;
-            };
+            const body = cancelPushBodySchema.parse(
+              JSON.parse(requestBody.toString('utf-8')),
+            );
 
             const requestedSessionId = body.sessionId?.trim();
             let targetDeviceToken = body.deviceToken?.trim();
@@ -1502,13 +1559,17 @@ const srv: ServerConfig = {
               }),
             );
           } catch (err) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error: 'Invalid JSON body',
-                detail: (err as Error).message,
-              }),
+            // The reason goes to the operator, not the caller. It is a parser
+            // message about a request body, which is exactly the kind of
+            // internal detail CodeQL flagged being echoed back on the
+            // attestation route (review on #155); same class, same treatment.
+            srv.logWarn(
+              'rejected JSON body: ' + errorText(err),
+              undefined,
+              'http',
             );
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
           }
         })();
       } else if (
@@ -1559,12 +1620,9 @@ const srv: ServerConfig = {
             );
             if (!requestBody) return;
 
-            const body = JSON.parse(requestBody.toString('utf-8')) as {
-              sessionId?: string;
-              deviceToken?: string;
-              title?: string;
-              message?: string;
-            };
+            const body = testPushBodySchema.parse(
+              JSON.parse(requestBody.toString('utf-8')),
+            );
 
             const requestedSessionId = body.sessionId?.trim();
             let targetDeviceToken = body.deviceToken?.trim();
@@ -1650,13 +1708,17 @@ const srv: ServerConfig = {
               }),
             );
           } catch (err) {
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(
-              JSON.stringify({
-                error: 'Invalid JSON body',
-                detail: (err as Error).message,
-              }),
+            // The reason goes to the operator, not the caller. It is a parser
+            // message about a request body, which is exactly the kind of
+            // internal detail CodeQL flagged being echoed back on the
+            // attestation route (review on #155); same class, same treatment.
+            srv.logWarn(
+              'rejected JSON body: ' + errorText(err),
+              undefined,
+              'http',
             );
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Invalid JSON body' }));
           }
         })();
       } else if (
@@ -1700,11 +1762,9 @@ const srv: ServerConfig = {
             );
             if (!requestBody) return;
 
-            const body = JSON.parse(requestBody.toString('utf-8')) as {
-              keyId: string;
-              attestation: string; // base64
-              nonce: string; // hex
-            };
+            const body = attestBodySchema.parse(
+              JSON.parse(requestBody.toString('utf-8')),
+            );
             if (!body.keyId || !body.attestation || !body.nonce) {
               srv.logWarn(
                 `App Attest register rejected: missing fields peer=${requestPeer(req)}`,
@@ -1760,12 +1820,31 @@ const srv: ServerConfig = {
             res.end(JSON.stringify({ registered: true }));
           } catch (err) {
             srv.logWarn(
-              'Attestation registration failed: ' + (err as Error).message,
+              'Attestation registration failed: ' + errorText(err),
               undefined,
               'auth',
             );
-            res.writeHead(400, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ error: (err as Error).message }));
+            // The message stays in the log. What the caller gets is a stable
+            // code, because the reason is either "your attestation is bad" —
+            // which the code already says — or a detail about this server's
+            // configuration, which is what CodeQL flagged being echoed back.
+            const unavailable = err instanceof AttestationUnavailableError;
+            res.writeHead(unavailable ? 503 : 400, {
+              'Content-Type': 'application/json',
+            });
+            res.end(
+              JSON.stringify(
+                unavailable
+                  ? {
+                      error: 'Attestation verification is unavailable',
+                      code: 'attestation_unavailable',
+                    }
+                  : {
+                      error: 'Invalid attestation registration request',
+                      code: 'attestation_rejected',
+                    },
+              ),
+            );
           }
         })();
       } else {
@@ -1988,14 +2067,14 @@ const srv: ServerConfig = {
         }
 
         if (requireAppAuth) {
-          const keyId = req.headers['x-app-assert-keyid'] as
-            string | undefined;
-          const assertionB64 = req.headers['x-app-assert-data'] as
-            string | undefined;
-          const nonce = req.headers['x-app-assert-nonce'] as
-            string | undefined;
-          const clientHashB64 = req.headers['x-app-assert-clienthash'] as
-            string | undefined;
+          const keyId = getHeaderValue(req.headers['x-app-assert-keyid']);
+          const assertionB64 = getHeaderValue(
+            req.headers['x-app-assert-data'],
+          );
+          const nonce = getHeaderValue(req.headers['x-app-assert-nonce']);
+          const clientHashB64 = getHeaderValue(
+            req.headers['x-app-assert-clienthash'],
+          );
 
           if (keyId && assertionB64 && nonce) {
             if (!validateAndConsumeNonce(nonce)) {
@@ -2070,7 +2149,7 @@ const srv: ServerConfig = {
               // amplifier, for a diagnostic whose only output was a log line.
               // Do not reintroduce it, under any environment variable.
               srv.logWarn(
-                'App Attest assertion failed: ' + (err as Error).message,
+                'App Attest assertion failed: ' + errorText(err),
                 undefined,
                 'auth',
               );
@@ -2078,11 +2157,17 @@ const srv: ServerConfig = {
               // several KB of near-identical text per rejection, which is a
               // log-flooding hazard on an unauthenticated path and hides the
               // summary above.
-              const details = (err as AssertionVerificationError)
-                .attemptDetails;
-              if (details) {
+              // Read off the thrown value rather than asserted onto it: the
+              // enriched error is one of several things the verifier can
+              // throw, and a plain Error simply has no attempt list.
+              const details = attemptDetailsSchema.safeParse(
+                err instanceof Error && 'attemptDetails' in err
+                  ? err.attemptDetails
+                  : undefined,
+              );
+              if (details.success) {
                 srv.logDebug(
-                  'App Attest assertion attempts: ' + details.join('|'),
+                  'App Attest assertion attempts: ' + details.data.join('|'),
                   undefined,
                   'auth',
                 );
@@ -2108,9 +2193,9 @@ const srv: ServerConfig = {
         wsServer.handleUpgrade(req, socket, head, (upgradedSocket) => {
           wsServer.emit('connection', upgradedSocket, req);
         });
-      })().catch((err: unknown) => {
+      })().catch((cause: unknown) => {
         srv.logWarn(
-          'Upgrade auth flow failed: ' + (err as Error).message,
+          'Upgrade auth flow failed: ' + errorText(cause),
           undefined,
           'auth',
         );
@@ -2164,9 +2249,18 @@ const srv: ServerConfig = {
           return;
         }
 
+        // SAFETY: `ws` hands us a bare WebSocket and this is the one place
+        // that adopts it. Every SocketExtended field is optional or assigned
+        // in the lines immediately below, so the object satisfies the contract
+        // by the time it reaches server.sockets — no other code path can
+        // observe it half-populated.
         const extendedSocket = socket as SocketExtended;
-        if (!extendedSocket.req)
+        if (!extendedSocket.req) {
+          // SAFETY: Node guarantees an upgrade request has a live connection
+          // carrying a remoteAddress, and that is the only field the narrowed
+          // type adds over IncomingMessage.
           extendedSocket.req = req as SocketExtended['req'];
+        }
         if (!extendedSocket.socketId) extendedSocket.socketId = nextSocketId++;
 
         // Resolve real client IP (supports reverse proxy headers)
@@ -2185,6 +2279,9 @@ const srv: ServerConfig = {
         // is overridden with a graceful close for the ordinary paths, but a
         // half-open peer cannot complete a close handshake — the transport has
         // to be destroyed outright, which is what the heartbeat needs.
+        // SAFETY: still the native ws terminate at this point — the graceful
+        // override is installed on the very next line, so nothing has replaced
+        // it yet and its zero-argument signature is ws's own.
         extendedSocket.hardTerminate = (
           extendedSocket.terminate as () => void
         ).bind(extendedSocket);
@@ -2529,7 +2626,7 @@ const srv: ServerConfig = {
               raw.push(
                 util.format(
                   '%d',
-                  typeof data === 'string' ? data.charCodeAt(i) : data[i],
+                  Buffer.isBuffer(data) ? data[i] : data.charCodeAt(i),
                 ),
               );
             srv.logDebug('write bin: ' + raw.toString(), s, 'telnet');
@@ -2538,11 +2635,7 @@ const srv: ServerConfig = {
           try {
             data = encodeTelnetOutbound(data, Boolean(s.utf8_negotiated));
           } catch (ex) {
-            srv.logError(
-              'iconv encode error: ' + (ex as Error).toString(),
-              s,
-              'telnet',
-            );
+            srv.logError('iconv encode error: ' + String(ex), s, 'telnet');
           }
 
           writeTelnet(s, data);
@@ -2599,14 +2692,14 @@ const srv: ServerConfig = {
             }, SOCKET_CLOSE_DELAY_MS);
           });
       },
-    }).catch((err: unknown) => {
+    }).catch((cause: unknown) => {
       // Abort is already being handled by closeSocket; do not send/schedule
       // twice.
       if (controller.signal.aborted) return;
       if (s.pendingMudTransport === controller) {
         s.pendingMudTransport = undefined;
       }
-      const error = err instanceof Error ? err : new Error(String(err));
+      const error = cause instanceof Error ? cause : new Error(String(cause));
       // The log carries the underlying cause; the player gets the stable text.
       srv.logError(
         `telnet error: ${describeTransportError(error)}`,
@@ -2669,10 +2762,7 @@ const srv: ServerConfig = {
     srv.logInfo('closing websocket: ' + formatWsSocketContext(s), s, 'ws');
 
     if (s.terminate) s.terminate();
-    else
-      (
-        s as unknown as { socket: { terminate: () => void } }
-      ).socket.terminate();
+    else s.socket?.terminate();
 
     srv.logInfo('active sockets: ' + server.sockets.size, s, 'ws');
   },
@@ -2931,7 +3021,7 @@ const srv: ServerConfig = {
   },
 
   log: function (
-    msg: unknown,
+    msg: LogMessage,
     s?: SocketExtended,
     level: LogLevel = LogLevel.INFO,
     context?: string,
@@ -2997,8 +3087,8 @@ const srv: ServerConfig = {
 
     // Format message
     let messageStr: string;
-    if (typeof msg === 'string') {
-      messageStr = msg;
+    if (stringValueSchema.safeParse(msg).success) {
+      messageStr = String(msg);
     } else if (msg instanceof Error) {
       messageStr = `${msg.name}: ${msg.message}`;
       if (msg.stack && level <= LogLevel.DEBUG) {
@@ -3047,28 +3137,28 @@ const srv: ServerConfig = {
 
   // Convenience methods for different log levels
   logDebug: function (
-    msg: unknown,
+    msg: LogMessage,
     s?: SocketExtended,
     context?: string,
   ): void {
     srv.log(msg, s, LogLevel.DEBUG, context);
   },
   logInfo: function (
-    msg: unknown,
+    msg: LogMessage,
     s?: SocketExtended,
     context?: string,
   ): void {
     srv.log(msg, s, LogLevel.INFO, context);
   },
   logWarn: function (
-    msg: unknown,
+    msg: LogMessage,
     s?: SocketExtended,
     context?: string,
   ): void {
     srv.log(msg, s, LogLevel.WARN, context);
   },
   logError: function (
-    msg: unknown,
+    msg: LogMessage,
     s?: SocketExtended,
     context?: string,
   ): void {
@@ -3128,16 +3218,14 @@ const srv: ServerConfig = {
               // client can tell a restart from a crash and back off accordingly.
               // The previous code called sock.write(), which does not exist on a
               // ws socket — the guard was always false, so WebSocket clients
-              // were told nothing at all. Only legacy raw sockets have .write.
-              const raw = sock as unknown as {
-                write?: (msg: string) => void;
-                close?: (code?: number, reason?: string) => void;
-              };
+              // were told nothing at all. Only legacy raw sockets have .write,
+              // and both are declared optional on SocketExtended so this asks
+              // for them directly rather than asserting a structural shape.
               try {
-                if (typeof raw.close === 'function') {
-                  raw.close(1001, 'Server restarting');
-                } else if (typeof raw.write === 'function') {
-                  raw.write('Proxy server is going down...');
+                if (sock.close) {
+                  sock.close(1001, 'Server restarting');
+                } else if (sock.write) {
+                  sock.write('Proxy server is going down...');
                 }
               } catch {
                 // A socket already gone is not a reason to stop draining.
@@ -3149,6 +3237,10 @@ const srv: ServerConfig = {
           // 5. Telnet sockets, so the MUD sees a disconnect rather than a reset.
           name: 'close telnet sockets and sessions',
           run: () => {
+            // The copy is the point: closeSocket calls
+            // server.sockets.delete(sock), so this iterates a snapshot rather
+            // than the Set being mutated underneath it.
+            // eslint-disable-next-line unicorn/no-useless-spread
             for (const sock of [...server.sockets]) srv.closeSocket(sock);
             sessionIntegration.shutdown();
           },

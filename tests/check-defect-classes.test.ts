@@ -298,7 +298,7 @@ describe("gate 'gate-has-negative-test'", () => {
   test('reports every gate that has no fixture', () => {
     // Its own negative case: a registry with a gap. The meta-gate excludes
     // itself, so an empty registry should report all the others.
-    const findings = missingFixtureFindings({});
+    const findings = missingFixtureFindings(new Set());
     expect(findings).toHaveLength(ALL_GATE_IDS.length - 1);
     expect(findings.every((f) => f.gate === 'gate-has-negative-test')).toBe(
       true,
@@ -307,12 +307,12 @@ describe("gate 'gate-has-negative-test'", () => {
 
   test('is satisfied only by a fixture, not by a mention of the id', () => {
     // The hole review caught on #116: the id appearing in a comment or import
-    // used to count. The check is now Object.keys, so prose cannot satisfy it.
-    const registry: Record<string, unknown> = {};
-    for (const id of ALL_GATE_IDS) registry[id] = { note: `mentions ${id}` };
-    expect(missingFixtureFindings(registry)).toEqual([]);
-    delete registry['unsafe-temp-file'];
-    expect(missingFixtureFindings(registry)).toHaveLength(1);
+    // used to count. Coverage is now the registry's key set, built by the
+    // caller with Object.keys, so prose cannot satisfy it.
+    const covered = new Set(ALL_GATE_IDS);
+    expect(missingFixtureFindings(covered)).toEqual([]);
+    covered.delete('unsafe-temp-file');
+    expect(missingFixtureFindings(covered)).toHaveLength(1);
   });
 
   test('the real registry covers every gate', () => {
@@ -393,10 +393,10 @@ describe('the gate registry', () => {
 
   test('every gate reports findings tagged with its own id', () => {
     for (const gate of FILE_GATES) {
-      expect(typeof gate.applies).toBe('function');
+      expect(gate.applies).toEqual(expect.any(Function));
     }
     for (const gate of CORPUS_GATES) {
-      expect(typeof gate.scanCorpus).toBe('function');
+      expect(gate.scanCorpus).toEqual(expect.any(Function));
     }
   });
 

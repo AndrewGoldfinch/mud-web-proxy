@@ -4,6 +4,8 @@
  * persistence, and chat log management
  */
 
+import type { LogMessage } from '../src/log-redaction';
+import { asDouble } from './support/doubles';
 import {
   describe,
   it,
@@ -56,11 +58,14 @@ interface SocketExtended {
   terminate: () => void;
 }
 
+/** A listener registered through the telnet double's on/once. */
+type ChatListener = (...args: (Buffer | Error | string)[]) => void;
+
 interface TelnetSocket {
   write: (data: Buffer | string) => boolean;
   send: (data: string | Buffer) => void;
-  on: (event: string, listener: unknown) => TelnetSocket;
-  once: (event: string, listener: unknown) => TelnetSocket;
+  on: (event: string, listener: ChatListener) => TelnetSocket;
+  once: (event: string, listener: ChatListener) => TelnetSocket;
   destroy: () => void;
   end: () => void;
   setEncoding: (encoding: string) => void;
@@ -92,7 +97,7 @@ const mockFs = {
     if (path === './chat.json') {
       if (mockChatLogData === null) {
         const error = new Error('ENOENT: no such file or directory');
-        (error as Error & { code: string }).code = 'ENOENT';
+        asDouble<Error & { code: string }>()(error).code = 'ENOENT';
         throw error;
       }
       return encoding === 'utf8'
@@ -101,7 +106,7 @@ const mockFs = {
     }
 
     const error = new Error('ENOENT: no such file or directory');
-    (error as Error & { code: string }).code = 'ENOENT';
+    asDouble<Error & { code: string }>()(error).code = 'ENOENT';
     throw error;
   },
 
@@ -119,14 +124,14 @@ const mockFs = {
       if (path === './chat.json') {
         if (mockChatLogData === null) {
           const error = new Error('ENOENT: no such file or directory');
-          (error as Error & { code: string }).code = 'ENOENT';
+          asDouble<Error & { code: string }>()(error).code = 'ENOENT';
           throw error;
         }
         return mockChatLogData;
       }
 
       const error = new Error('ENOENT: no such file or directory');
-      (error as Error & { code: string }).code = 'ENOENT';
+      asDouble<Error & { code: string }>()(error).code = 'ENOENT';
       throw error;
     },
 
@@ -188,7 +193,7 @@ function createMockSocket(
         remoteAddress: '127.0.0.1',
       },
     },
-    ts: undefined as TelnetSocket | undefined,
+    ts: asDouble<TelnetSocket | undefined>()(undefined),
     host: 'test.host',
     port: 7000,
     ttype: ['xterm-256color'],
@@ -212,40 +217,42 @@ function createMockSocket(
     password_mode: false,
     remoteAddress: '127.0.0.1',
     send: (data: string | Buffer) => {
-      sentMessages.push(typeof data === 'string' ? data : data.toString());
+      sentMessages.push(data.toString());
     },
     sendUTF: (data: string | Buffer) => {
-      sentMessages.push(typeof data === 'string' ? data : data.toString());
+      sentMessages.push(data.toString());
     },
     terminate: () => {},
     _sentMessages: sentMessages,
     ...overrides,
   };
 
-  return baseSocket as SocketExtended & { _sentMessages: string[] };
+  return asDouble<SocketExtended & { _sentMessages: string[] }>()(baseSocket);
 }
 
 // Mock telnet socket
 function createMockTelnetSocket(
   overrides: Partial<TelnetSocket> = {},
 ): TelnetSocket {
-  return {
+  return asDouble<TelnetSocket>()({
     write: () => true,
     send: () => {},
-    on: () => ({}) as TelnetSocket,
-    once: () => ({}) as TelnetSocket,
+    on: () => asDouble<TelnetSocket>()({}),
+    once: () => asDouble<TelnetSocket>()({}),
     destroy: () => {},
     end: () => {},
     setEncoding: () => {},
     ...overrides,
-  } as TelnetSocket;
+  });
 }
 
 // JSON stringify helper (same as wsproxy.ts)
-const stringify = function (A: unknown): string {
-  const cache: unknown[] = [];
-  const val = JSON.stringify(A, function (_k: string, v: unknown) {
-    if (typeof v === 'object' && v !== null) {
+const stringify = function (value: LogMessage): string {
+  const cache: LogMessage[] = [];
+  const val = JSON.stringify(value, function (_k: string, v: LogMessage) {
+    // Only non-primitives can form a cycle, and `Object(v) === v` is true for
+    // exactly those.
+    if (v !== null && v !== undefined && Object(v) === v) {
       if (cache.indexOf(v) !== -1) return;
       cache.push(v);
     }
@@ -790,9 +797,9 @@ describe('Chat System', () => {
       expect(entry.data).toHaveProperty('channel');
       expect(entry.data).toHaveProperty('name');
       expect(entry.data).toHaveProperty('msg');
-      expect(typeof entry.data.channel).toBe('string');
-      expect(typeof entry.data.name).toBe('string');
-      expect(typeof entry.data.msg).toBe('string');
+      expect(entry.data.channel).toEqual(expect.any(String));
+      expect(entry.data.name).toEqual(expect.any(String));
+      expect(entry.data.msg).toEqual(expect.any(String));
     });
 
     it('should preserve structure when stringified and parsed', () => {

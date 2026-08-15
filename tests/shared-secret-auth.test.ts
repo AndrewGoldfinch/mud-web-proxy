@@ -6,6 +6,7 @@
  * and PROXY_SHARED_SECRET were parsed by the config and enforced nowhere.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import path from 'path';
@@ -111,7 +112,7 @@ describe('Authorization: Bearer', () => {
   test('rejects an array-valued header rather than coercing it', () => {
     expect(
       authorizeSharedSecret(
-        { authorization: [`Bearer ${SECRET}`] as unknown as string },
+        { authorization: asDouble<string>()([`Bearer ${SECRET}`]) },
         '/',
         enabled,
       ).authorized,

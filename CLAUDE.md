@@ -49,9 +49,12 @@ Run `bun run` to list the scripts; the manifest is authoritative.
 
 - **Runtime**: Bun (for dev and package management)
 - **Naming**: camelCase (vars/functions), PascalCase (types/interfaces), UPPER_SNAKE_CASE (constants), `_` prefix for unused params
-- **Logging**: Use `srv.log()` instead of `console.log`. ESLint only _warns_ on
+- **Logging**: Use `srv.log()` instead of `console.log`. Oxlint only _warns_ on
   `no-console`, so this is not mechanically enforced — it is on you.
-- **Error typing**: Cast errors as `(err as Error)` in catch blocks
+- **Error typing**: render caught values with `errorText(err)` (or `toError(err)`
+  when an `Error` is required) from `src/error-text.ts`. The old
+  `(err as Error)` cast is gone: anything can be thrown, and the cast silently
+  produced `undefined` for a thrown string or object
 - **Imports**: ES module style, use `import type` for type-only imports
 - **`__dirname` emulation**: `fileURLToPath(import.meta.url)` (required for ES modules)
 
@@ -66,3 +69,9 @@ Run `bun run` to list the scripts; the manifest is authoritative.
 - Inbound TLS is owned by the edge proxy (Caddy) in the native deployment; the
   app listens plaintext on loopback. See `docs/deployment/systemd.md`.
 - Password mode detection (ECHO negotiation) omits passwords from logs
+- **Untrusted input is parsed, not inspected.** `src/client-protocol.ts` decodes
+  every client frame through zod schemas, and the per-type field checks run in a
+  fixed order because the first offending field name is part of the protocol's
+  observable behaviour. The dispatch table is a `Map`, not an object literal:
+  `type` is attacker-controlled and a plain object would resolve `toString`
+  through the prototype chain.

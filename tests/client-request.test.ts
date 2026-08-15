@@ -1,3 +1,4 @@
+import { asDouble } from './support/doubles';
 import { describe, it, expect, beforeEach, jest } from 'bun:test';
 import type { WebSocket } from 'ws';
 import type { Socket } from 'net';
@@ -96,7 +97,7 @@ const parse = (s: SocketExtended, d: Buffer): number => {
   let req: ClientRequest;
 
   try {
-    req = eval('(' + d.toString() + ')');
+    req = JSON.parse(d.toString());
   } catch (err) {
     srv.log('parse: ' + err);
     return 0;
@@ -123,7 +124,7 @@ const parse = (s: SocketExtended, d: Buffer): number => {
   if (req.utf8) s.utf8 = req.utf8;
   if (req.debug) s.debug = req.debug;
 
-  if (req.chat) srv.chat(s, req as ChatRequest);
+  if (req.chat) srv.chat(s, asDouble<ChatRequest>()(req));
   if (req.connect) srv.initT(s);
 
   if (req.bin && s.ts) {
@@ -149,7 +150,7 @@ const parse = (s: SocketExtended, d: Buffer): number => {
 
 // Helper to create a mock SocketExtended
 const createMockSocket = (): SocketExtended => {
-  return {
+  return asDouble<SocketExtended>()({
     ttype: [],
     compressed: 0,
     req: {
@@ -158,7 +159,7 @@ const createMockSocket = (): SocketExtended => {
     sendUTF: jest.fn(),
     terminate: jest.fn(),
     remoteAddress: '127.0.0.1',
-  } as unknown as SocketExtended;
+  });
 };
 
 describe('Client Request Parsing', () => {
@@ -290,9 +291,9 @@ describe('Client Request Parsing', () => {
     it('should send Buffer to telnet socket when req.bin is set', () => {
       const mockSend = jest.fn();
       const s = createMockSocket();
-      s.ts = {
+      s.ts = asDouble<SocketExtended['ts']>()({
         send: mockSend,
-      } as unknown as SocketExtended['ts'];
+      });
 
       const data = Buffer.from('{ "bin": [255, 251, 24] }');
 
@@ -317,9 +318,9 @@ describe('Client Request Parsing', () => {
 
     it('should call srv.sendMSDP() when req.msdp is set', () => {
       const s = createMockSocket();
-      s.ts = {
+      s.ts = asDouble<SocketExtended['ts']>()({
         send: jest.fn(),
-      } as unknown as SocketExtended['ts'];
+      });
 
       const msdpData: MSDPRequest = { key: 'TestKey', val: 'TestValue' };
       const data = Buffer.from(JSON.stringify({ msdp: msdpData }));
@@ -336,9 +337,9 @@ describe('Client Request Parsing', () => {
 
     it('should handle MSDP with array values', () => {
       const s = createMockSocket();
-      s.ts = {
+      s.ts = asDouble<SocketExtended['ts']>()({
         send: jest.fn(),
-      } as unknown as SocketExtended['ts'];
+      });
 
       const msdpData: MSDPRequest = {
         key: 'TestKey',
@@ -515,9 +516,9 @@ describe('Client Request Parsing', () => {
   describe('Edge Cases', () => {
     it('should handle multiple commands in single request', () => {
       const s = createMockSocket();
-      s.ts = {
+      s.ts = asDouble<SocketExtended['ts']>()({
         send: jest.fn(),
-      } as unknown as SocketExtended['ts'];
+      });
 
       const data = Buffer.from(
         '{ "host": "test.com", "port": 7000, "connect": 1, "chat": 1 }',
@@ -586,9 +587,9 @@ describe('Client Request Parsing', () => {
     it('should handle binary data as empty array', () => {
       const mockSend = jest.fn();
       const s = createMockSocket();
-      s.ts = {
+      s.ts = asDouble<SocketExtended['ts']>()({
         send: mockSend,
-      } as unknown as SocketExtended['ts'];
+      });
 
       const data = Buffer.from('{ "bin": [] }');
 
@@ -600,9 +601,9 @@ describe('Client Request Parsing', () => {
 
     it('should handle MSDP with empty key or val', () => {
       const s = createMockSocket();
-      s.ts = {
+      s.ts = asDouble<SocketExtended['ts']>()({
         send: jest.fn(),
-      } as unknown as SocketExtended['ts'];
+      });
 
       const data = Buffer.from('{ "msdp": { "key": "", "val": "" } }');
 

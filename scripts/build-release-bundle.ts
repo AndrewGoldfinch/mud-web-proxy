@@ -164,7 +164,7 @@ try {
     { stdio: 'pipe' },
   );
 } catch (err) {
-  fail(`tar failed: ${(err as Error).message}`);
+  fail(`tar failed: ${err instanceof Error ? err.message : String(err)}`);
 }
 
 const digest = createHash('sha256')

@@ -10,8 +10,16 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { decode, decodeMultiple } from 'cbor-x';
+import { z } from 'zod';
 
 import { neutralizeControlSequences } from './log-redaction.js';
+
+/**
+ * A decoded CBOR value viewed as a keyed record. `z.record` is what draws the
+ * line between "object with keys" and everything else, so the decision is made
+ * once here rather than by a typeof test at each probe site.
+ */
+const cborRecordSchema = z.record(z.string(), z.custom<CborValue>());
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -81,13 +89,33 @@ export function _resetNoncesForTesting(): void {
 
 // ---------- authData parsing ----------
 
+/**
+ * Anything `cbor-x` can hand back.
+ *
+ * Apple's attestation objects are not encoded consistently: across OS
+ * versions the COSE key has arrived as a Map, as a plain object, wrapped in a
+ * tag, and as a nested byte string that must be decoded again. That is why
+ * the helpers below probe several representations instead of assuming one,
+ * and why this type is a union rather than a single decoded contract.
+ */
+export type CborValue =
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | Uint8Array
+  | readonly CborValue[]
+  | ReadonlyMap<CborValue, CborValue>
+  | { readonly [key: string]: CborValue };
+
 export interface AttestationAuthData {
   rpIdHash: Buffer;
   flags: number;
   signCount: number;
   aaguid: Buffer;
   credId: Buffer;
-  credentialPublicKey: unknown;
+  credentialPublicKey: CborValue;
 }
 
 export interface AssertionAuthData {
@@ -108,10 +136,10 @@ export function parseAttestationAuthData(
   const credIdEnd = credIdStart + credIdLen;
   const credId = Buffer.from(authData.subarray(credIdStart, credIdEnd));
   const attestedDataTail = Buffer.from(authData.subarray(credIdEnd));
-  let credentialPublicKey: unknown = null;
+  let credentialPublicKey: CborValue = null;
   try {
-    let firstValue: unknown = null;
-    decodeMultiple(attestedDataTail, (value: unknown) => {
+    let firstValue: CborValue = null;
+    decodeMultiple(attestedDataTail, (value: CborValue) => {
       if (firstValue === null) {
         firstValue = value;
       }
@@ -156,38 +184,68 @@ function toBase64Url(buf: Buffer): string {
     .replace(/=+$/g, '');
 }
 
-function getCoseMapValue(coseKey: unknown, numericKey: number): unknown {
-  if (
-    typeof coseKey === 'object' &&
-    coseKey !== null &&
-    'value' in (coseKey as Record<string, unknown>)
-  ) {
-    const tagged = (coseKey as { value?: unknown }).value;
-    if (tagged !== undefined && tagged !== coseKey) {
-      return getCoseMapValue(tagged, numericKey);
-    }
+/**
+ * The keyed-record view of a decoded CBOR value, or null.
+ *
+ * Byte strings, arrays and Maps are excluded deliberately: each has its own
+ * branch at the call sites, and a Uint8Array would otherwise present as a
+ * record of numeric indices and silently satisfy a key lookup.
+ */
+function asCborRecord(
+  value: CborValue,
+): { readonly [key: string]: CborValue } | null {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Uint8Array || value instanceof Map) return null;
+  if (Array.isArray(value)) return null;
+  const record = cborRecordSchema.safeParse(value);
+  return record.success ? record.data : null;
+}
+
+/** One signature-verification attempt: whether it verified, and why not. */
+interface VerifyAttempt {
+  ok: boolean;
+  error?: string;
+}
+
+/** A short label for how a decoded CBOR value was represented, for diagnostics. */
+function describeCborKind(value: CborValue): string {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (value instanceof Uint8Array) return 'bytes';
+  if (Array.isArray(value)) return 'array';
+  if (z.string().safeParse(value).success) return 'string';
+  if (z.number().safeParse(value).success) return 'number';
+  if (z.boolean().safeParse(value).success) return 'boolean';
+  return 'object';
+}
+
+function getCoseMapValue(coseKey: CborValue, numericKey: number): CborValue {
+  const tagged = asCborRecord(coseKey)?.value;
+  if (tagged !== undefined && tagged !== coseKey) {
+    return getCoseMapValue(tagged, numericKey);
   }
 
   if (coseKey instanceof Map) {
     return coseKey.get(numericKey);
   }
 
-  if (typeof coseKey === 'object' && coseKey !== null) {
-    const obj = coseKey as Record<string, unknown>;
-    const direct = obj[String(numericKey)];
+  const record = asCborRecord(coseKey);
+  if (record !== null) {
+    const direct = record[String(numericKey)];
     if (direct !== undefined) {
       return direct;
     }
-    return obj[numericKey as unknown as keyof typeof obj];
+    // Some decoders keep the COSE label as a number rather than a string.
+    return record[numericKey];
   }
 
   return undefined;
 }
 
 function getDecodedField(
-  obj: unknown,
+  obj: CborValue,
   candidates: Array<string | number>,
-): unknown {
+): CborValue {
   if (obj instanceof Map) {
     for (const key of candidates) {
       if (obj.has(key)) {
@@ -197,15 +255,12 @@ function getDecodedField(
     return undefined;
   }
 
-  if (typeof obj === 'object' && obj !== null) {
-    const record = obj as Record<string, unknown>;
+  const record = asCborRecord(obj);
+  if (record !== null) {
     for (const key of candidates) {
       const strKey = String(key);
       if (record[strKey] !== undefined) {
         return record[strKey];
-      }
-      if (typeof key === 'string' && record[key] !== undefined) {
-        return record[key];
       }
     }
   }
@@ -213,14 +268,14 @@ function getDecodedField(
   return undefined;
 }
 
-function asBuffer(value: unknown): Buffer | null {
+function asBuffer(value: CborValue): Buffer | null {
   if (Buffer.isBuffer(value)) return value;
   if (value instanceof Uint8Array) return Buffer.from(value);
   if (Array.isArray(value)) return Buffer.from(value);
   return null;
 }
 
-function coseEcP256ToPem(coseKey: unknown): string {
+function coseEcP256ToPem(coseKey: CborValue): string {
   let normalizedKey = coseKey;
   // Some decoders may leave the COSE key as an encoded byte string.
   if (Buffer.isBuffer(normalizedKey) || normalizedKey instanceof Uint8Array) {
@@ -234,16 +289,11 @@ function coseEcP256ToPem(coseKey: unknown): string {
   const x = getCoseMapValue(normalizedKey, -2);
   const y = getCoseMapValue(normalizedKey, -3);
 
-  const xBuf = Buffer.isBuffer(x)
-    ? x
-    : x
-      ? Buffer.from(x as Uint8Array)
-      : null;
-  const yBuf = Buffer.isBuffer(y)
-    ? y
-    : y
-      ? Buffer.from(y as Uint8Array)
-      : null;
+  // asBuffer already covers every representation a decoder produces for a
+  // coordinate — Buffer, Uint8Array, plain byte array — and returns null for
+  // anything else, which the length check below rejects.
+  const xBuf = asBuffer(x);
+  const yBuf = asBuffer(y);
 
   if (!xBuf || !yBuf || xBuf.length !== 32 || yBuf.length !== 32) {
     throw new Error('Invalid COSE key coordinates');
@@ -270,6 +320,20 @@ const APPLE_NONCE_OID = Buffer.from([
   0x06, 0x09, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x63, 0x64, 0x08, 0x02,
 ]);
 
+/** A decoded DER length header: the value's length and the offset after it. */
+interface DerLength {
+  length: number;
+  next: number;
+}
+
+/** A decoded DER tag-length-value header and the bounds of its value. */
+interface DerTLV {
+  tag: number;
+  valueStart: number;
+  valueEnd: number;
+  next: number;
+}
+
 /**
  * Extract the 32-byte nonce from Apple App Attest credential cert DER bytes.
  * Searches for OID 1.2.840.113635.100.8.2 in the raw DER.
@@ -280,10 +344,7 @@ export function extractNonceFromCert(certDer: Buffer): Buffer {
   if (oidIdx === -1)
     throw new Error('Apple nonce OID not found in certificate');
 
-  const readDerLength = (
-    buf: Buffer,
-    offset: number,
-  ): { length: number; next: number } => {
+  const readDerLength = (buf: Buffer, offset: number): DerLength => {
     const first = buf[offset];
     if (first === undefined) {
       throw new Error('Invalid DER length');
@@ -313,7 +374,7 @@ export function extractNonceFromCert(certDer: Buffer): Buffer {
     buf: Buffer,
     offset: number,
     expectedTag?: number,
-  ): { tag: number; valueStart: number; valueEnd: number; next: number } => {
+  ): DerTLV => {
     const tag = buf[offset];
     if (tag === undefined) {
       throw new Error('Unexpected end of DER input');
@@ -471,38 +532,64 @@ export function formatCertSubjectForLog(subject: string): string {
   return neutralizeControlSequences(subject.replace(/\r?\n/g, ', '));
 }
 
+/**
+ * The server cannot verify attestations at all — the Apple root CA is missing.
+ *
+ * Distinct from a rejected attestation: nothing the caller sends will succeed,
+ * so the route answers 503 rather than 400, and the container acceptance test
+ * uses that distinction instead of reading the error text.
+ */
+export class AttestationUnavailableError extends Error {
+  override readonly name = 'AttestationUnavailableError';
+}
+
 export async function verifyAttestation(
   opts: AttestationInput,
 ): Promise<AttestationResult> {
   const { keyId, attestationBuffer, nonce, bundleId, teamId } = opts;
 
   // 1. Decode CBOR
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let obj: any;
+  let decoded: CborValue;
   try {
-    obj = decode(attestationBuffer);
+    decoded = decode(attestationBuffer);
   } catch {
     throw new Error('Failed to decode attestation CBOR');
   }
 
   // 2. Validate format
-  if (!obj || obj.fmt !== 'apple-appattest') {
-    throw new Error(`Invalid attestation format: ${obj?.fmt ?? 'unknown'}`);
+  const obj = asCborRecord(decoded);
+  if (obj === null || obj.fmt !== 'apple-appattest') {
+    throw new Error(
+      `Invalid attestation format: ${String(obj?.fmt ?? 'unknown')}`,
+    );
   }
 
-  const x5c: Buffer[] = obj.attStmt?.x5c;
-  const authData = Buffer.isBuffer(obj.authData)
-    ? obj.authData
-    : Buffer.from(obj.authData as Uint8Array);
+  const x5cValue = asCborRecord(obj.attStmt)?.x5c;
+  const x5c = Array.isArray(x5cValue)
+    ? x5cValue
+        .map((entry) => asBuffer(entry))
+        .filter((entry): entry is Buffer => entry !== null)
+    : [];
 
-  if (!x5c || x5c.length < 2) {
+  const authData = asBuffer(obj.authData);
+  if (authData === null) {
+    throw new Error('Missing authData in attestation');
+  }
+
+  if (x5c.length < 2) {
     throw new Error('Missing certificate chain in attestation');
   }
 
   // 3. Verify certificate chain against Apple root CA
   const rootCaPem = opts.rootCa ?? loadAppleRootCa();
   if (!rootCaPem) {
-    throw new Error('Apple root CA not found at ' + APPLE_ROOT_CA_PATH);
+    // A distinct class from "this attestation is bad": the server is
+    // misconfigured, and the caller can do nothing about it. Tagged so the
+    // route can say so without echoing the message back — see
+    // ATTESTATION_UNAVAILABLE in wsproxy.ts.
+    throw new AttestationUnavailableError(
+      'Apple root CA not found at ' + APPLE_ROOT_CA_PATH,
+    );
   }
 
   const certs = x5c.map((d: Buffer) => new X509Certificate(d));
@@ -568,7 +655,7 @@ export async function verifyAttestation(
     credCert.publicKey.export({
       type: 'spki',
       format: 'der',
-    }) as unknown as ArrayBuffer,
+    }),
   );
   const certCredId = createHash('sha256').update(certPublicKeyDer).digest();
   const secondaryCertPublicKeyPem =
@@ -588,7 +675,7 @@ export async function verifyAttestation(
       createPublicKey(cosePublicKeyPem).export({
         type: 'spki',
         format: 'der',
-      }) as unknown as ArrayBuffer,
+      }),
     );
     coseCredId = createHash('sha256').update(cosePublicKeyDer).digest();
   } catch {
@@ -749,38 +836,41 @@ export async function verifyAssertion(
   } = opts;
 
   // 1. Decode CBOR
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  let obj: any;
+  let obj: CborValue;
   try {
     obj = decode(assertionBuffer);
   } catch {
     throw new Error('Failed to decode assertion CBOR');
   }
 
+  // The direct property read is the fallback for a decoder that produced a
+  // plain object whose keys getDecodedField's candidate list did not cover.
+  const record = asCborRecord(obj);
   const signature =
     asBuffer(getDecodedField(obj, ['signature', 'sig', 2])) ??
-    asBuffer((obj as { signature?: unknown }).signature);
+    asBuffer(record?.signature);
   const authenticatorData =
     asBuffer(getDecodedField(obj, ['authenticatorData', 'authData', 1])) ??
-    asBuffer((obj as { authenticatorData?: unknown }).authenticatorData);
+    asBuffer(record?.authenticatorData);
   const assertionClientDataHash =
     asBuffer(getDecodedField(obj, ['clientDataHash', 'clientHash', 3])) ??
-    asBuffer((obj as { clientDataHash?: unknown }).clientDataHash);
+    asBuffer(record?.clientDataHash);
 
   if (!signature || !authenticatorData) {
     throw new Error('Assertion missing signature/authenticatorData');
   }
 
-  const decodedShape = (() => {
+  // How the decoder represented the assertion, for the diagnostic below.
+  const decodedLayout = (() => {
     if (obj instanceof Map) {
       return `mapKeys=${Array.from(obj.keys())
         .map((k) => String(k))
         .join(',')}`;
     }
-    if (typeof obj === 'object' && obj !== null) {
-      return `objKeys=${Object.keys(obj as Record<string, unknown>).join(',')}`;
+    if (record !== null) {
+      return `objKeys=${Object.keys(record).join(',')}`;
     }
-    return `type=${typeof obj}`;
+    return `type=${describeCborKind(obj)}`;
   })();
 
   // 2. Verify rpIdHash for App Attest.
@@ -865,7 +955,7 @@ export async function verifyAssertion(
             createPublicKey(candidate.key).export({
               type: 'spki',
               format: 'der',
-            }) as unknown as ArrayBuffer,
+            }),
           );
           const hash = createHash('sha256').update(der).digest();
           const b64 = hash.toString('base64');
@@ -881,7 +971,7 @@ export async function verifyAssertion(
     keyPem: string,
     dsaEncoding: 'der' | 'ieee-p1363',
     payload: Buffer,
-  ): { ok: boolean; error?: string } => {
+  ): VerifyAttempt => {
     try {
       // Every payload is verified with an explicit SHA-256 digest.
       //
@@ -907,7 +997,7 @@ export async function verifyAssertion(
     } catch (err) {
       return {
         ok: false,
-        error: `verify-threw:${(err as Error).message}`,
+        error: `verify-threw:${err instanceof Error ? err.message : String(err)}`,
       };
     }
   };
@@ -1038,7 +1128,7 @@ export async function verifyAssertion(
       .join(',');
 
     const error: AssertionVerificationError = new Error(
-      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, keyIdMatchesCandidate=${keyIdMatchesAnyCandidate}, ${decodedShape}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.length}, errors=${errorSummary})`,
+      `Assertion signature verification failed (sigLen=${signature.length}, authDataLen=${authenticatorData.length}, clientHashLen=${assertionClientDataHash?.length ?? 0}, keyCandidates=${keyCandidates.length}, keyIdMatchesCandidate=${keyIdMatchesAnyCandidate}, ${decodedLayout}, signCount=${parsed.signCount}, storedSignCount=${storedSignCount}, rpBundle=${rpMatchesBundle}, rpAppId=${rpMatchesAppId}, attempts=${attemptDetails.length}, errors=${errorSummary})`,
     );
     error.attemptDetails = attemptDetails;
     throw error;
@@ -1067,6 +1157,31 @@ export interface AttestedKeyEntry {
    */
   lastAssertedAt?: string;
 }
+
+/**
+ * One entry of the on-disk key store.
+ *
+ * Non-strict: unknown keys inside an entry are dropped rather than rejected,
+ * so a file written by a newer version still loads the fields this version
+ * understands.
+ */
+const attestedKeyEntrySchema = z.object({
+  publicKey: z.string(),
+  alternatePublicKey: z.string().optional(),
+  signCount: z.number(),
+  registeredAt: z.string(),
+  lastUsedAt: z.string().optional(),
+  lastAssertedAt: z.string().optional(),
+});
+
+/**
+ * The store's container, keyed by keyId.
+ *
+ * The entries are deliberately left unvalidated here so `loadAttestedKeys` can
+ * check them one at a time — see the comment there for why validating the file
+ * as a whole is the wrong shape for this data.
+ */
+const attestedKeyFileSchema = z.record(z.string(), z.unknown());
 
 /**
  * Bounds on the attested-key store (MWP-95).
@@ -1209,11 +1324,36 @@ export function attestedKeyStoreSummary(): AttestedKeyStoreSummary {
 export function loadAttestedKeys(filePath: string): void {
   try {
     const raw = fs.readFileSync(filePath, 'utf-8');
-    const obj = JSON.parse(raw) as Record<string, AttestedKeyEntry>;
+    const file = attestedKeyFileSchema.parse(JSON.parse(raw));
     const now = Date.now();
     const nowStamp = new Date(now).toISOString();
 
-    const migrated = Object.entries(obj).map(
+    // Validated per entry, never as a whole file.
+    //
+    // Registration is what puts a key here, and a client caches its keyId in
+    // the Keychain and never registers again. So dropping the store costs the
+    // entire fleet a round of "Unknown key" failures until every device
+    // re-registers — and validating the file as one unit means a single
+    // truncated or hand-edited record does exactly that. One bad entry is
+    // dropped; the rest of the fleet keeps working.
+    const valid: [string, AttestedKeyEntry][] = [];
+    let dropped = 0;
+    for (const [keyId, value] of Object.entries(file)) {
+      const entry = attestedKeyEntrySchema.safeParse(value);
+      if (!entry.success) {
+        dropped++;
+        continue;
+      }
+      valid.push([keyId, entry.data]);
+    }
+    if (dropped > 0) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `app-attest: dropped ${dropped} malformed attested-key ${dropped === 1 ? 'entry' : 'entries'} from ${filePath}; the remaining ${valid.length} were loaded`,
+      );
+    }
+
+    const migrated = valid.map(
       ([keyId, entry]): [string, AttestedKeyEntry] => {
         if (entry.lastUsedAt) return [keyId, entry];
         // Grandfather entries written before the TTL existed.

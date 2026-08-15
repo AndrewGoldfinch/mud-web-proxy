@@ -9,6 +9,8 @@
  * The mTLS fallback is the one where the two definitions actually disagreed.
  */
 
+import { errorText } from '../src/error-text';
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { getRuntimeConfig } from '../src/runtime-config.js';
 
@@ -56,7 +58,7 @@ describe('the mTLS fallback is gone, not merely guarded', () => {
     try {
       getRuntimeConfig({ ...base, ALLOW_MTLS_FALLBACK: 'true' });
     } catch (e) {
-      message = (e as Error).message;
+      message = errorText(e);
     }
     expect(message).toMatch(/AUTH_MODE=shared-secret/);
   });
@@ -94,7 +96,7 @@ describe('no security decision keys on NODE_ENV', () => {
           TARGET_MODE: 'fixed',
           INBOUND_TLS_MODE: 'off',
           BIND_HOST: '127.0.0.1',
-          NODE_ENV: nodeEnv as string,
+          NODE_ENV: nodeEnv,
         }),
       ).not.toThrow();
     }
@@ -109,7 +111,7 @@ describe('no security decision keys on NODE_ENV', () => {
           TARGET_MODE: 'fixed',
           INBOUND_TLS_MODE: 'off',
           BIND_HOST: '0.0.0.0',
-          NODE_ENV: nodeEnv as string,
+          NODE_ENV: nodeEnv,
         }),
       ).toThrow(/ALLOW_INSECURE_INBOUND_NO_TLS/);
     }
@@ -151,7 +153,7 @@ describe('the plaintext guard names a usable remedy', () => {
   const exposed = {
     ...base,
     BIND_HOST: '0.0.0.0',
-    ALLOW_INSECURE_INBOUND_NO_TLS: undefined as unknown as string,
+    ALLOW_INSECURE_INBOUND_NO_TLS: asDouble<string>()(undefined),
   };
 
   test('an exposed plaintext listener is refused without acknowledgment', () => {
@@ -163,7 +165,7 @@ describe('the plaintext guard names a usable remedy', () => {
     try {
       getRuntimeConfig(exposed);
     } catch (e) {
-      message = (e as Error).message;
+      message = errorText(e);
     }
     expect(message).toMatch(/ALLOW_INSECURE_INBOUND_NO_TLS/);
     expect(message).not.toMatch(/ALLOW_INSECURE_PRODUCTION_NO_TLS=true/);

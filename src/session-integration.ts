@@ -7,6 +7,7 @@
  */
 
 import { SessionManager } from './session-manager';
+import { errorText } from './error-text';
 import type { Session } from './session';
 import type { SocketExtended } from './types';
 import { TriggerMatcher } from './trigger-matcher';
@@ -28,13 +29,18 @@ import { resolveSocketAddress } from './wsproxy-utils';
 import { neutralizeControlSequences } from './log-redaction';
 import { withDefaults } from './with-defaults';
 import {
+  asClientObject,
+  parseTypedRequest,
   recognize,
   validateTyped,
   validateLegacy,
   KNOWN_TYPES,
+  type JsonValue,
   type ParseOutcome,
-  type KnownType,
 } from './client-protocol';
+
+/** Membership test over the known types; a Set needs no widening assertion. */
+const KNOWN_TYPE_NAMES: ReadonlySet<string> = new Set(KNOWN_TYPES);
 
 import type {
   ConnectRequest,
@@ -43,7 +49,6 @@ import type {
   SyncAckRequest,
   InputRequest,
   NAWSRequest,
-  ClientMessage,
   ProcessedData,
 } from './types';
 
@@ -232,7 +237,7 @@ export class SessionIntegration {
    * which is how malformed control messages ended up typed into the game.
    */
   parseNewMessage(socket: SocketExtended, data: Buffer): ParseOutcome {
-    let parsed: unknown;
+    let parsed: JsonValue;
     try {
       parsed = JSON.parse(data.toString());
     } catch (_err) {
@@ -240,20 +245,21 @@ export class SessionIntegration {
       return { kind: 'not-ours' };
     }
 
+    // One decode for the whole method: `asClientObject` is the single place
+    // that decides a payload is an object at all, so nothing below re-tests it.
+    const o = asClientObject(parsed);
+
     const recognition = recognize(parsed);
-    if (recognition.shape === 'unrecognized') {
-      return {
-        kind: 'not-ours',
-        parsedObject:
-          parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-            ? (parsed as Record<string, unknown>)
-            : undefined,
-      };
+    if (recognition.kind === 'unrecognized') {
+      return { kind: 'not-ours', parsedObject: o };
     }
 
-    const o = parsed as Record<string, unknown>;
+    if (o === undefined) {
+      // Unreachable: recognize only returns a recognized kind for an object.
+      return { kind: 'not-ours' };
+    }
 
-    if (recognition.shape === 'legacy') {
+    if (recognition.kind === 'legacy') {
       const legacy = validateLegacy(o);
       if (!legacy.ok) {
         return {
@@ -275,7 +281,7 @@ export class SessionIntegration {
       };
     }
 
-    if (!(KNOWN_TYPES as readonly string[]).includes(recognition.type)) {
+    if (!KNOWN_TYPE_NAMES.has(recognition.type)) {
       return {
         kind: 'invalid',
         code: 'invalid_request',
@@ -296,31 +302,45 @@ export class SessionIntegration {
       };
     }
 
-    const clientMsg = parsed as ClientMessage;
-
     // No per-message content dump. It was gated on a client-settable flag and
     // redacted only `token` and `deviceToken`, so an `input` frame — the
     // player's keystrokes, including anything typed at a password prompt the
     // proxy did not recognise as one — went to the log verbatim.
 
-    switch (recognition.type as KnownType) {
+    const request = parseTypedRequest(recognition.type, o);
+    if (request === undefined) {
+      // validateTyped accepted the message, so this is a schema disagreement
+      // between the two rather than bad client input. Reject rather than
+      // dispatch a value that did not decode.
+      return {
+        kind: 'invalid',
+        code: 'invalid_request',
+        field: 'type',
+        reason: `Unknown message type: ${recognition.type}`,
+        flavor: 'typed',
+      };
+    }
+
+    // The switch narrows `request` through its `type` discriminant, so each
+    // handler receives its own request type without an assertion.
+    switch (request.type) {
       case 'connect':
-        this.handleConnect(socket, clientMsg as ConnectRequest);
+        this.handleConnect(socket, request);
         return { kind: 'handled' };
       case 'resume':
-        this.handleResume(socket, clientMsg as ResumeRequest);
+        this.handleResume(socket, request);
         return { kind: 'handled' };
       case 'activityToken':
-        this.handleActivityToken(socket, clientMsg as ActivityTokenRequest);
+        this.handleActivityToken(socket, request);
         return { kind: 'handled' };
       case 'syncAck':
-        this.handleSyncAck(socket, clientMsg as SyncAckRequest);
+        this.handleSyncAck(socket, request);
         return { kind: 'handled' };
       case 'input':
-        this.handleInput(socket, clientMsg as InputRequest);
+        this.handleInput(socket, request);
         return { kind: 'handled' };
       case 'naws':
-        this.handleNAWS(socket, clientMsg as NAWSRequest);
+        this.handleNAWS(socket, request);
         return { kind: 'handled' };
       case 'disconnect':
         this.handleDisconnect(socket);
@@ -465,13 +485,10 @@ export class SessionIntegration {
         // A rejection handler rather than a trailing `.catch`: `.catch` would
         // also see a throw from the fulfilment handler above, which has
         // already released, and release a second time.
-        (err: unknown) => {
+        (cause: unknown) => {
           this.sessionManager.releasePendingDial(ip);
           const reason = 'Target hostname could not be resolved';
-          this.log(
-            `connect rejected: ${reason} (${(err as Error).message})`,
-            ip,
-          );
+          this.log(`connect rejected: ${reason} (${errorText(cause)})`, ip);
           return { allowed: false, code: 'invalid_request', reason };
         },
       );
@@ -633,7 +650,7 @@ export class SessionIntegration {
         ip,
         session.id,
       );
-      this.sendError(socket, 'connection_failed', (err as Error).message);
+      this.sendError(socket, 'connection_failed', errorText(err));
       this.removeSessionAndCleanup(session.id);
     }
   }
@@ -837,7 +854,7 @@ export class SessionIntegration {
 
     // Buffer and forward GMCP messages
     for (const gmcp of result.gmcpMessages) {
-      let gmcpData: object;
+      let gmcpData: JsonValue;
       try {
         gmcpData = gmcp.data ? JSON.parse(gmcp.data) : {};
       } catch {

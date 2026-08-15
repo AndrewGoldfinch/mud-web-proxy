@@ -1,11 +1,6 @@
-interface SecurityResidual {
-  assessment: string;
-  reason: string;
-}
+import { z } from 'zod';
 
-interface SecurityBaseline {
-  residuals: SecurityResidual[];
-}
+import type { JsonValue } from '../../src/json-value';
 
 interface ResidualComparison {
   status: 'match' | 'mismatch';
@@ -44,32 +39,49 @@ const parseLiveIdentifiers = (report: string): string[] => {
   return identifiers;
 };
 
-const parseBaselineIdentifiers = (value: unknown): string[] => {
-  if (!value || typeof value !== 'object') {
-    throw new Error('security baseline is not an object');
+/**
+ * One residual as the baseline file declares it.
+ *
+ * `assessment` is trimmed-exact rather than merely non-empty: the identifier is
+ * matched against systemd's own output, and a stray space would silently fail
+ * to line up.
+ */
+const residualSchema = z.object({
+  assessment: z
+    .string()
+    .refine((value) => value.trim() === value && value !== ''),
+  reason: z.string().refine((value) => value.trim() !== ''),
+});
+
+const baselineSchema = z.object({
+  residuals: z.array(residualSchema).min(1),
+});
+
+const parseBaselineIdentifiers = (value: JsonValue): string[] => {
+  const parsed = baselineSchema.safeParse(value);
+  if (!parsed.success) {
+    // Three distinct operator mistakes, kept distinct: a file that is not an
+    // object at all, one with no residuals, and one whose entries are
+    // malformed.
+    const rootIssue = parsed.error.issues.some(
+      (issue) => issue.path.length === 0,
+    );
+    if (rootIssue) throw new Error('security baseline is not an object');
+    const residualsIssue = parsed.error.issues.some(
+      (issue) => issue.path.length === 1 && issue.path[0] === 'residuals',
+    );
+    throw new Error(
+      residualsIssue
+        ? 'security baseline has no residuals'
+        : 'security baseline has an invalid residual',
+    );
   }
-  const residuals = (value as Partial<SecurityBaseline>).residuals;
-  if (!Array.isArray(residuals) || residuals.length === 0) {
-    throw new Error('security baseline has no residuals');
-  }
-  return residuals.map((residual) => {
-    if (
-      !residual ||
-      typeof residual.assessment !== 'string' ||
-      residual.assessment.trim() !== residual.assessment ||
-      residual.assessment === '' ||
-      typeof residual.reason !== 'string' ||
-      residual.reason.trim() === ''
-    ) {
-      throw new Error('security baseline has an invalid residual');
-    }
-    return residual.assessment;
-  });
+  return parsed.data.residuals.map((residual) => residual.assessment);
 };
 
 export const compareSecurityResiduals = (
   report: string,
-  baseline: unknown,
+  baseline: JsonValue,
 ): ResidualComparison => {
   const baselineRaw = parseBaselineIdentifiers(baseline);
   const liveRaw = parseLiveIdentifiers(report);

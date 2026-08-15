@@ -3,6 +3,10 @@
  * Tests stringify(), loadChatLog(), log(), die(), and server initialization
  */
 
+import type { LogMessage } from '../src/log-redaction';
+import type { JsonValue } from '../src/json-value';
+import { asStub } from './support/doubles';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
@@ -26,11 +30,41 @@ const originalProcessExit = process.exit;
 const originalProcessChdir = process.chdir;
 const originalSetTimeout = global.setTimeout;
 
+/**
+ * An object graph handed to the serializer under test, cycles included.
+ *
+ * An interface rather than a `Record` alias: a named interface is a contract
+ * these fixtures satisfy, where the alias reads as "any dictionary" and
+ * discards what the literal already established.
+ */
+interface Graph {
+  [key: string]: LogMessage;
+}
+
+/** One chat log entry as it is stored on disk. */
+interface ChatLogEntry {
+  date: Date;
+  data: { [key: string]: JsonValue };
+}
+
+/** The socket surface `die()` touches. */
+interface DyingSocket {
+  write: (msg: string) => void;
+  terminate: () => void;
+}
+
+/** The socket context the local `log` helper renders. */
+interface LogSocketContext {
+  req: { connection: { remoteAddress: string } };
+}
+
 describe('stringify() function', () => {
-  const stringify = function (A: unknown): string {
-    const cache: unknown[] = [];
-    const val = JSON.stringify(A, function (_k: string, v: unknown) {
-      if (typeof v === 'object' && v !== null) {
+  const stringify = function (value: LogMessage): string {
+    const cache: LogMessage[] = [];
+    const val = JSON.stringify(value, function (_k: string, v: LogMessage) {
+      // Only non-primitives can form a cycle, and `Object(v) === v` is true
+      // for exactly those.
+      if (v !== null && v !== undefined && Object(v) === v) {
         if (cache.indexOf(v) !== -1) return;
         cache.push(v);
       }
@@ -40,7 +74,7 @@ describe('stringify() function', () => {
   };
 
   test('should handle circular references without throwing', () => {
-    const obj: Record<string, unknown> = { a: 1 };
+    const obj: Graph = { a: 1 };
     obj.circular = obj;
     const result = stringify(obj);
     expect(result).toBe('{"a":1}');
@@ -104,8 +138,8 @@ describe('stringify() function', () => {
   });
 
   test('should handle objects with multiple circular references', () => {
-    const obj1: Record<string, unknown> = { name: 'obj1' };
-    const obj2: Record<string, unknown> = { name: 'obj2' };
+    const obj1: Graph = { name: 'obj1' };
+    const obj2: Graph = { name: 'obj2' };
     obj1.ref = obj2;
     obj2.ref = obj1;
     const result = stringify(obj1);
@@ -113,11 +147,11 @@ describe('stringify() function', () => {
   });
 
   test('should handle complex nested structures with circular refs', () => {
-    const obj: Record<string, unknown> = {
+    const obj: Graph = {
       arr: [1, 2, 3],
       nested: { value: 'test' },
     };
-    (obj.arr as unknown[]).push(obj);
+    asDouble<unknown[]>()(obj.arr).push(obj);
     const result = stringify(obj);
     // Circular ref in array becomes undefined (null in JSON)
     expect(result).toBe('{"arr":[1,2,3,null],"nested":{"value":"test"}}');
@@ -128,9 +162,7 @@ describe('loadChatLog() function', () => {
   let testDir: string;
   let chatFilePath: string;
 
-  const loadChatLog = async (): Promise<
-    Array<{ date: Date; data: Record<string, unknown> }>
-  > => {
+  const loadChatLog = async (): Promise<ChatLogEntry[]> => {
     try {
       const data = await fs.promises.readFile('./chat.json', 'utf8');
       const parsed = JSON.parse(data);
@@ -225,12 +257,9 @@ describe('log() function', () => {
     console.log = originalConsoleLog;
   });
 
-  const log = function (
-    msg: unknown,
-    s?: { req: { connection: { remoteAddress: string } } },
-  ): void {
+  const log = function (msg: LogMessage, s?: LogSocketContext): void {
     if (!s) {
-      s = { req: { connection: { remoteAddress: '' } } } as {
+      s = { req: { connection: { remoteAddress: '' } } } satisfies {
         req: { connection: { remoteAddress: string } };
       };
     }
@@ -299,14 +328,16 @@ describe('die() function', () => {
       capturedLogs.push(args.join(' '));
     };
 
-    process.exit = ((code?: number) => {
+    process.exit = asStub<typeof process.exit>()((code?: number) => {
       exitCode = code;
-    }) as typeof process.exit;
+    });
 
-    global.setTimeout = ((callback: () => void, _delay: number) => {
-      callback();
-      return undefined as unknown as ReturnType<typeof setTimeout>;
-    }) as typeof global.setTimeout;
+    global.setTimeout = asStub<typeof global.setTimeout>()(
+      (callback: () => void, _delay: number) => {
+        callback();
+        return asDouble<ReturnType<typeof setTimeout>>()(undefined);
+      },
+    );
   });
 
   afterEach(() => {
@@ -317,13 +348,13 @@ describe('die() function', () => {
 
   const die = function (
     core: boolean | undefined,
-    sockets: Array<{ write: (msg: string) => void; terminate: () => void }>,
+    sockets: DyingSocket[],
     srvOpen: { value: boolean },
   ): void {
     capturedLogs.push('Dying gracefully in 3 sec.');
 
     for (let i = 0; i < sockets.length; i++) {
-      if (sockets[i] && typeof sockets[i].write === 'function') {
+      if (sockets[i]?.write) {
         sockets[i].write('Proxy server is going down...');
       }
       closedSockets.push(sockets[i]);
@@ -365,10 +396,7 @@ describe('die() function', () => {
         }),
         terminate: () => {},
       },
-      { terminate: () => {} } as {
-        write: (msg: string) => void;
-        terminate: () => void;
-      },
+      asDouble<DyingSocket>()({ terminate: () => {} }),
     ];
     const srvOpen = { value: true };
 
@@ -448,7 +476,7 @@ describe('Server initialization', () => {
 
     const chatlog = await loadChatLog();
     expect(chatlog).toHaveLength(1);
-    expect((chatlog[0] as { data: { msg: string } }).data.msg).toBe('Test');
+    expect(chatlog[0].data.msg).toBe('Test');
 
     fs.rmSync(testDir, { recursive: true, force: true });
   });
@@ -560,11 +588,23 @@ describe('Server initialization', () => {
   });
 });
 
+/** Two levels deep, so the cache has to survive a nested walk. */
+interface NestedGraph {
+  a: { b: Graph };
+}
+
+/** Three levels deep, with the cycle closing back to the root. */
+interface DeepGraph {
+  level1: { level2: Graph };
+}
+
 describe('Cache management for circular detection', () => {
-  const stringifyWithCache = function (A: unknown): string {
-    const cache: unknown[] = [];
-    const val = JSON.stringify(A, function (_k: string, v: unknown) {
-      if (typeof v === 'object' && v !== null) {
+  const stringifyWithCache = function (value: LogMessage): string {
+    const cache: LogMessage[] = [];
+    const val = JSON.stringify(value, function (_k: string, v: LogMessage) {
+      // Only non-primitives can form a cycle, and `Object(v) === v` is true
+      // for exactly those.
+      if (v !== null && v !== undefined && Object(v) === v) {
         if (cache.indexOf(v) !== -1) return;
         cache.push(v);
       }
@@ -574,14 +614,14 @@ describe('Cache management for circular detection', () => {
   };
 
   test('should properly cache objects to detect circular references', () => {
-    const obj: { a: { b: Record<string, unknown> } } = { a: { b: {} } };
+    const obj: NestedGraph = { a: { b: {} } };
     obj.a.b.c = obj.a;
     const result = stringifyWithCache(obj);
     expect(result).toBe('{"a":{"b":{}}}');
   });
 
   test('should handle multiple references to same object', () => {
-    const shared: Record<string, unknown> = { value: 'shared' };
+    const shared: Graph = { value: 'shared' };
     const obj = { a: shared, b: shared };
     const result = stringifyWithCache(obj);
     // Second reference to same object is omitted (returns undefined, property removed)
@@ -589,7 +629,7 @@ describe('Cache management for circular detection', () => {
   });
 
   test('should handle deeply nested circular references', () => {
-    const obj: { level1: { level2: Record<string, unknown> } } = {
+    const obj: DeepGraph = {
       level1: { level2: {} },
     };
     obj.level1.level2.level3 = obj;
@@ -599,10 +639,12 @@ describe('Cache management for circular detection', () => {
 });
 
 describe('Additional stringify edge cases', () => {
-  const stringify = function (A: unknown): string {
-    const cache: unknown[] = [];
-    const val = JSON.stringify(A, function (_k: string, v: unknown) {
-      if (typeof v === 'object' && v !== null) {
+  const stringify = function (value: LogMessage): string {
+    const cache: LogMessage[] = [];
+    const val = JSON.stringify(value, function (_k: string, v: LogMessage) {
+      // Only non-primitives can form a cycle, and `Object(v) === v` is true
+      // for exactly those.
+      if (v !== null && v !== undefined && Object(v) === v) {
         if (cache.indexOf(v) !== -1) return;
         cache.push(v);
       }
@@ -693,9 +735,7 @@ describe('loadChatLog edge cases', () => {
     }
   });
 
-  const loadChatLog = async (): Promise<
-    Array<{ date: Date; data: Record<string, unknown> }>
-  > => {
+  const loadChatLog = async (): Promise<ChatLogEntry[]> => {
     try {
       const data = await fs.promises.readFile('./chat.json', 'utf8');
       const parsed = JSON.parse(data);
@@ -756,7 +796,7 @@ describe('loadChatLog edge cases', () => {
 
 describe('Server state management', () => {
   test('should maintain socket array', () => {
-    const server = { sockets: [] as unknown[] };
+    const server = { sockets: asDouble<unknown[]>()([]) };
     expect(server.sockets).toEqual([]);
 
     server.sockets.push({ id: 1 });
@@ -776,7 +816,7 @@ describe('Server state management', () => {
   });
 
   test('should maintain chatlog array', () => {
-    const chatlog: Array<{ date: Date; data: Record<string, unknown> }> = [];
+    const chatlog: ChatLogEntry[] = [];
     expect(chatlog).toEqual([]);
 
     chatlog.push({

@@ -1,3 +1,5 @@
+import type { JsonValue } from '../src/json-value';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach } from 'bun:test';
 import { SessionIntegration } from '../src/session-integration';
 import type { SocketExtended } from '../src/types';
@@ -5,14 +7,14 @@ import type { SocketExtended } from '../src/types';
 type Sent = string[];
 
 const makeSocket = (sent: Sent): SocketExtended =>
-  ({
+  asDouble<SocketExtended>()({
     sendUTF: (s: string) => sent.push(s),
     send: (s: string) => sent.push(s),
     req: { headers: {}, socket: { remoteAddress: '127.0.0.1' } },
     remoteAddress: '127.0.0.1',
-  }) as unknown as SocketExtended;
+  });
 
-const buf = (o: unknown) => Buffer.from(JSON.stringify(o));
+const buf = (o: JsonValue) => Buffer.from(JSON.stringify(o));
 
 describe('parseNewMessage outcomes', () => {
   let integration: SessionIntegration;
@@ -169,7 +171,7 @@ describe('authorizeConnect: the one policy path', () => {
   // Both protocols call this exact function, so parity is structural rather
   // than a property two implementations have to be checked against. These
   // cases pin the decisions themselves.
-  const settle = (d: unknown) =>
+  const settle = (d: Promise<unknown> | void) =>
     d instanceof Promise ? d : Promise.resolve(d);
 
   const build = (mode: 'fixed' | 'allowlist' | 'arbitrary') =>

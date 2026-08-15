@@ -1,0 +1,108 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+
+  // Ports the rules the retired eslint.config.js actually enforced. Formatting
+  // is deliberately absent: it was an ESLint rule (`prettier/prettier`) but is
+  // its own CI gate here (`bun run format`), so nothing is lost by oxlint not
+  // knowing about Prettier.
+  "ignorePatterns": [
+    "**/public/",
+    "**/dist/",
+    "**/types/",
+    "**/wsproxy.js",
+    "**/CLAUDE.local.md",
+    "**/.aider*",
+
+    // Agent-owned trees. These are separate checkouts or installed tooling,
+    // not this project's source. `.worktrees/` and `.superpowers/` are the
+    // same ones .prettierignore calls out, and for the same reason: git hides
+    // them from CI, so linting them only ever fails locally.
+    ".agent/**",
+    ".agents/**",
+    ".claude/**",
+    ".codex/**",
+    ".continue/**",
+    ".cursor/**",
+    ".gemini/**",
+    ".opencode/**",
+    ".pi/**",
+    ".roo/**",
+    ".windsurf/**",
+    ".superpowers/**",
+    ".worktrees/**",
+
+    // Vendored by the install-anti-slop skill. Its own source is not ours.
+    "tools/oxlint/anti-slop/**"
+  ],
+
+  // `correctness` is oxlint's default and is the bar ESLint held here.
+  // `suspicious` was measured and rejected: it adds 221 findings, 139 of them
+  // no-underscore-dangle, which contradicts the `_`-prefix convention CLAUDE.md
+  // documents for intentionally unused parameters.
+  "categories": {
+    "correctness": "error"
+  },
+
+  // Vendored, not published: the plugin source lives in-tree so its rules can
+  // be read and changed alongside the code they judge.
+  "jsPlugins": [
+    { "name": "anti-slop", "specifier": "./tools/oxlint/anti-slop/index.ts" }
+  ],
+
+  "rules": {
+    "anti-slop/no-chained-type-assertions": "error",
+    "anti-slop/no-conditional-empty-object-spread": "error",
+    "anti-slop/no-known-value-widening": "error",
+    "anti-slop/no-module-mocking": "error",
+    "anti-slop/no-object-parameters": "error",
+    "anti-slop/no-reflect-apply": "error",
+    "anti-slop/no-reflect-get": "error",
+    "anti-slop/no-runtime-typeof": "error",
+    "anti-slop/no-shape-in-symbol-names": "error",
+    "anti-slop/no-unknown-parameters": "error",
+    "anti-slop/no-unknown-returns": "error",
+    "anti-slop/no-unknown-type-aliases": "error",
+    "anti-slop/no-unsafe-dictionary-type": "error",
+    "anti-slop/no-widen-then-assert": "error",
+    "anti-slop/require-safety-comment-for-type-assertion": "error",
+
+    "no-console": "warn",
+    "typescript/no-explicit-any": "warn",
+
+    // Every site is `new Array(n).fill(x)`, where the rule's premise — that
+    // the argument's meaning is ambiguous — does not hold. Two of them
+    // preallocate the session ring buffer, where Array.from would be slower
+    // for no readability gain.
+    "unicorn/no-new-array": "off",
+
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_",
+        "caughtErrorsIgnorePattern": "^_"
+      }
+    ]
+  },
+
+  "overrides": [
+    {
+      // CI scripts are command-line tools: their console output is the
+      // interface, not a leftover debug statement. srv.log() is a server
+      // concern and is not reachable from here.
+      "files": ["scripts/**/*.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    },
+    {
+      // Test *harness* files are programs, not tests: mock MUD servers, the
+      // proxy launcher, and the acceptance clients. Real .test.ts files keep
+      // the repo-wide `no-console: warn` policy.
+      "files": ["tests/**/*.ts"],
+      "excludeFiles": ["tests/**/*.test.ts"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ]
+}

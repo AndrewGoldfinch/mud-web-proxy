@@ -5,7 +5,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'discworld';
@@ -134,8 +134,8 @@ describeRealMud('Discworld MUD (MXP support)', () => {
       return;
     }
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection.close();

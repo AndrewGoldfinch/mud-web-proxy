@@ -19,6 +19,7 @@
  *    input. Stripping them is about protecting the reader, not the data.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { readFileSync } from 'fs';
 import {
@@ -51,7 +52,7 @@ describe('secrets are removed by value', () => {
     // A common configuration is no shared secret at all. Treating '' as a
     // value to replace would redact between every character.
     const out = redactLogMessage('nothing sensitive here', {
-      secrets: ['', undefined as unknown as string],
+      secrets: ['', asDouble<string>()(undefined)],
     });
     expect(out).toBe('nothing sensitive here');
   });

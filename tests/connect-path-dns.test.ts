@@ -7,6 +7,9 @@
  * was validated rather than the name that was requested.
  */
 
+import { parseFrame, type ProxyFrame } from './support/frames';
+import type { TargetPolicyConfig } from '../src/target-policy';
+import { asDouble, asStub } from './support/doubles';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'events';
 import { SessionIntegration } from '../src/session-integration.js';
@@ -18,7 +21,7 @@ interface MockSocket extends SocketExtended {
 
 function makeSocket(): MockSocket {
   const messages: string[] = [];
-  const s = new EventEmitter() as MockSocket;
+  const s = asDouble<MockSocket>()(new EventEmitter());
   s.readyState = 1;
   s.remoteAddress = '127.0.0.1';
   s.messages = messages;
@@ -31,12 +34,12 @@ function makeSocket(): MockSocket {
   s.terminate = () => {};
   s.ttype = [];
   s.compressed = 0;
-  s.req = {
+  s.req = asDouble<MockSocket['req']>()({
     headers: {},
     connection: { remoteAddress: '127.0.0.1' },
     url: '/',
     method: 'GET',
-  } as MockSocket['req'];
+  });
   return s;
 }
 
@@ -45,19 +48,14 @@ function makeSocket(): MockSocket {
  * an unstubbed connection can fail and append `connection_failed` before the
  * assertion runs, which is what made these tests flaky in CI but not locally.
  */
-function findMsg(
-  s: MockSocket,
-  type: string,
-): Record<string, unknown> | undefined {
-  return s.messages
-    .map((m) => JSON.parse(m) as Record<string, unknown>)
-    .find((m) => m.type === type);
+function findMsg(s: MockSocket, type: string): ProxyFrame | undefined {
+  return s.messages.map((m) => parseFrame(m)).find((m) => m.type === type);
 }
 
-const lastMsg = (s: MockSocket): Record<string, unknown> => {
+const lastMsg = (s: MockSocket): ProxyFrame => {
   const raw = s.messages.at(-1);
   if (!raw) throw new Error('socket has no messages');
-  return JSON.parse(raw) as Record<string, unknown>;
+  return parseFrame(raw);
 };
 
 const integrations: SessionIntegration[] = [];
@@ -66,12 +64,12 @@ afterEach(() => {
 });
 
 function build(
-  targets: Record<string, unknown>,
+  targets: TargetPolicyConfig,
   resolveTarget?: SessionIntegration['config']['resolveTarget'],
 ): SessionIntegration {
   const si = new SessionIntegration({
     sessions: { maxPerIP: 100, maxPerDevice: 100, timeoutHours: 24 },
-    targets: targets as never,
+    targets,
     resolveTarget,
   });
   integrations.push(si);
@@ -133,13 +131,15 @@ describe('arbitrary mode resolves before dialling', () => {
     }));
     // Capture what the session was told to dial.
     const originalCreate = si.sessionManager.create.bind(si.sessionManager);
-    si.sessionManager.create = ((...args: unknown[]) => {
-      const session = originalCreate(
-        ...(args as Parameters<typeof originalCreate>),
-      );
-      dialled = session.dialAddress;
-      return session;
-    }) as typeof si.sessionManager.create;
+    si.sessionManager.create = asStub<typeof si.sessionManager.create>()(
+      (...args: unknown[]) => {
+        const session = originalCreate(
+          ...asDouble<Parameters<typeof originalCreate>>()(args),
+        );
+        dialled = session.dialAddress;
+        return session;
+      },
+    );
 
     const socket = makeSocket();
     connect(si, socket, 'good.example', 4000);
@@ -168,13 +168,15 @@ describe('arbitrary mode resolves before dialling', () => {
 
     let dialled: string | undefined;
     const originalCreate = si.sessionManager.create.bind(si.sessionManager);
-    si.sessionManager.create = ((...args: unknown[]) => {
-      const session = originalCreate(
-        ...(args as Parameters<typeof originalCreate>),
-      );
-      dialled = session.dialAddress;
-      return session;
-    }) as typeof si.sessionManager.create;
+    si.sessionManager.create = asStub<typeof si.sessionManager.create>()(
+      (...args: unknown[]) => {
+        const session = originalCreate(
+          ...asDouble<Parameters<typeof originalCreate>>()(args),
+        );
+        dialled = session.dialAddress;
+        return session;
+      },
+    );
 
     const socket = makeSocket();
     connect(si, socket, 'rebind.example', 4000);

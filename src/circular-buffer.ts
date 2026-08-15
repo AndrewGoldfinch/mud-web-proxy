@@ -11,6 +11,16 @@ import { withDefaults } from './with-defaults';
 
 const CHUNK_OVERHEAD_ESTIMATE = 256;
 
+/** A point-in-time census of the replay buffer. */
+export interface BufferStats {
+  chunks: number;
+  sizeBytes: number;
+  maxSizeBytes: number;
+  currentSequence: number;
+  oldestSequence: number;
+  newestSequence: number;
+}
+
 export class CircularBuffer {
   private chunks: (BufferChunk | null)[];
   private head = 0; // index of oldest element
@@ -215,14 +225,7 @@ export class CircularBuffer {
   /**
    * Get buffer statistics
    */
-  getStats(): {
-    chunks: number;
-    sizeBytes: number;
-    maxSizeBytes: number;
-    currentSequence: number;
-    oldestSequence: number;
-    newestSequence: number;
-  } {
+  getStats(): BufferStats {
     const oldest =
       this.count > 0 ? (this.chunks[this.head]?.sequence ?? 0) : 0;
     return {

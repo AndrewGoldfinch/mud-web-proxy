@@ -2,6 +2,11 @@
  * Mock Telnet server for testing
  */
 
+/** Where a mock telnet server is listening. */
+export interface MockServerAddress {
+  port: number;
+  host: string;
+}
 import { EventEmitter } from 'events';
 import { createServer, Server, Socket } from 'net';
 
@@ -87,7 +92,7 @@ export class MockTelnetServer extends EventEmitter {
     return this._connections.size;
   }
 
-  getAddress(): { port: number; host: string } {
+  getAddress(): MockServerAddress {
     return { port: this._port, host: this._host };
   }
 }
@@ -145,11 +150,7 @@ export class MockTelnetSocket extends EventEmitter {
   }
 
   send(data: string | Buffer): void {
-    if (typeof data === 'string') {
-      this.write(Buffer.from(data, 'utf8'));
-    } else {
-      this.write(data);
-    }
+    this.write(Buffer.isBuffer(data) ? data : Buffer.from(data, 'utf8'));
   }
 
   destroy(): void {

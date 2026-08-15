@@ -5,6 +5,7 @@
  * Chaos mode for stress testing
  */
 
+import type { JsonValue } from '../../src/json-value';
 import net from 'net';
 import tls from 'tls';
 import zlib from 'zlib';
@@ -110,6 +111,37 @@ export class MockMUDServer extends EventEmitter {
   private continuousCounts: Map<string, number> = new Map();
   private receivedCommands: string[] = [];
   private acceptedConnectionCount = 0;
+
+  /**
+   * Move the server to another port before `start()`.
+   *
+   * The e2e suites run many MUDs side by side and derive a port per case, so
+   * they need to override the factory default. A named method rather than
+   * reaching through `as any` into a private field, which is what this
+   * replaces.
+   */
+  /**
+   * Retune the continuous-output stream before `start()`.
+   *
+   * The stress suites need a faster, longer stream than the factory default;
+   * a named method rather than reaching through `as any` into the config.
+   */
+  setContinuousOutput(intervalMs: number, count: number): void {
+    this.config.continuousOutput.intervalMs = intervalMs;
+    this.config.continuousOutput.count = count;
+  }
+
+  /** The port the server is configured to listen on. */
+  get port(): number {
+    return this.config.port;
+  }
+
+  setPort(port: number): void {
+    if (this.running) {
+      throw new Error('MockMUDServer: cannot change port while running');
+    }
+    this.config.port = port;
+  }
 
   constructor(config: Partial<MockMUDConfig> = {}) {
     super();
@@ -653,7 +685,7 @@ export class MockMUDServer extends EventEmitter {
   private async sendGMCP(
     client: MockClient,
     pkg: string,
-    data: unknown,
+    data: JsonValue,
   ): Promise<void> {
     if (!client.negotiated.has(OPT_GMCP) || !this.config.supports.gmcp) {
       return;
@@ -1035,7 +1067,7 @@ if (import.meta.main) {
   }
 
   // Override port from CLI argument
-  (server as any).config.port = port;
+  server.setPort(port);
 
   await server.start();
   console.log(`Mock MUD running. Press Ctrl+C to stop.`);

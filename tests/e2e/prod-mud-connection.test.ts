@@ -59,10 +59,7 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
 
     expect(sessionMsg).toBeDefined();
 
-    const data = sessionMsg!.data as {
-      sessionId: string;
-      token: string;
-    };
+    const data = framePayload(sessionMsg!) ?? {};
     expect(data.sessionId).toBeDefined();
     expect(data.sessionId.length).toBeGreaterThan(0);
     expect(data.token).toBeDefined();
@@ -251,9 +248,7 @@ describeProd('Production Proxy — Aardwolf MUD', () => {
       .getMessages()
       .find((m) => m.type === 'disconnected');
     expect(disconnectMsg).toBeDefined();
-    expect(
-      (disconnectMsg!.data as { sessionId: string }).sessionId,
-    ).toBeDefined();
+    expect((framePayload(disconnectMsg!) ?? {}).sessionId).toBeDefined();
 
     // Close the WebSocket
     connection.close();

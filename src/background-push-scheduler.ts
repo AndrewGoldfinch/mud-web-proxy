@@ -39,6 +39,18 @@ export class BackgroundPushScheduler {
   private readonly tracked = new Map<string, TrackedSession>();
   private readonly pendingAckTimeouts = new Map<string, NodeJS.Timeout>();
 
+  /**
+   * The configuration after defaults are applied.
+   *
+   * Exposed read-only because the defaults-merging contract is worth testing
+   * — an option that is present but `undefined` must not overwrite a default
+   * (MWP-63) — and the alternative was a test reaching past `private` with
+   * `Reflect.get`.
+   */
+  get resolvedConfig(): Readonly<BackgroundPushSchedulerConfig> {
+    return this.config;
+  }
+
   constructor(
     notificationManager: NotificationManager,
     config: Partial<BackgroundPushSchedulerConfig> = {},

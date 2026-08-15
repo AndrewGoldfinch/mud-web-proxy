@@ -3,6 +3,7 @@
  * Common utilities and mocks for all tests
  */
 
+import { asDouble } from './support/doubles';
 import { beforeAll, afterAll, beforeEach, afterEach } from 'bun:test';
 import type { WebSocket } from 'ws';
 import type { Socket } from 'net';
@@ -55,7 +56,7 @@ export const TEST_CONFIG = {
 export function createMockSocket(
   overrides: Partial<SocketExtended> = {},
 ): SocketExtended {
-  return {
+  return asDouble<SocketExtended>()({
     req: {
       connection: {
         remoteAddress: '127.0.0.1',
@@ -87,40 +88,42 @@ export function createMockSocket(
     terminate: () => {},
     remoteAddress: '127.0.0.1',
     ...overrides,
-  } as SocketExtended;
+  });
 }
 
 // Helper to create a mock telnet socket
+/** The telnet-socket surface the unit suites drive. */
+interface MockTelnetSocketDouble {
+  write: () => boolean;
+  send: () => void;
+  on: () => MockTelnetSocketDouble;
+  once: () => MockTelnetSocketDouble;
+  destroy: () => void;
+  end: () => void;
+  setEncoding: () => void;
+}
+
 export function createMockTelnetSocket(
   overrides: Partial<TelnetSocket> = {},
 ): TelnetSocket {
-  const mockSocket: {
-    write: () => boolean;
-    send: () => void;
-    on: () => unknown;
-    once: () => unknown;
-    destroy: () => void;
-    end: () => void;
-    setEncoding: () => void;
-  } = {
+  const mockSocket: MockTelnetSocketDouble = {
     write: (): boolean => true,
     send: (): void => {},
-    on: (): unknown => mockSocket,
-    once: (): unknown => mockSocket,
+    on: (): MockTelnetSocketDouble => mockSocket,
+    once: (): MockTelnetSocketDouble => mockSocket,
     destroy: (): void => {},
     end: (): void => {},
     setEncoding: (): void => {},
     ...overrides,
   };
-  return mockSocket as TelnetSocket;
+  return asDouble<TelnetSocket>()(mockSocket);
 }
 
 // Test data factories
 export function createMockBuffer(data: string | number[]): Buffer {
-  if (typeof data === 'string') {
-    return Buffer.from(data);
-  }
-  return Buffer.from(data);
+  // Array.isArray picks the overload without a representation test and
+  // without an assertion.
+  return Array.isArray(data) ? Buffer.from(data) : Buffer.from(data);
 }
 
 // Lifecycle hooks

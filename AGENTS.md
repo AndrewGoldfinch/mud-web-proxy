@@ -102,26 +102,36 @@ export function myFunction(): void {}
 ### Type Safety
 
 - Always use explicit types on function parameters and return types
-- Use `unknown` instead of `any` where possible
-- Use type assertions sparingly: `as Type` only when necessary
-- Prefer interfaces over type aliases for object shapes
-- Cast caught errors: `(err as Error).message`
+- Never `unknown` on a parameter or return type — `no-unknown-parameters` and
+  `no-unknown-returns` reject it. Parse at the I/O boundary with a zod schema
+  and pass the decoded type inward. The one exception the rules allow is a
+  parameter named `cause`, for a caught value.
+- Use type assertions sparingly, and every one needs a `SAFETY:` comment
+  stating the invariant TypeScript cannot see (`as const` is exempt)
+- Prefer interfaces over type aliases for object shapes — and note that a
+  `Record<string, T>` annotation on a known literal is rejected by
+  `no-known-value-widening`; use a named interface or `satisfies`
+- Caught errors go through `errorText(err)` / `toError(err)` from
+  `src/error-text.ts`, never `(err as Error)`: JavaScript lets any value be
+  thrown, and the cast produced `undefined` for anything that was not an Error
 
 ### Error Handling
 
 ```typescript
-// Use try/catch with proper error typing
+// Use try/catch, and render the caught value rather than asserting its type
+import { errorText } from './src/error-text';
+
 try {
   const data = await fs.promises.readFile('./chat.json', 'utf8');
 } catch (err) {
-  srv.log('Error: ' + (err as Error).toString());
+  srv.log('Error: ' + errorText(err));
   return [];
 }
 ```
 
 ### Logging
 
-- Use `srv.log()` instead of `console.log` (ESLint warns on `no-console`)
+- Use `srv.log()` instead of `console.log` (oxlint warns on `no-console`)
 - Log levels available: DEBUG, INFO, WARN, ERROR
 - Set via `LOG_LEVEL` environment variable
 
@@ -150,11 +160,17 @@ init().catch((err) => {
 - Avoid JSDoc unless documenting public APIs
 - Document protocol constants and negotiation states
 
-## ESLint Rules
+## Lint Rules
+
+Oxlint (`.oxlintrc.json`). The `correctness` category is on, plus:
 
 - `no-console`: warn (use `srv.log` instead)
-- `@typescript-eslint/no-explicit-any`: warn
-- `@typescript-eslint/no-unused-vars`: error (ignore args starting with `_`)
+- `typescript/no-explicit-any`: warn
+- `no-unused-vars`: error (ignore args starting with `_`)
+- the `anti-slop` plugin's rules: error (see `tools/oxlint/anti-slop/`)
+
+Oxlint honours `// eslint-disable-next-line <rule>` comments, which is why the
+existing suppressions throughout the codebase still work unchanged.
 
 ## File Organization
 
@@ -163,12 +179,14 @@ init().catch((err) => {
 - Compiled output: `dist/`
 - Tests: `tests/` with mocks in `tests/mocks/`
 - E2E tests: `tests/e2e/`
-- Config files at root: `tsconfig.json`, `eslint.config.js`, `.prettierrc.json`
+- Config files at root: `tsconfig.json`, `.oxlintrc.json`, `.prettierrc.json`
 
 ## Dependencies
 
-- **Runtime**: `ws` (WebSocket), `iconv-lite` (encoding)
-- **Dev**: TypeScript, ESLint, Prettier, Bun test runner
+- **Runtime**: `ws` (WebSocket), `iconv-lite` (encoding), `cbor-x` (App
+  Attest), `zod` (boundary schemas — every untrusted payload is parsed by a
+  declared schema rather than hand-checked)
+- **Dev**: TypeScript, Oxlint, Prettier, Bun test runner
 
 ## Special Conventions
 

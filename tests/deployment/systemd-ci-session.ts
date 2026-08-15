@@ -1,3 +1,8 @@
+import { z } from 'zod';
+
+/** A server frame, read only for its `type` and whatever the checks below touch. */
+const frameSchema = z.looseObject({ type: z.string().optional() });
+
 /**
  * One session through the systemd-managed service to the mock MUD.
  *
@@ -32,7 +37,7 @@ await wait(3000);
 
 const typed = frames.flatMap((f) => {
   try {
-    return [JSON.parse(f) as Record<string, unknown>];
+    return [frameSchema.parse(JSON.parse(f))];
   } catch {
     return [];
   }
@@ -53,7 +58,7 @@ const data = typed
   .concat(
     frames.flatMap((f) => {
       try {
-        return [JSON.parse(f) as Record<string, unknown>];
+        return [frameSchema.parse(JSON.parse(f))];
       } catch {
         return [];
       }

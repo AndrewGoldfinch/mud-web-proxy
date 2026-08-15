@@ -1,3 +1,5 @@
+import { parseFrame, type ProxyFrame } from './support/frames';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, afterEach } from 'bun:test';
 import { EventEmitter } from 'events';
 import { readFileSync } from 'fs';
@@ -20,7 +22,7 @@ const integrations: SessionIntegration[] = [];
 
 function makeSocket(): MockSocket {
   const messages: string[] = [];
-  const socket = new EventEmitter() as MockSocket;
+  const socket = asDouble<MockSocket>()(new EventEmitter());
 
   socket.readyState = 1;
   socket.remoteAddress = '127.0.0.1';
@@ -34,20 +36,20 @@ function makeSocket(): MockSocket {
     messages.push(String(data));
   };
   socket.terminate = () => {};
-  socket.req = {
+  socket.req = asDouble<MockSocket['req']>()({
     headers: {},
     connection: { remoteAddress: '127.0.0.1' },
     url: '/',
     method: 'GET',
-  } as MockSocket['req'];
+  });
 
   return socket;
 }
 
-function parseLastMessage(socket: MockSocket): Record<string, unknown> {
+function parseLastMessage(socket: MockSocket): ProxyFrame {
   const raw = socket.messages.at(-1);
   if (!raw) throw new Error('socket has no messages');
-  return JSON.parse(raw) as Record<string, unknown>;
+  return parseFrame(raw);
 }
 
 function makeSessionIntegration(): SessionIntegration {
@@ -239,16 +241,12 @@ describe('open-source release regression coverage', () => {
 
     for (const nodeEnv of ['production', 'development', undefined]) {
       expect(
-        resolveTlsSettings(
-          { NODE_ENV: nodeEnv as string },
-          '/app',
-          existsSync,
-        ),
+        resolveTlsSettings({ NODE_ENV: nodeEnv }, '/app', existsSync),
       ).toMatchObject({ useTls: false, reason: 'missing_certs' });
 
       expect(
         resolveTlsSettings(
-          { NODE_ENV: nodeEnv as string, DISABLE_TLS: '1' },
+          { NODE_ENV: nodeEnv, DISABLE_TLS: '1' },
           '/app',
           existsSync,
         ),

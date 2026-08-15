@@ -9,7 +9,7 @@ import { createIREMUD } from '../e2e/mock-mud';
 
 const port = Number(process.argv[2] ?? 6450);
 const mud = createIREMUD();
-(mud as unknown as { config: { port: number } }).config.port = port;
+mud.setPort(port);
 
 await mud.start();
 console.log(`mock-target: listening on ${port}`);

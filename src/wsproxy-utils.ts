@@ -2,10 +2,15 @@
 import { createHash, timingSafeEqual } from 'crypto';
 import iconv from 'iconv-lite';
 import type { IncomingMessage, ServerResponse } from 'http';
+import { z } from 'zod';
 import {
   isDiagnosticRequestAuthorized,
   type RuntimeConfig,
 } from './runtime-config';
+import type { JsonValue } from './json-value';
+
+/** Key-bearing values the "missing type" diagnostic can summarise. */
+const loggableObjectSchema = z.record(z.string(), z.unknown());
 
 const JSON_RESPONSE_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -112,14 +117,15 @@ export const sendBase64IfOpen = (
 };
 
 export const formatMissingTypeLogMessage = (
-  parsed: unknown,
+  parsed: JsonValue | undefined,
   byteLength: number,
   _rawMessage?: string,
 ): string => {
-  const keys =
-    parsed && typeof parsed === 'object'
-      ? Object.keys(parsed).slice(0, 10)
-      : [];
+  // Only the key names are logged, never the values: this message describes a
+  // frame the proxy is about to forward to the MUD verbatim, which for an
+  // `input` frame is the player's keystrokes.
+  const asObject = loggableObjectSchema.safeParse(parsed);
+  const keys = asObject.success ? Object.keys(asObject.data).slice(0, 10) : [];
   const keySummary = keys.length ? keys.join(',') : '<none>';
   return `Ignoring JSON message without type field bytes=${byteLength} keys=${keySummary}`;
 };
@@ -308,7 +314,17 @@ export const authorizeSharedSecret = (
   }
 
   const authorization = headers['authorization'];
-  if (typeof authorization === 'string') {
+  // Checked before the string path, not after it. Normalizing a repeated
+  // header to its first element — which is what a shared header helper does —
+  // would let a client smuggle a second credential past this check, so an
+  // array is rejected outright rather than coerced.
+  if (Array.isArray(authorization)) {
+    // Duplicate headers arrive as an array; do not guess which one was meant.
+    return { authorized: false, reason: 'malformed authorization header' };
+  }
+  // Anything left is a string, including the empty one, which reaches the
+  // scheme check below rather than falling through to the query fallback.
+  if (authorization !== undefined) {
     const match = authorization.match(BEARER);
     if (match) {
       const supplied = match[1].trim();
@@ -318,10 +334,6 @@ export const authorizeSharedSecret = (
       return { authorized: false, reason: 'invalid credentials' };
     }
     return { authorized: false, reason: 'unsupported authorization scheme' };
-  }
-  if (authorization !== undefined) {
-    // Duplicate headers arrive as an array; do not guess which one was meant.
-    return { authorized: false, reason: 'malformed authorization header' };
   }
 
   if (config.allowQuerySecret && url) {

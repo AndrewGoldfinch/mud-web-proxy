@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'raw';
@@ -73,7 +73,7 @@ describeRealMud('Raw Telnet Server (port 23)', () => {
 
     const messages = connection.getMessages();
     const errorMessages = messages.filter(
-      (m) => m.type === 'error' || (m.data as { error?: string }).error,
+      (m) => m.type === 'error' || (framePayload(m) ?? {}).error,
     );
 
     // No errors
@@ -133,7 +133,7 @@ describeRealMud('Raw Telnet Server (port 23)', () => {
     // No explicit check needed - just verify no errors
     const messages = connection.getMessages();
     const errorMessages = messages.filter(
-      (m) => m.type === 'error' || (m.data as { error?: string }).error,
+      (m) => m.type === 'error' || (framePayload(m) ?? {}).error,
     );
 
     expect(errorMessages.length).toBe(0);
@@ -155,8 +155,8 @@ describeRealMud('Raw Telnet Server (port 23)', () => {
       return;
     }
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection.close();

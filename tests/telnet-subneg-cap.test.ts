@@ -21,6 +21,7 @@
  * ever consulted.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { TelnetParser } from '../src/telnet-parser.js';
 import type { Session } from '../src/session.js';
@@ -31,11 +32,11 @@ const SE = 240;
 const GMCP = 201;
 
 const fakeSession = () =>
-  ({ id: 'test-session-id', echoOn: true }) as unknown as Session;
+  asDouble<Session>()({ id: 'test-session-id', echoOn: true });
 
 /** Reach into the parser's private accumulator; that is the thing under test. */
 const bufferLength = (p: TelnetParser): number =>
-  (p as unknown as { subnegBuffer: number[] }).subnegBuffer.length;
+  asDouble<{ subnegBuffer: number[] }>()(p).subnegBuffer.length;
 
 const parser = (maxSubnegBytes?: number) =>
   new TelnetParser(fakeSession(), maxSubnegBytes);

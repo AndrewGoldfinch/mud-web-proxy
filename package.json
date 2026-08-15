@@ -31,8 +31,8 @@
     "test:container": "bash tests/container/run.sh",
     "test:systemd": "bun test tests/deployment/systemd-contract.test.ts",
     "test:systemd:acceptance": "bash tests/deployment/run-systemd-acceptance.sh",
-    "lint": "bunx eslint .",
-    "lint:fix": "bunx eslint . --fix",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix",
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
     "check:bun-version": "bun scripts/check-bun-version.ts",
@@ -56,34 +56,21 @@
   },
   "homepage": "https://github.com/AndrewGoldfinch/mud-web-proxy#readme",
   "devDependencies": {
-    "@babel/eslint-parser": "^8.0.1",
-    "@eslint/js": "^10.0.1",
+    "@oxlint/plugins": "1.78.0",
     "@types/node": "^26.1.2",
     "@types/uglify-js": "^3.17.5",
     "@types/ws": "^8.18.1",
-    "@typescript-eslint/eslint-plugin": "^8.66.0",
-    "@typescript-eslint/parser": "^8.66.0",
     "esbuild": "^0.28.1",
-    "eslint": "^10.8.0",
-    "eslint-config-prettier": "^10.1.8",
-    "eslint-plugin-jsonc": "^3.4.1",
-    "eslint-plugin-prettier": "^5.5.6",
-    "globals": "^17.9.0",
-    "jsonc-eslint-parser": "^3.2.0",
+    "oxlint": "1.78.0",
     "prettier": "^3.9.6",
-    "typescript": "^6.0.3",
-    "typescript-eslint": "^8.66.0",
+    "typescript": "^7.0.2",
     "uglify-js": "^3.19.3"
   },
   "dependencies": {
     "cbor-x": "^1.6.5",
     "iconv-lite": "^0.7.3",
-    "ws": "^8.21.2"
-  },
-  "overrides": {
-    "brace-expansion": ">=5.0.9",
-    "flatted": ">=3.4.0",
-    "picomatch": ">=4.0.4"
+    "ws": "^8.21.2",
+    "zod": "^4.4.3"
   },
   "private": true
 }

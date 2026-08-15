@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'aardwolf';
@@ -102,7 +102,7 @@ describeRealMud('Aardwolf MUD (aardmud.org:4000)', () => {
 
     // Verify we got actual data (not empty)
     const hasData = dataMessages.some((m) => {
-      const data = m.data as { payload?: string };
+      const data = framePayload(m) ?? {};
       const payload = data?.payload;
       return payload && payload.length > 0;
     });
@@ -143,8 +143,8 @@ describeRealMud('Aardwolf MUD (aardmud.org:4000)', () => {
       return;
     }
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection.close();

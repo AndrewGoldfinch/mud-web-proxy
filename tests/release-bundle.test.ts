@@ -13,15 +13,21 @@
  * That is exactly how the .npmignore regression happened.
  */
 
+import { z } from 'zod';
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 
 const repoRoot = path.resolve(import.meta.dir, '..');
-const manifest = JSON.parse(
-  readFileSync(path.join(repoRoot, 'package.json'), 'utf8'),
-) as { version: string; engines?: { bun?: string } };
+const manifestSchema = z.looseObject({
+  version: z.string(),
+  engines: z.looseObject({ bun: z.string().optional() }).optional(),
+});
+
+const manifest = manifestSchema.parse(
+  JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8')),
+);
 
 let outDir: string;
 let entries: string[];

@@ -5,6 +5,24 @@ import tls from 'tls';
 import type { MudTlsMode } from './runtime-config';
 import type { TelnetSocket } from './types';
 import { parseIPv4 } from './wsproxy-utils';
+import { toError } from './error-text';
+import { z } from 'zod';
+
+/** Node puts a string `code` on a system error; nothing else carries one. */
+const errorCodeSchema = z.string();
+
+/**
+ * Adopt a freshly dialled socket as a TelnetSocket.
+ *
+ * One assertion in one place, taking `net.Socket` so a TLSSocket reaches it
+ * without a second one. `send` is genuinely absent here: the caller that owns
+ * the protocol layer attaches it before any protocol code runs, which is the
+ * invariant the previous `as unknown as` at each dial site left unstated.
+ */
+const asTelnetSocket = (socket: net.Socket): TelnetSocket =>
+  // SAFETY: see above — `send` is attached by the connect handler in
+  // wsproxy.ts before the socket is exposed to anything that reads it.
+  socket as TelnetSocket;
 
 const TLS_HANDSHAKE_TIMEOUT_MS = 4_000;
 
@@ -67,8 +85,10 @@ export const isTlsNegotiationError = (err: Error): boolean => {
   const message = err.message.toLowerCase();
   if (TLS_HANDSHAKE_CLOSE.test(message)) return true;
 
-  const code = (err as NodeJS.ErrnoException).code;
-  if (code && TRANSPORT_CODES.has(code)) return false;
+  // Read off the error rather than asserted onto it: a plain Error simply has
+  // no `code`, and the assertion this replaces claimed otherwise.
+  const code = errorCodeSchema.safeParse('code' in err ? err.code : undefined);
+  if (code.success && TRANSPORT_CODES.has(code.data)) return false;
 
   return TLS_DIAGNOSTICS.some((pattern) => message.includes(pattern));
 };
@@ -101,8 +121,8 @@ export const sniServerName = (host: string): string | undefined => {
  * port and for an expired certificate — so the operator log gets both. The
  * client-facing message stays the policy text.
  */
-export const describeTransportError = (err: unknown): string => {
-  const error = err instanceof Error ? err : new Error(String(err));
+export const describeTransportError = (cause: unknown): string => {
+  const error = toError(cause);
   return error.cause instanceof Error
     ? `${error.message} (${error.cause.message})`
     : error.message;
@@ -278,17 +298,16 @@ export const connectMudTransport = (
     };
     const startPlain = (): void => {
       try {
-        plainSocket = net.createConnection(
-          options.port,
-          options.dialAddress,
-        ) as TelnetSocket;
+        plainSocket = asTelnetSocket(
+          net.createConnection(options.port, options.dialAddress),
+        );
         provisionalSocket = plainSocket;
         armDialTimer();
         plainSocket.once('connect', onPlainConnect);
         plainSocket.once('error', onPlainError);
         plainSocket.once('close', onPlainClose);
       } catch (err) {
-        fail(err as Error);
+        fail(toError(err));
       }
     };
     const fallBackToPlain = (reason: string): void => {
@@ -301,7 +320,7 @@ export const connectMudTransport = (
       try {
         options.onDowngrade(reason);
       } catch (err) {
-        fail(err as Error);
+        fail(toError(err));
         return;
       }
       if (settled) return;
@@ -321,9 +340,11 @@ export const connectMudTransport = (
     }
 
     try {
-      tlsSocket = tls.connect(options.port, options.dialAddress, {
-        servername: sniServerName(options.requestedHost),
-      }) as unknown as TelnetSocket;
+      tlsSocket = asTelnetSocket(
+        tls.connect(options.port, options.dialAddress, {
+          servername: sniServerName(options.requestedHost),
+        }),
+      );
       provisionalSocket = tlsSocket;
       armDialTimer();
       tlsSocket.once('connect', onTlsTcpConnect);
@@ -331,7 +352,7 @@ export const connectMudTransport = (
       tlsSocket.once('error', onTlsError);
       tlsSocket.once('close', onTlsClose);
     } catch (err) {
-      onTlsError(err as Error);
+      onTlsError(toError(err));
     }
   });
 };

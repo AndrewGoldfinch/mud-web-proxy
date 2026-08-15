@@ -161,7 +161,9 @@ const read = (file: string): string => {
     return readFileSync(file, 'utf8');
   } catch (err) {
     console.error(
-      `check-config-docs: cannot read ${path.relative(repoRoot, file)}: ${(err as Error).message}`,
+      `check-config-docs: cannot read ${path.relative(repoRoot, file)}: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
     );
     process.exit(1);
   }

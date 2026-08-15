@@ -13,6 +13,20 @@
  * connect path chooses to call them.
  */
 
+import { z } from 'zod';
+
+/**
+ * A dial that connects to nothing and never errors.
+ *
+ * Only the three methods the transport calls on a pending socket; anything
+ * else it reaches for is a genuine gap in the double.
+ */
+interface BlackHoleSocket extends EventEmitter {
+  destroy: () => void;
+  off: () => BlackHoleSocket;
+  once: () => BlackHoleSocket;
+}
+import { asDouble, asStub } from './support/doubles';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'events';
 import net from 'net';
@@ -25,7 +39,7 @@ interface MockSocket extends SocketExtended {
 
 function makeSocket(): MockSocket {
   const messages: string[] = [];
-  const s = new EventEmitter() as MockSocket;
+  const s = asDouble<MockSocket>()(new EventEmitter());
   s.readyState = 1;
   s.remoteAddress = '127.0.0.1';
   s.messages = messages;
@@ -38,12 +52,12 @@ function makeSocket(): MockSocket {
   s.terminate = () => {};
   s.ttype = [];
   s.compressed = 0;
-  s.req = {
+  s.req = asDouble<MockSocket['req']>()({
     headers: {},
     connection: { remoteAddress: '127.0.0.1' },
     url: '/',
     method: 'GET',
-  } as MockSocket['req'];
+  });
   return s;
 }
 
@@ -68,19 +82,21 @@ function buildWithHangingDial(maxGlobal: number): SessionIntegration {
       targetMode: 'fixed',
       defaultHost: 'mud.example.org',
       defaultPort: 4000,
-    } as never,
+    },
   });
   integrations.push(si);
 
   const originalCreate = si.sessionManager.create.bind(si.sessionManager);
-  si.sessionManager.create = ((...args: unknown[]) => {
-    const session = originalCreate(
-      ...(args as Parameters<typeof originalCreate>),
-    );
-    // Never resolves: the dial is permanently in flight.
-    session.connect = () => new Promise<void>(() => {});
-    return session;
-  }) as typeof si.sessionManager.create;
+  si.sessionManager.create = asStub<typeof si.sessionManager.create>()(
+    (...args: unknown[]) => {
+      const session = originalCreate(
+        ...asDouble<Parameters<typeof originalCreate>>()(args),
+      );
+      // Never resolves: the dial is permanently in flight.
+      session.connect = () => new Promise<void>(() => {});
+      return session;
+    },
+  );
 
   return si;
 }
@@ -97,9 +113,12 @@ const connect = (si: SessionIntegration, s: MockSocket) =>
     ),
   );
 
+/** The error frames a mock client received, read only for their `type`. */
+const errorFrameSchema = z.looseObject({ type: z.string().optional() });
+
 const errorsOf = (s: MockSocket) =>
   s.messages
-    .map((m) => JSON.parse(m) as Record<string, unknown>)
+    .map((m) => errorFrameSchema.parse(JSON.parse(m)))
     .filter((m) => m.type === 'error');
 
 describe('an in-flight dial still occupies capacity', () => {
@@ -146,15 +165,13 @@ describe('a timed-out dial releases its reservation', () => {
     const originalCreateConnection = net.createConnection;
     try {
       // A socket that connects to nothing and never errors — the black hole.
-      net.createConnection = (() => {
-        const s = new EventEmitter() as unknown as net.Socket;
-        (s as unknown as { destroy: () => void }).destroy = () => {};
-        (s as unknown as { off: () => void }).off = () => {};
-        (
-          s as unknown as { once: (e: string, f: () => void) => unknown }
-        ).once = () => s;
+      net.createConnection = asStub<typeof net.createConnection>()(() => {
+        const s = asDouble<BlackHoleSocket>()(new EventEmitter());
+        s.destroy = () => {};
+        s.off = () => s;
+        s.once = () => s;
         return s;
-      }) as typeof net.createConnection;
+      });
 
       const si = new SessionIntegration({
         sessions: { maxPerIP: 2, maxPerDevice: 5, timeoutHours: 24 },
@@ -162,7 +179,7 @@ describe('a timed-out dial releases its reservation', () => {
           targetMode: 'fixed',
           defaultHost: 'mud.example.org',
           defaultPort: 4000,
-        } as never,
+        },
         mudTlsMode: 'plain',
         mudDialTimeoutMs: 20,
       });

@@ -1,3 +1,5 @@
+import { asStub } from './support/doubles';
+import { asDouble } from './support/doubles';
 import { afterEach, describe, expect, test } from 'bun:test';
 import { EventEmitter } from 'events';
 import net from 'net';
@@ -43,14 +45,14 @@ afterEach(() => {
 });
 
 function asTelnetSocket(socket: MockTelnetSocket): TelnetSocket {
-  return socket as unknown as TelnetSocket;
+  return asDouble<TelnetSocket>()(socket);
 }
 
 function installTelnetHandlers(
   session: Session,
   socket: MockTelnetSocket,
 ): void {
-  const sessionAccess = session as unknown as SessionTestAccess;
+  const sessionAccess = asDouble<SessionTestAccess>()(session);
   sessionAccess.telnet = asTelnetSocket(socket);
   sessionAccess.setupTelnetHandlers();
 }
@@ -62,33 +64,37 @@ function makeTcpError(code: 'ECONNREFUSED' | 'ECONNRESET'): Error {
 }
 
 function installTlsError(error: Error): void {
-  tls.connect = ((
-    _port: number,
-    _host: string,
-    _options: tls.ConnectionOptions,
-    _callback?: () => void,
-  ) => {
-    const socket = new MockTelnetSocket();
-    queueMicrotask(() => {
-      socket.emit('error', error);
-    });
-    return asTelnetSocket(socket);
-  }) as typeof tls.connect;
+  tls.connect = asStub<typeof tls.connect>()(
+    (
+      _port: number,
+      _host: string,
+      _options: tls.ConnectionOptions,
+      _callback?: () => void,
+    ) => {
+      const socket = new MockTelnetSocket();
+      queueMicrotask(() => {
+        socket.emit('error', error);
+      });
+      return asTelnetSocket(socket);
+    },
+  );
 }
 
 function installTlsClose(): void {
-  tls.connect = ((
-    _port: number,
-    _host: string,
-    _options: tls.ConnectionOptions,
-    _callback?: () => void,
-  ) => {
-    const socket = new MockTelnetSocket();
-    queueMicrotask(() => {
-      socket.emit('close');
-    });
-    return asTelnetSocket(socket);
-  }) as typeof tls.connect;
+  tls.connect = asStub<typeof tls.connect>()(
+    (
+      _port: number,
+      _host: string,
+      _options: tls.ConnectionOptions,
+      _callback?: () => void,
+    ) => {
+      const socket = new MockTelnetSocket();
+      queueMicrotask(() => {
+        socket.emit('close');
+      });
+      return asTelnetSocket(socket);
+    },
+  );
 }
 
 describe('Session close observers', () => {
@@ -150,18 +156,16 @@ describe('Session TLS fallback classification', () => {
       let plainAttempts = 0;
 
       installTlsError(error);
-      net.createConnection = ((
-        _port: number,
-        _host: string,
-        _callback?: () => void,
-      ) => {
-        plainAttempts++;
-        const socket = new MockTelnetSocket();
-        queueMicrotask(() => {
-          socket.emit('error', new Error('plain fallback was attempted'));
-        });
-        return asTelnetSocket(socket);
-      }) as typeof net.createConnection;
+      net.createConnection = asStub<typeof net.createConnection>()(
+        (_port: number, _host: string, _callback?: () => void) => {
+          plainAttempts++;
+          const socket = new MockTelnetSocket();
+          queueMicrotask(() => {
+            socket.emit('error', new Error('plain fallback was attempted'));
+          });
+          return asTelnetSocket(socket);
+        },
+      );
 
       await expect(session.connect()).rejects.toThrow();
       expect(plainAttempts).toBe(0);
@@ -176,13 +180,15 @@ describe('Session TLS fallback classification', () => {
     installTlsError(
       new Error('ssl3_get_record:wrong version number during TLS handshake'),
     );
-    net.createConnection = ((_port: number, _host: string) => {
-      plainAttempts++;
-      queueMicrotask(() => {
-        plainSocket.emit('connect');
-      });
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainAttempts++;
+        queueMicrotask(() => {
+          plainSocket.emit('connect');
+        });
+        return asTelnetSocket(plainSocket);
+      },
+    );
 
     await expect(session.connect()).resolves.toBeUndefined();
     expect(plainAttempts).toBe(1);
@@ -197,13 +203,15 @@ describe('Session TLS fallback classification', () => {
     let plainAttempts = 0;
 
     installTlsClose();
-    net.createConnection = ((_port: number, _host: string) => {
-      plainAttempts++;
-      queueMicrotask(() => {
-        plainSocket.emit('connect');
-      });
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainAttempts++;
+        queueMicrotask(() => {
+          plainSocket.emit('connect');
+        });
+        return asTelnetSocket(plainSocket);
+      },
+    );
 
     const connectResult = Promise.race([
       session.connect().then(() => 'connected'),
@@ -226,11 +234,10 @@ describe('Session TLS fallback classification', () => {
     const errors: Error[] = [];
     let closed = false;
 
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) =>
+        asTelnetSocket(tlsSocket),
+    );
     session.onData((chunk) => data.push(chunk));
     session.onError((error) => errors.push(error));
     session.onClose(() => {
@@ -268,19 +275,16 @@ describe('Session TLS fallback classification', () => {
     const tlsSocket = new MockTelnetSocket();
     let plainAttempts = 0;
 
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => asTelnetSocket(tlsSocket)) as typeof tls.connect;
-    net.createConnection = ((
-      _port: number,
-      _host: string,
-      _callback?: () => void,
-    ) => {
-      plainAttempts++;
-      return asTelnetSocket(new MockTelnetSocket());
-    }) as typeof net.createConnection;
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) =>
+        asTelnetSocket(tlsSocket),
+    );
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string, _callback?: () => void) => {
+        plainAttempts++;
+        return asTelnetSocket(new MockTelnetSocket());
+      },
+    );
 
     const pending = session.connect();
     session.close();
@@ -297,15 +301,13 @@ describe('Session TLS fallback classification', () => {
     const sockets = [firstSocket, replacementSocket];
     let tlsAttempts = 0;
 
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => {
-      const socket = sockets[tlsAttempts];
-      tlsAttempts++;
-      return asTelnetSocket(socket!);
-    }) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) => {
+        const socket = sockets[tlsAttempts];
+        tlsAttempts++;
+        return asTelnetSocket(socket!);
+      },
+    );
 
     const first = session.connect();
     const firstResult = first.then(
@@ -337,19 +339,19 @@ describe('Session TLS fallback classification', () => {
     let tlsAttempts = 0;
     let plainAttempts = 0;
 
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => {
-      const socket = sockets[tlsAttempts];
-      tlsAttempts++;
-      return asTelnetSocket(socket!);
-    }) as typeof tls.connect;
-    net.createConnection = ((_port: number, _host: string) => {
-      plainAttempts++;
-      return asTelnetSocket(new MockTelnetSocket());
-    }) as typeof net.createConnection;
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) => {
+        const socket = sockets[tlsAttempts];
+        tlsAttempts++;
+        return asTelnetSocket(socket!);
+      },
+    );
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainAttempts++;
+        return asTelnetSocket(new MockTelnetSocket());
+      },
+    );
 
     const first = session.connect();
     const replacement = session.connect();
@@ -391,18 +393,18 @@ describe('Session TLS fallback classification', () => {
     let tlsAttempts = 0;
     let plainAttempts = 0;
 
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => {
-      tlsAttempts++;
-      return asTelnetSocket(tlsSocket);
-    }) as typeof tls.connect;
-    net.createConnection = ((_port: number, _host: string) => {
-      plainAttempts++;
-      return asTelnetSocket(new MockTelnetSocket());
-    }) as typeof net.createConnection;
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) => {
+        tlsAttempts++;
+        return asTelnetSocket(tlsSocket);
+      },
+    );
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainAttempts++;
+        return asTelnetSocket(new MockTelnetSocket());
+      },
+    );
 
     const first = session.connect();
     tlsSocket.emit('secureConnect');

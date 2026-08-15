@@ -11,6 +11,8 @@
  * deregistering every device.
  */
 
+import { z } from 'zod';
+import type { AttestedKeyEntry } from '../src/app-attest';
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import fs from 'fs';
 import os from 'os';
@@ -35,6 +37,21 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 const daysAgo = (days: number): string =>
   new Date(Date.now() - days * DAY_MS).toISOString();
+
+/** The on-disk store, read only for the timestamps these assertions check. */
+const storedKeysSchema = z.record(
+  z.string(),
+  z.looseObject({ lastUsedAt: z.string().optional() }),
+);
+
+/**
+ * `fs` with the one method these tests replace.
+ *
+ * Named rather than asserted at each site: the suite stops `renameSync` mid
+ * save to inspect the staging directory, and this records that it is the only
+ * thing it swaps out.
+ */
+const fsInternals: { renameSync: typeof fs.renameSync } = fs;
 
 describe('the nonce store is bounded', () => {
   beforeEach(() => {
@@ -96,11 +113,17 @@ describe('the attested-key store is bounded with TTL eviction', () => {
     _resetKeysForTesting();
   });
 
-  const entry = (registeredAt: string, lastUsedAt?: string) => ({
+  // `lastUsedAt` is set unconditionally: JSON.stringify drops an undefined
+  // property, so the stored entry is identical either way, and a conditional
+  // spread hides that the key is optional rather than absent.
+  const entry = (
+    registeredAt: string,
+    lastUsedAt?: string,
+  ): AttestedKeyEntry => ({
     publicKey: '---PEM---',
     signCount: 0,
     registeredAt,
-    ...(lastUsedAt ? { lastUsedAt } : {}),
+    lastUsedAt,
   });
 
   test('a fresh key is retained', () => {
@@ -173,6 +196,35 @@ describe('the key store survives an interrupted write', () => {
 
   afterEach(() => {
     fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test('one malformed entry does not deregister the whole fleet', () => {
+    // Review on #155. Validating the file as a single unit meant a truncated
+    // or hand-edited record threw, the catch swallowed it, and the store came
+    // up empty — every device that had ever registered then failed with
+    // "Unknown key", and clients cache their keyId and never re-register on
+    // their own. One bad record must cost one key, not the fleet.
+    const good = {
+      publicKey: '---PEM---',
+      signCount: 1,
+      registeredAt: new Date().toISOString(),
+      lastUsedAt: new Date().toISOString(),
+    };
+    fs.writeFileSync(
+      keysFile,
+      JSON.stringify({
+        healthy1: good,
+        // signCount arrived as a string; the record is half-written.
+        damaged: { ...good, signCount: 'not-a-number' },
+        healthy2: good,
+      }),
+    );
+
+    loadAttestedKeys(keysFile);
+
+    expect(getAttestedKey('healthy1')?.signCount).toBe(1);
+    expect(getAttestedKey('healthy2')?.signCount).toBe(1);
+    expect(getAttestedKey('damaged')).toBeUndefined();
   });
 
   test('a completed write round-trips', () => {
@@ -264,7 +316,7 @@ describe('the key store survives an interrupted write', () => {
     try {
       // Stop each save just before the rename so the staging directory can be
       // inspected while it still exists.
-      (fs as { renameSync: unknown }).renameSync = (from: string) => {
+      fsInternals.renameSync = (from: string) => {
         seen.add(from);
         const mode = fs.statSync(path.dirname(from)).mode & 0o777;
         expect(mode).toBe(0o700);
@@ -278,7 +330,7 @@ describe('the key store survives an interrupted write', () => {
         }
       }
     } finally {
-      (fs as { renameSync: unknown }).renameSync = realRename;
+      fsInternals.renameSync = realRename;
     }
 
     // A fresh staging directory per save, and none named from the pid.
@@ -297,12 +349,12 @@ describe('the key store survives an interrupted write', () => {
 
     const realRename = fs.renameSync;
     try {
-      (fs as { renameSync: unknown }).renameSync = () => {
+      fsInternals.renameSync = () => {
         throw new Error('simulated crash before rename');
       };
       expect(() => saveAttestedKeys(keysFile)).toThrow();
     } finally {
-      (fs as { renameSync: unknown }).renameSync = realRename;
+      fsInternals.renameSync = realRename;
     }
 
     // Cleanup runs in a finally, so a failed save is not a slow leak of
@@ -377,7 +429,7 @@ describe('loading applies the same bounds as writing', () => {
   });
 
   test('an oversized file is truncated to the ceiling on load', () => {
-    const entries: Record<string, unknown> = {};
+    const entries: Record<string, AttestedKeyEntry> = {};
     for (let i = 0; i < MAX_ATTESTED_KEYS + 50; i++) {
       entries[`key${i}`] = {
         publicKey: '---PEM---',
@@ -457,10 +509,9 @@ describe('loading applies the same bounds as writing', () => {
     loadAttestedKeys(keysFile);
     saveAttestedKeys(keysFile);
 
-    const onDisk = JSON.parse(fs.readFileSync(keysFile, 'utf-8')) as Record<
-      string,
-      { lastUsedAt?: string }
-    >;
+    const onDisk = storedKeysSchema.parse(
+      JSON.parse(fs.readFileSync(keysFile, 'utf-8')),
+    );
     expect(onDisk.legacy.lastUsedAt).toBeDefined();
   });
 
@@ -486,7 +537,7 @@ describe('loading applies the same bounds as writing', () => {
   });
 
   test('the most recently active entries are the ones kept', () => {
-    const entries: Record<string, unknown> = {
+    const entries = {
       ancient: {
         publicKey: '---PEM---',
         signCount: 0,
@@ -497,7 +548,7 @@ describe('loading applies the same bounds as writing', () => {
         signCount: 0,
         registeredAt: daysAgo(1),
       },
-    };
+    } satisfies Record<string, AttestedKeyEntry>;
     fs.writeFileSync(keysFile, JSON.stringify(entries), 'utf-8');
 
     loadAttestedKeys(keysFile);

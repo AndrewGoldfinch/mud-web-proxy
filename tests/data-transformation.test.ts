@@ -3,6 +3,7 @@
  * Tests for iconv encoding, zlib compression, and protocol parsing
  */
 
+import { asDouble } from './support/doubles';
 import {
   describe,
   it,
@@ -57,11 +58,14 @@ interface ProtocolConstants {
   ACCEPT_UTF8: Buffer;
 }
 
+/** A listener registered through the telnet double's on/once. */
+type TransformListener = (...args: (Buffer | Error | string)[]) => void;
+
 interface TelnetSocket {
   write: (data: Buffer | string) => boolean;
   send: (data: string | Buffer) => void;
-  on: (event: string, listener: unknown) => TelnetSocket;
-  once: (event: string, listener: unknown) => TelnetSocket;
+  on: (event: string, listener: TransformListener) => TelnetSocket;
+  once: (event: string, listener: TransformListener) => TelnetSocket;
   destroy: () => void;
   end: () => void;
   setEncoding: (encoding: string) => void;
@@ -245,7 +249,7 @@ function createMockSocket(
         remoteAddress: '127.0.0.1',
       },
     },
-    ts: undefined as TelnetSocket | undefined,
+    ts: asDouble<TelnetSocket | undefined>()(undefined),
     host: 'test.host',
     port: 7000,
     ttype: ['xterm-256color'],
@@ -269,26 +273,24 @@ function createMockSocket(
     password_mode: false,
     remoteAddress: '127.0.0.1',
     send: (data: string | Buffer) => {
-      const str = typeof data === 'string' ? data : data.toString();
-      sentMessages.push(str);
+      sentMessages.push(data.toString());
     },
     sendUTF: (data: string | Buffer) => {
-      const str = typeof data === 'string' ? data : data.toString();
-      sentMessages.push(str);
+      sentMessages.push(data.toString());
     },
     terminate: () => {},
     _sentMessages: sentMessages,
     ...overrides,
   };
 
-  return baseSocket as SocketExtended & { _sentMessages: string[] };
+  return asDouble<SocketExtended & { _sentMessages: string[] }>()(baseSocket);
 }
 
 // Helper to create mock TelnetSocket
 function createMockTelnetSocket(): TelnetSocket & { written: Buffer[] } {
   const written: Buffer[] = [];
 
-  return {
+  return asDouble<TelnetSocket & { written: Buffer[] }>()({
     write: (data: Buffer | string) => {
       written.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
       return true;
@@ -296,7 +298,7 @@ function createMockTelnetSocket(): TelnetSocket & { written: Buffer[] } {
     send: (data: string | Buffer) => {
       try {
         let buffer: Buffer;
-        if (typeof data === 'string') {
+        if (!Buffer.isBuffer(data)) {
           buffer = mockIconv.encode(data, 'latin1');
         } else {
           buffer = data;
@@ -306,14 +308,14 @@ function createMockTelnetSocket(): TelnetSocket & { written: Buffer[] } {
         // Error handled in actual implementation
       }
     },
-    on: () => ({}) as TelnetSocket,
-    once: () => ({}) as TelnetSocket,
+    on: () => asDouble<TelnetSocket>()({}),
+    once: () => asDouble<TelnetSocket>()({}),
     destroy: () => {},
     end: () => {},
     setEncoding: () => {},
     writable: true,
     written,
-  } as TelnetSocket & { written: Buffer[] };
+  });
 }
 
 // Helper to create protocol sequences

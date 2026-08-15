@@ -1,3 +1,22 @@
+import { z } from 'zod';
+
+/** The two outcomes /attest/register reports, as stable codes. */
+const registerResponseSchema = z.looseObject({
+  code: z.enum(['attestation_rejected', 'attestation_unavailable']),
+});
+
+/** The challenge endpoint hands back a nonce; nothing else is read. */
+const containerChallengeSchema = z.looseObject({
+  nonce: z.string().optional(),
+});
+
+/** The proxy frames this client reacts to, by the fields it reacts on. */
+const containerFrameSchema = z.looseObject({
+  type: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  payload: z.string().optional(),
+});
 import { encode } from 'cbor-x';
 
 const httpBase = process.env.PROXY_HTTP_URL ?? 'http://mwp-test-proxy:6200';
@@ -31,7 +50,9 @@ const exerciseCaLoader = async (): Promise<void> => {
   if (!challengeResponse.ok) {
     fail(`challenge returned ${challengeResponse.status}`);
   }
-  const challenge = (await challengeResponse.json()) as { nonce?: string };
+  const challenge = containerChallengeSchema.parse(
+    await challengeResponse.json(),
+  );
   if (!challenge.nonce) fail('challenge omitted nonce');
 
   const invalidAttestation = Buffer.from(
@@ -54,14 +75,32 @@ const exerciseCaLoader = async (): Promise<void> => {
     }),
   });
   const responseBody = await registerResponse.text();
-  if (registerResponse.status !== 400) {
-    fail(`invalid certificate chain returned ${registerResponse.status}`);
+
+  // The route answers with a stable code, not the verifier's message — the
+  // message is an internal detail and echoing it was flagged on #155. The two
+  // outcomes this test needs to tell apart are exactly the two codes:
+  //
+  //   attestation_unavailable (503) — the Apple root CA never loaded, so the
+  //     image is built wrong and verification could not even be attempted
+  //   attestation_rejected    (400) — the verifier ran and refused this
+  //     deliberately-bogus attestation, which is what proves the CA loaded
+  //     and the request reached certificate parsing
+  const registerResult = registerResponseSchema.safeParse(
+    JSON.parse(responseBody),
+  );
+  if (!registerResult.success) {
+    fail(`register returned an unrecognised body: ${responseBody}`);
   }
-  if (responseBody.includes('Apple root CA not found')) {
+  if (registerResult.data.code === 'attestation_unavailable') {
     fail(`App Attest CA loader failed: ${responseBody}`);
   }
-  if (!/(certificate|asn1|pem|header|wrong tag)/i.test(responseBody)) {
-    fail(`request did not reach certificate parsing: ${responseBody}`);
+  if (
+    registerResponse.status !== 400 ||
+    registerResult.data.code !== 'attestation_rejected'
+  ) {
+    fail(
+      `request did not reach certificate parsing: ${registerResponse.status} ${responseBody}`,
+    );
   }
   console.log('container-acceptance: ca-loaded');
 };
@@ -88,12 +127,9 @@ const exerciseSession = async (): Promise<void> => {
     };
 
     socket.onmessage = (event: MessageEvent) => {
-      const message = JSON.parse(event.data.toString()) as {
-        type?: string;
-        code?: string;
-        message?: string;
-        payload?: string;
-      };
+      const message = containerFrameSchema.parse(
+        JSON.parse(event.data.toString()),
+      );
       if (message.type === 'error') {
         reject(
           new Error(

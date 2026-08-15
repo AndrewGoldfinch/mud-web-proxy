@@ -11,11 +11,12 @@
  * the session limit.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { CircularBuffer } from '../src/circular-buffer.js';
 
 const size = (b: CircularBuffer): number =>
-  (b as unknown as { currentSize: number }).currentSize;
+  asDouble<{ currentSize: number }>()(b).currentSize;
 
 describe('a single oversized chunk cannot exceed the cap', () => {
   test('an over-large chunk is refused rather than stored', () => {

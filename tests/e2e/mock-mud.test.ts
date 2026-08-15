@@ -5,7 +5,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { MockMUDServer, createIREMUD, createChaosMUD } from './mock-mud';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
@@ -94,7 +94,7 @@ describe('Mock MUD Server Tests', () => {
     const messages = connection!.getMessages();
     const hasWelcome = messages.some((m) => {
       if (m.type === 'data') {
-        const data = m.data as { payload?: string };
+        const data = framePayload(m) ?? {};
         if (data.payload) {
           const text = Buffer.from(data.payload, 'base64').toString();
           return text.includes('Welcome');
@@ -116,7 +116,7 @@ describe('Mock MUD Server Tests', () => {
     expect(gmcpMsg).not.toBeNull();
 
     if (gmcpMsg) {
-      const data = gmcpMsg.data as { package?: string };
+      const data = framePayload(gmcpMsg) ?? {};
       expect(data.package).toBeDefined();
     }
   });
@@ -131,8 +131,8 @@ describe('Mock MUD Server Tests', () => {
 
     if (!sessionMsg) return;
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection!.close();

@@ -21,6 +21,19 @@ import type {
 } from './types';
 import { TriggerMatcher } from './trigger-matcher';
 import { tokenSummary } from './log-redaction';
+import { z } from 'zod';
+import type { JsonSerializableObject } from './json-value';
+
+/** APNS reports a rejection reason in a JSON body; everything else is noise. */
+const apnsErrorBodySchema = z.looseObject({ reason: z.string().optional() });
+
+/** What the health endpoint reports about push delivery. */
+export interface NotificationStatus {
+  enabled: boolean;
+  configured: boolean;
+  tokenValid: boolean;
+  pendingNotifications: number;
+}
 
 export interface NotificationManagerConfig {
   apns?: APNSConfig;
@@ -279,7 +292,7 @@ export class NotificationManager {
     deviceToken: string,
     title: string,
     body: string,
-    custom: Record<string, unknown> = {},
+    custom: JsonSerializableObject = {},
   ): Promise<boolean> {
     if (!this.isAvailable()) {
       return false;
@@ -375,7 +388,7 @@ export class NotificationManager {
 
   private async sendRawToAPNS(
     deviceToken: string,
-    apnsPayload: Record<string, unknown>,
+    apnsPayload: JsonSerializableObject,
     optionsIn: { pushType: string; priority: string; topic: string },
   ): Promise<boolean> {
     const authToken = this.getAuthToken();
@@ -476,10 +489,9 @@ export class NotificationManager {
         }
 
         const statusHeader = headers[':status'];
-        statusCode =
-          typeof statusHeader === 'number'
-            ? statusHeader
-            : Number(statusHeader || 0);
+        // Number() covers both forms http2 can deliver; an array header is
+        // NaN either way, exactly as before.
+        statusCode = Number(statusHeader ?? 0);
         const apnsIdHeader = headers['apns-id'];
         apnsId = Array.isArray(apnsIdHeader)
           ? String(apnsIdHeader[0] || '')
@@ -504,9 +516,9 @@ export class NotificationManager {
         let reason = '';
         try {
           const parsed = bodyText
-            ? (JSON.parse(bodyText) as { reason?: string })
+            ? apnsErrorBodySchema.safeParse(JSON.parse(bodyText))
             : undefined;
-          reason = parsed?.reason || '';
+          reason = parsed?.success ? (parsed.data.reason ?? '') : '';
         } catch {
           // A non-JSON body leaves `reason` at its initial empty string.
         }
@@ -686,12 +698,7 @@ export class NotificationManager {
   /**
    * Get configuration status
    */
-  getStatus(): {
-    enabled: boolean;
-    configured: boolean;
-    tokenValid: boolean;
-    pendingNotifications: number;
-  } {
+  getStatus(): NotificationStatus {
     return {
       enabled: this.config.enabled,
       configured: !!this.config.apns,

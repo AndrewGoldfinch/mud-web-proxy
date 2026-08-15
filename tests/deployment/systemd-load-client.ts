@@ -1,3 +1,13 @@
+import { z } from 'zod';
+
+/** The proxy frames this client reacts to, by the fields it reacts on. */
+const loadFrameSchema = z.looseObject({
+  type: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  payload: z.string().optional(),
+});
+
 import { readFileSync } from 'fs';
 import WebSocket, { type RawData } from 'ws';
 import {
@@ -124,12 +134,7 @@ const createSession = (
     });
 
     socket.on('message', (data: RawData) => {
-      const message = JSON.parse(data.toString()) as {
-        type?: string;
-        code?: string;
-        message?: string;
-        payload?: string;
-      };
+      const message = loadFrameSchema.parse(JSON.parse(data.toString()));
       if (message.type === 'error') {
         rejectUnsettled(
           new Error(

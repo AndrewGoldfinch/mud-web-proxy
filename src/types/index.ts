@@ -3,6 +3,7 @@
  * Type definitions for MUDBasher session persistence proxy
  */
 
+import type { JsonValue } from '../json-value';
 import type { IncomingMessage } from 'http';
 import type { WebSocket as WS } from 'ws';
 import type { Socket } from 'net';
@@ -60,7 +61,10 @@ export interface BufferChunk {
   data: Buffer;
   type: 'data' | 'gmcp' | 'echo';
   gmcpPackage?: string;
-  gmcpData?: object;
+  /** Decoded GMCP payload. JSON, so `JsonValue` — not `object`,
+   * which admits neither the `null` a MUD can legitimately send nor a
+   * scalar payload. */
+  gmcpData?: JsonValue;
   /** Set when `type === 'echo'`: whether the MUD had taken over local echo. */
   echoSuppressed?: boolean;
 }
@@ -102,7 +106,10 @@ export interface ProcessedData {
   data: Buffer;
   type: 'data' | 'gmcp' | 'echo';
   gmcpPackage?: string;
-  gmcpData?: object;
+  /** Decoded GMCP payload. JSON, so `JsonValue` — not `object`,
+   * which admits neither the `null` a MUD can legitimately send nor a
+   * scalar payload. */
+  gmcpData?: JsonValue;
   /** Set when `type === 'echo'`: whether the MUD had taken over local echo. */
   echoSuppressed?: boolean;
 }
@@ -378,10 +385,15 @@ export interface NotificationPayload {
   };
 }
 
-export interface ActivityContentState {
+/**
+ * A type alias, not an interface, so it carries an implicit index signature
+ * and can be handed to the APNS payload builders as JSON-serialisable data
+ * without an assertion.
+ */
+export type ActivityContentState = {
   status: 'connected' | 'disconnected';
   worldName: string;
   lastOutputSnippet: string;
   connectedSince: number;
   lastSyncTime: number;
-}
+};

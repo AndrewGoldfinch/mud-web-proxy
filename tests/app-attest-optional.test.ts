@@ -11,6 +11,7 @@
  * process-level concern and lives in attest-route-gating.test.ts.
  */
 
+import { errorText } from '../src/error-text';
 import { describe, expect, test } from 'bun:test';
 import {
   getRuntimeConfig,
@@ -181,7 +182,7 @@ describe('APNS is off unless fully configured', () => {
         APNS_KEY_ID: 'ABC123DEFG',
       });
     } catch (e) {
-      message = (e as Error).message;
+      message = errorText(e);
     }
     expect(message).toMatch(/APNS_KEY_PATH/);
     expect(message).toMatch(/APNS_TEAM_ID/);

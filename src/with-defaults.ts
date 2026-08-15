@@ -24,9 +24,17 @@ export const withDefaults = <T extends object>(
   const merged = { ...defaults };
   if (!overrides) return merged;
 
+  // SAFETY: `overrides` is a Partial<T>, so every own key it has is a key of
+  // T. Object.keys widens to string[] because a JavaScript object may carry
+  // keys the type does not describe; here it cannot, because the only values
+  // read back out are written through the Partial<T> contract.
   for (const key of Object.keys(overrides) as (keyof T)[]) {
     const value = overrides[key];
-    if (value !== undefined) merged[key] = value as T[keyof T];
+    if (value !== undefined) {
+      // SAFETY: Partial<T>[K] is T[K] | undefined and the guard has removed
+      // undefined, so what remains is exactly T[K].
+      merged[key] = value as T[keyof T];
+    }
   }
 
   return merged;

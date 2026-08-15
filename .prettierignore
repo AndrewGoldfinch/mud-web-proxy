@@ -19,6 +19,12 @@ bun.lock
 .worktrees/
 .superpowers/
 
+# Vendored third-party source: the anti-slop oxlint plugin is copied in by the
+# install-anti-slop skill and is replaced wholesale on upgrade. Reformatting it
+# to this repo's style would produce a diff against every future re-copy.
+# .oxlintrc.json ignores the same path so the plugin does not lint itself.
+tools/oxlint/anti-slop/
+
 # Runtime state the app writes, not source. The shutdown flush (MWP-96) creates
 # this on every clean exit, so without this entry anyone who starts and stops the
 # server locally fails `bun run format`. Gitignored, but prettier does not read
