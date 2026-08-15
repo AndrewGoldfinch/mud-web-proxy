@@ -43,7 +43,7 @@ updates:
       - dependencies
     groups:
       # The dev toolchain moves together and is not in the shipped artifact;
-      # reviewing eslint and prettier patch bumps one PR at a time is noise.
+      # reviewing oxlint and prettier patch bumps one PR at a time is noise.
       #
       # Majors are excluded deliberately. The first run of this group produced
       # a PR titled "bump the dev-toolchain group with 3 updates" that
@@ -57,22 +57,12 @@ updates:
           - minor
           - patch
         patterns:
-          - '@typescript-eslint/*'
-          - 'eslint*'
+          - '@oxlint/*'
+          - 'oxlint'
           - 'prettier*'
-          - 'typescript*'
+          - 'typescript'
     ignore:
       # Bun is pinned deliberately and upgraded as a decision, not a bump —
       # see MWP-97. Left to Dependabot it would drift the runtime the whole
       # project is tested against.
       - dependency-name: 'bun-types'
-
-      # TypeScript 7 (the native compiler) type-checks this project cleanly and
-      # is far faster, but typescript-eslint throws on any TS >= 7 — it is a
-      # hard version guard, not a warning — so the lint gate cannot run at all.
-      # Support is tracked at typescript-eslint#10940 and targets TS >= 7.1.
-      # Ignoring the major stops an unmergeable PR being reopened every week;
-      # remove this entry once typescript-eslint supports 7.x.
-      - dependency-name: 'typescript'
-        update-types:
-          - version-update:semver-major

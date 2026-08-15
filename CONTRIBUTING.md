@@ -38,9 +38,10 @@ If preflight and CI ever disagree, the script is wrong. Fix
 - **Naming**: `camelCase` for variables and functions, `PascalCase` for types
   and interfaces, `UPPER_SNAKE_CASE` for constants, `_` prefix for unused
   parameters.
-- **Logging**: use `srv.log()`, not `console.log`. ESLint only warns on
+- **Logging**: use `srv.log()`, not `console.log`. Oxlint only warns on
   `no-console`, so this is on you.
-- **Errors**: cast as `(err as Error)` in catch blocks.
+- **Errors**: render with `errorText(err)` from `src/error-text.ts`, never a
+  cast — a thrown non-Error would otherwise log as `undefined`.
 - **Imports**: ES modules, `import type` for type-only imports.
 
 Comments should say _why_, not _what_. This codebase's comments carry the

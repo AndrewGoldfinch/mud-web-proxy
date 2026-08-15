@@ -26,6 +26,7 @@
  *    parser does answer other options.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { TelnetParser } from '../src/telnet-parser.js';
 import type { Session } from '../src/session.js';
@@ -38,20 +39,26 @@ const WONT = 252;
 const MCCP2 = 86;
 const GMCP = 201;
 
+/** A parser wired to a session that records everything sent upstream. */
+interface ParserHarness {
+  parser: TelnetParser;
+  sent: () => Buffer;
+}
+
 /** A session that records everything the parser sends upstream. */
-function harness(): { parser: TelnetParser; sent: () => Buffer } {
+function harness(): ParserHarness {
   const chunks: Buffer[] = [];
-  const session = {
+  const session = asDouble<Session>()({
     id: 'mccp-test-session',
     echoOn: true,
     sendToMud: (data: Buffer) => {
       chunks.push(Buffer.from(data));
     },
-  } as unknown as Session;
+  });
 
   return {
     parser: new TelnetParser(session),
-    sent: () => Buffer.concat(chunks),
+    sent: (): Buffer => Buffer.concat(chunks),
   };
 }
 

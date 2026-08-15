@@ -12,6 +12,8 @@
  * failure in mock-mud.test.ts.
  */
 
+import { parseFrame, type ProxyFrame } from '../support/frames';
+import { asDouble } from '../support/doubles';
 import { describe, test, expect, beforeAll, afterAll } from 'bun:test';
 import net, { type Server, type Socket } from 'net';
 import { mkdtempSync, readFileSync, rmSync } from 'fs';
@@ -38,8 +40,7 @@ const SETTLE_MS = 1500;
 
 const settle = (ms = SETTLE_MS) => new Promise((r) => setTimeout(r, ms));
 
-const portOf = (mud: unknown): number =>
-  (mud as { config: { port: number } }).config.port;
+const portOf = (mud: MockMUDServer): number => mud.port;
 
 /**
  * Open a raw socket. E2EConnection hardcodes a typed connect frame, so the
@@ -87,10 +88,10 @@ const decodeLegacyPlayer = (frames: string[]): string =>
     })
     .join('');
 
-const parseJsonFrames = (frames: string[]): Array<Record<string, unknown>> =>
+const parseJsonFrames = (frames: string[]): ProxyFrame[] =>
   frames.flatMap((frame) => {
     try {
-      return [JSON.parse(frame) as Record<string, unknown>];
+      return [parseFrame(frame)];
     } catch {
       return [];
     }
@@ -101,7 +102,7 @@ const collect = (ws: WebSocket): string[] => {
   const frames: string[] = [];
   ws.onmessage = (ev: MessageEvent) => {
     frames.push(
-      typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString(),
+      Buffer.isBuffer(ev.data) ? ev.data.toString() : String(ev.data),
     );
   };
   return frames;
@@ -320,8 +321,7 @@ describe('legacy connect under preferred MUD TLS', () => {
 
   beforeAll(async () => {
     mock = createIREMUD();
-    (mock as unknown as { config: { port: number } }).config.port =
-      PREFER_MUD_PORT;
+    mock.setPort(PREFER_MUD_PORT);
     mudPort = portOf(mock);
     await mock.start();
     proxy = await startTestProxy(PREFER_PROXY_PORT, {
@@ -422,11 +422,9 @@ describe('legacy connect over trusted real TLS', () => {
     expect(openssl.exitCode).toBe(0);
 
     mock = createIREMUD();
-    const config = (
-      mock as unknown as {
-        config: { port: number; tls?: { key: Buffer; cert: Buffer } };
-      }
-    ).config;
+    const config = asDouble<{
+      config: { port: number; tls?: { key: Buffer; cert: Buffer } };
+    }>()(mock).config;
     config.port = TLS_MUD_PORT;
     config.tls = {
       key: readFileSync(keyPath),
@@ -618,8 +616,7 @@ describe('legacy connect under required MUD TLS', () => {
 
   beforeAll(async () => {
     mock = createIREMUD();
-    (mock as unknown as { config: { port: number } }).config.port =
-      REQUIRED_MUD_PORT;
+    mock.setPort(REQUIRED_MUD_PORT);
     mudPort = portOf(mock);
     await mock.start();
     proxy = await startTestProxy(REQUIRED_PROXY_PORT, {
@@ -667,7 +664,7 @@ describe('legacy connect under required MUD TLS', () => {
     );
 
     const deadline = Date.now() + 5000;
-    let errorFrame: Record<string, unknown> | undefined;
+    let errorFrame: ProxyFrame | undefined;
     while (Date.now() < deadline && !errorFrame) {
       errorFrame = parseJsonFrames(frames).find(
         (frame) =>
@@ -695,7 +692,7 @@ describe('legacy connect under shared-secret auth', () => {
     mock = createIREMUD();
     // The factory hardcodes 6301, which mock-mud.test.ts also uses; give
     // this suite its own port so a full run cannot cross the two.
-    (mock as unknown as { config: { port: number } }).config.port = 6324;
+    mock.setPort(6324);
     await mock.start();
     proxy = await startTestProxy(AUTH_PORT, {
       TN_HOST: 'localhost',

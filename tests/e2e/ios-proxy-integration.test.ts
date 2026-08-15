@@ -13,7 +13,7 @@ import {
   beforeEach,
   afterEach,
 } from 'bun:test';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import {
   MockMUDServer,
   createIREMUD,
@@ -100,9 +100,9 @@ describe('Fresh Connection', () => {
     const result = await conn.connect(proxy.url);
     expect(result.success).toBe(true);
     expect(result.sessionId).toBeDefined();
-    expect(typeof result.sessionId).toBe('string');
+    expect(result.sessionId).toEqual(expect.any(String));
     expect(result.token).toBeDefined();
-    expect(typeof result.token).toBe('string');
+    expect(result.token).toEqual(expect.any(String));
     expect(result.sessionId!.length).toBeGreaterThan(0);
     expect(result.token!.length).toBeGreaterThan(0);
   });
@@ -117,9 +117,10 @@ describe('Fresh Connection', () => {
     const messages = conn.getMessages().filter((m) => m.type === 'data');
     expect(messages.length).toBeGreaterThan(0);
 
-    const firstData = messages[0].data as { seq: number; payload: string };
-    expect(typeof firstData.seq).toBe('number');
-    expect(typeof firstData.payload).toBe('string');
+    const firstData = framePayload(messages[0]);
+    if (!firstData) throw new Error('data frame carried no payload object');
+    expect(firstData.seq).toEqual(expect.any(Number));
+    expect(firstData.payload).toEqual(expect.any(String));
     // Payload should be valid base64
     expect(() => Buffer.from(firstData.payload, 'base64')).not.toThrow();
   });
@@ -160,8 +161,8 @@ describe('Fresh Connection', () => {
     // NAWS takes time to propagate through proxy → telnet → mock
     const client = clients[0];
     // Window size should have been updated (may still be default if negotiation didn't complete)
-    expect(typeof client.windowWidth).toBe('number');
-    expect(typeof client.windowHeight).toBe('number');
+    expect(client.windowWidth).toEqual(expect.any(Number));
+    expect(client.windowHeight).toEqual(expect.any(Number));
   });
 
   it('should include device token in connect message', async () => {
@@ -308,8 +309,7 @@ describe('Session Resume', () => {
   // originally asserted only that the session was still valid.
   it('should replay buffered data on resume', async () => {
     const bufMock = createBufferTestMUD();
-    (bufMock as unknown as { config: { port: number } }).config.port =
-      MOCK_MUD_PORT + 11;
+    bufMock.setPort(MOCK_MUD_PORT + 11);
     await bufMock.start();
     const bufProxy = await startTestProxy(PROXY_PORT + 11, {
       TN_HOST: 'localhost',
@@ -354,9 +354,8 @@ describe('Session Resume', () => {
       // serves from the buffer, so a live frame cannot satisfy any of this.
       const replays = conn2
         .getMessages()
-        .filter((m) => (m.data as { replayed?: boolean })?.replayed === true);
-      const seqOf = (m: (typeof replays)[number]) =>
-        (m.data as { seq: number }).seq;
+        .filter((m) => framePayload(m)?.replayed === true);
+      const seqOf = (m: (typeof replays)[number]) => framePayload(m)?.seq ?? 0;
 
       // The property the test is named for: output produced while no client
       // was attached survived the disconnect and came back.
@@ -421,7 +420,7 @@ describe('Session Resume', () => {
     // nothing is *replayed*: the proxy marks replayed chunks, so count those.
     const replayedAfterResume = conn2
       .getMessages()
-      .filter((m) => (m.data as { replayed?: boolean })?.replayed === true);
+      .filter((m) => framePayload(m)?.replayed === true);
     expect(replayedAfterResume).toEqual([]);
     conn2.close();
   });
@@ -571,8 +570,8 @@ describe('Buffering', () => {
 
     // Check sequence numbers are monotonically increasing
     const seqs = dataMessages
-      .map((m) => (m.data as any).seq)
-      .filter((s) => typeof s === 'number');
+      .map((m) => framePayload(m)?.seq)
+      .filter((s) => s !== undefined);
     for (let i = 1; i < seqs.length; i++) {
       expect(seqs[i]).toBeGreaterThan(seqs[i - 1]);
     }
@@ -590,9 +589,10 @@ describe('Buffering', () => {
 
     const gmcpMessages = conn.getMessages().filter((m) => m.type === 'gmcp');
     if (gmcpMessages.length > 0) {
-      const first = gmcpMessages[0].data as { seq: number; package: string };
-      expect(typeof first.seq).toBe('number');
-      expect(typeof first.package).toBe('string');
+      const first = framePayload(gmcpMessages[0]);
+      if (!first) throw new Error('gmcp frame carried no payload object');
+      expect(first.seq).toEqual(expect.any(Number));
+      expect(first.package).toEqual(expect.any(String));
     }
 
     conn.close();
@@ -614,7 +614,7 @@ describe('Buffering', () => {
       .filter(
         (m) =>
           (m.type === 'data' || m.type === 'gmcp') &&
-          typeof (m.data as any).seq === 'number',
+          framePayload(m)?.seq !== undefined,
       );
 
     // Should have both types
@@ -625,7 +625,7 @@ describe('Buffering', () => {
     // If GMCP negotiated, should also have gmcp
     if (types.has('gmcp')) {
       // All sequence numbers should still be globally ordered
-      const seqs = seqMessages.map((m) => (m.data as any).seq);
+      const seqs = seqMessages.map((m) => framePayload(m)?.seq ?? 0);
       for (let i = 1; i < seqs.length; i++) {
         expect(seqs[i]).toBeGreaterThanOrEqual(seqs[i - 1]);
       }
@@ -673,7 +673,7 @@ describe('Protocol', () => {
   it('should pass through GMCP messages', async () => {
     const mock = createIREMUD();
     // Use port override
-    (mock as any).config.port = MOCK_MUD_PORT + 30;
+    mock.setPort(MOCK_MUD_PORT + 30);
     await mock.start();
     proxy = await startTestProxy(PROXY_PORT + 30, {
       TN_HOST: 'localhost',
@@ -692,9 +692,10 @@ describe('Protocol', () => {
 
     const gmcpMsg = await conn.waitForMessage('gmcp', 5000);
     if (gmcpMsg) {
-      const data = gmcpMsg.data as { package: string; data: unknown };
+      const data = framePayload(gmcpMsg);
+      if (!data) throw new Error('gmcp frame carried no payload object');
       expect(data.package).toBeDefined();
-      expect(typeof data.package).toBe('string');
+      expect(data.package).toEqual(expect.any(String));
     }
 
     conn.close();
@@ -747,7 +748,7 @@ describe('Protocol', () => {
 
   it('should handle no-protocol MUD (plain telnet)', async () => {
     const mock = createROMMUD();
-    (mock as any).config.port = MOCK_MUD_PORT + 32;
+    mock.setPort(MOCK_MUD_PORT + 32);
     await mock.start();
     proxy = await startTestProxy(PROXY_PORT + 32, {
       TN_HOST: 'localhost',
@@ -780,7 +781,7 @@ describe('Protocol', () => {
 
   it('should handle MXP-enabled MUD', async () => {
     const mock = createDiscworldMUD();
-    (mock as any).config.port = MOCK_MUD_PORT + 33;
+    mock.setPort(MOCK_MUD_PORT + 33);
     await mock.start();
     proxy = await startTestProxy(PROXY_PORT + 33, {
       TN_HOST: 'localhost',
@@ -1070,7 +1071,7 @@ describe('Login Flow', () => {
   it('should handle continuous post-login output', async () => {
     // Use buffer test MUD with continuous output
     const bufMock = createBufferTestMUD();
-    (bufMock as any).config.port = MOCK_MUD_PORT + 53;
+    bufMock.setPort(MOCK_MUD_PORT + 53);
     await bufMock.start();
     const bufProxy = await startTestProxy(PROXY_PORT + 53, {
       TN_HOST: 'localhost',

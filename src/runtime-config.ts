@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
+import type { JsonValue } from './json-value';
 import {
   accessSync,
   constants,
@@ -14,6 +15,7 @@ import {
 } from 'crypto';
 import { parseAllowedTargets } from './target-policy';
 import { isValidTrustedProxyEntry } from './wsproxy-utils';
+import { errorText } from './error-text';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,28 +47,28 @@ export const validateTlsMaterial = (
   try {
     certPem = readFileSync(certPath);
   } catch (err) {
-    return `TLS certificate at ${certPath} could not be read: ${(err as Error).message}`;
+    return `TLS certificate at ${certPath} could not be read: ${errorText(err)}`;
   }
 
   let keyPem: Buffer;
   try {
     keyPem = readFileSync(keyPath);
   } catch (err) {
-    return `TLS key at ${keyPath} could not be read: ${(err as Error).message}`;
+    return `TLS key at ${keyPath} could not be read: ${errorText(err)}`;
   }
 
   let certificate: X509Certificate;
   try {
     certificate = new X509Certificate(certPem);
   } catch (err) {
-    return `TLS certificate at ${certPath} is not a valid certificate: ${(err as Error).message}`;
+    return `TLS certificate at ${certPath} is not a valid certificate: ${errorText(err)}`;
   }
 
   let privateKey;
   try {
     privateKey = createPrivateKey(keyPem);
   } catch (err) {
-    return `TLS key at ${keyPath} is not a valid private key: ${(err as Error).message}`;
+    return `TLS key at ${keyPath} is not a valid private key: ${errorText(err)}`;
   }
 
   try {
@@ -82,7 +84,7 @@ export const validateTlsMaterial = (
       return `TLS certificate at ${certPath} does not match the private key at ${keyPath}.`;
     }
   } catch (err) {
-    return `TLS certificate at ${certPath} and key at ${keyPath} could not be compared: ${(err as Error).message}`;
+    return `TLS certificate at ${certPath} and key at ${keyPath} could not be compared: ${errorText(err)}`;
   }
 
   return null;
@@ -153,7 +155,8 @@ export const readEnumEnv = <T extends string>(
   if (idx === -1) {
     fail(name, env[name]!, options.join(' | '));
   }
-  return options[idx] as T;
+  // Already T: `options` is T[], so indexing it needs no assertion.
+  return options[idx];
 };
 
 export const readListEnv = (
@@ -196,12 +199,15 @@ export enum LogLevel {
   ERROR = 3,
 }
 
-const LOG_LEVEL_BY_NAME: Record<string, LogLevel> = {
-  debug: LogLevel.DEBUG,
-  info: LogLevel.INFO,
-  warn: LogLevel.WARN,
-  error: LogLevel.ERROR,
-};
+// A Map rather than an object literal so the lookup cannot resolve `toString`
+// or `constructor` through the prototype chain, and so the entries keep their
+// literal key types.
+const LOG_LEVEL_BY_NAME = new Map<string, LogLevel>([
+  ['debug', LogLevel.DEBUG],
+  ['info', LogLevel.INFO],
+  ['warn', LogLevel.WARN],
+  ['error', LogLevel.ERROR],
+]);
 
 export type InboundTlsMode = 'off' | 'required';
 export type MudTlsMode = 'plain' | 'required' | 'prefer';
@@ -402,12 +408,18 @@ export const nodeDirIsWritable = (dirPath: string): boolean => {
   }
 };
 
+/** What parseRuntimeConfig returns: the frozen config plus any startup errors. */
+export interface ParsedRuntimeConfig {
+  config: Readonly<RuntimeConfig>;
+  errors: string[];
+}
+
 export const parseRuntimeConfig = (
   env: EnvLike,
   existsSync: (filePath: string) => boolean,
   basePath: string,
   dirIsWritable: (dirPath: string) => boolean = nodeDirIsWritable,
-): { config: Readonly<RuntimeConfig>; errors: string[] } => {
+): ParsedRuntimeConfig => {
   const errors: string[] = [];
 
   // ---- Parse every env var ----
@@ -614,7 +626,7 @@ export const parseRuntimeConfig = (
     ['debug', 'info', 'warn', 'error'],
     'info',
   );
-  const logLevel = LOG_LEVEL_BY_NAME[logLevelName];
+  const logLevel = LOG_LEVEL_BY_NAME.get(logLevelName) ?? LogLevel.INFO;
   const noColor = env.NO_COLOR === '1';
 
   // APNS — optional, off unless fully configured.
@@ -1160,7 +1172,7 @@ export const isDiagnosticRequestAuthorized = (
 // escapeDiagnosticHtml — kept for backward compat
 // ---------------------------------------------------------------------------
 
-export const escapeDiagnosticHtml = (value: unknown): string => {
+export const escapeDiagnosticHtml = (value: JsonValue | undefined): string => {
   return String(value)
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')

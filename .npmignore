@@ -49,8 +49,9 @@ logs/
 docs/superpowers/
 tests/
 scripts/
+tools/
 .editorconfig
 .prettierignore
 .prettierrc.json
-eslint.config.js
+.oxlintrc.json
 tsconfig.json

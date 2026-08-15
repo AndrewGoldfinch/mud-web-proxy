@@ -1,3 +1,17 @@
+import { z } from 'zod';
+
+/** The challenge endpoint hands back a nonce; nothing else is read. */
+const containerChallengeSchema = z.looseObject({
+  nonce: z.string().optional(),
+});
+
+/** The proxy frames this client reacts to, by the fields it reacts on. */
+const containerFrameSchema = z.looseObject({
+  type: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  payload: z.string().optional(),
+});
 import { encode } from 'cbor-x';
 
 const httpBase = process.env.PROXY_HTTP_URL ?? 'http://mwp-test-proxy:6200';
@@ -31,7 +45,9 @@ const exerciseCaLoader = async (): Promise<void> => {
   if (!challengeResponse.ok) {
     fail(`challenge returned ${challengeResponse.status}`);
   }
-  const challenge = (await challengeResponse.json()) as { nonce?: string };
+  const challenge = containerChallengeSchema.parse(
+    await challengeResponse.json(),
+  );
   if (!challenge.nonce) fail('challenge omitted nonce');
 
   const invalidAttestation = Buffer.from(
@@ -88,12 +104,9 @@ const exerciseSession = async (): Promise<void> => {
     };
 
     socket.onmessage = (event: MessageEvent) => {
-      const message = JSON.parse(event.data.toString()) as {
-        type?: string;
-        code?: string;
-        message?: string;
-        payload?: string;
-      };
+      const message = containerFrameSchema.parse(
+        JSON.parse(event.data.toString()),
+      );
       if (message.type === 'error') {
         reject(
           new Error(

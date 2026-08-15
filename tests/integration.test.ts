@@ -3,6 +3,7 @@
  * Tests full end-to-end flows with real servers where possible
  */
 
+import { asDouble } from './support/doubles';
 import {
   describe,
   test,
@@ -647,7 +648,7 @@ describe('Integration Tests - Full WebSocket-to-Telnet Flow', () => {
       // Simulate multiple clients
       for (let i = 0; i < numClients; i++) {
         clients.push({
-          socket: null as unknown as WSWebSocket,
+          socket: asDouble<WSWebSocket>()(null),
           messages: [],
           connected: true,
           closed: false,
@@ -994,7 +995,7 @@ describe('Integration Tests - Real Server Components', () => {
     // 4. Clean up
 
     // Placeholder assertion - Bun is globally available in Bun runtime
-    expect(typeof (globalThis as { Bun?: unknown }).Bun).toBe('object');
+    expect(globalThis.Bun).toBeDefined();
   });
 
   test('net.createServer() Telnet integration', async () => {

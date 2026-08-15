@@ -1,3 +1,16 @@
+import { z } from 'zod';
+
+/** The challenge endpoint hands back a nonce; nothing else is read. */
+const challengeSchema = z.looseObject({ nonce: z.string().optional() });
+
+/** The proxy frames this client reacts to, by the fields it reacts on. */
+const acceptanceFrameSchema = z.looseObject({
+  type: z.string().optional(),
+  code: z.string().optional(),
+  message: z.string().optional(),
+  payload: z.string().optional(),
+});
+
 import { encode } from 'cbor-x';
 import { readFileSync } from 'fs';
 import WebSocket, { type RawData } from 'ws';
@@ -56,7 +69,7 @@ const exerciseCaLoader = async (): Promise<void> => {
   if (!challengeResponse.ok) {
     fail(`challenge returned ${challengeResponse.status}`);
   }
-  const challenge = (await challengeResponse.json()) as { nonce?: string };
+  const challenge = challengeSchema.parse(await challengeResponse.json());
   if (!challenge.nonce) fail('challenge omitted nonce');
 
   const invalidAttestation = Buffer.from(
@@ -131,12 +144,7 @@ const exerciseSession = async (): Promise<void> => {
     });
 
     socket.on('message', (data: RawData) => {
-      const message = JSON.parse(data.toString()) as {
-        type?: string;
-        code?: string;
-        message?: string;
-        payload?: string;
-      };
+      const message = acceptanceFrameSchema.parse(JSON.parse(data.toString()));
       if (message.type === 'error') {
         reject(
           new Error(

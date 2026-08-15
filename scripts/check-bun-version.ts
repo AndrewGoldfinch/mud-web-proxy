@@ -5,12 +5,14 @@
 
 import { readFile, readdir } from 'fs/promises';
 import path from 'path';
+import { z } from 'zod';
 
-interface PackageManifest {
-  engines?: {
-    bun?: unknown;
-  };
-}
+import { errorText } from '../src/error-text';
+
+/** The one field of package.json this gate reads. */
+const packageManifestSchema = z.looseObject({
+  engines: z.looseObject({ bun: z.string().optional() }).optional(),
+});
 
 const EXACT_VERSION = /^\d+\.\d+\.\d+$/;
 
@@ -50,7 +52,9 @@ const readWorkflowText = async (repoRoot: string): Promise<string> => {
       .filter((file) => /\.ya?ml$/.test(file))
       .sort();
   } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+    // Read off the error rather than asserted onto it: only a system error
+    // carries a `code`, and a missing workflows directory is not an error here.
+    if (err instanceof Error && 'code' in err && err.code === 'ENOENT') {
       return '';
     }
     throw err;
@@ -75,7 +79,7 @@ export const collectBunVersionErrors = async (
   } catch (err: unknown) {
     return {
       version: '',
-      errors: [`.bun-version could not be read: ${(err as Error).message}`],
+      errors: [`.bun-version could not be read: ${errorText(err)}`],
     };
   }
 
@@ -99,13 +103,13 @@ export const collectBunVersionErrors = async (
   } catch (err: unknown) {
     return {
       version,
-      errors: [`package.json could not be read: ${(err as Error).message}`],
+      errors: [`package.json could not be read: ${errorText(err)}`],
     };
   }
 
-  let manifest: unknown;
+  let manifest;
   try {
-    manifest = JSON.parse(packageSource);
+    manifest = packageManifestSchema.safeParse(JSON.parse(packageSource));
   } catch {
     return {
       version,
@@ -113,11 +117,7 @@ export const collectBunVersionErrors = async (
     };
   }
 
-  if (
-    typeof manifest !== 'object' ||
-    manifest === null ||
-    Array.isArray(manifest)
-  ) {
+  if (!manifest.success) {
     return {
       version,
       errors: ['package.json must contain valid JSON'],
@@ -125,7 +125,7 @@ export const collectBunVersionErrors = async (
   }
 
   const errors: string[] = [];
-  const packageVersion = (manifest as PackageManifest).engines?.bun;
+  const packageVersion = manifest.data.engines?.bun;
   if (packageVersion !== version) {
     errors.push(
       `package.json engines.bun must equal ${version}; found ${String(packageVersion)}`,
@@ -137,9 +137,7 @@ export const collectBunVersionErrors = async (
       ...collectWorkflowVersionErrors(await readWorkflowText(repoRoot)),
     );
   } catch (err: unknown) {
-    errors.push(
-      `.github/workflows could not be read: ${(err as Error).message}`,
-    );
+    errors.push(`.github/workflows could not be read: ${errorText(err)}`);
   }
 
   if (runtimeVersion !== version) {
@@ -160,8 +158,8 @@ if (import.meta.main) {
       }
       console.log(`check-bun-version: all sources pin Bun ${version}.`);
     })
-    .catch((err: unknown) => {
-      console.error(`check-bun-version: ${(err as Error).message}`);
+    .catch((cause: unknown) => {
+      console.error(`check-bun-version: ${errorText(cause)}`);
       process.exit(1);
     });
 }

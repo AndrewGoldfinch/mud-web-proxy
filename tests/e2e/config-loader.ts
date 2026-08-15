@@ -172,11 +172,16 @@ export function getEnvInt(key: string, defaultValue: number): number {
   return isNaN(parsed) ? defaultValue : parsed;
 }
 
+/** A snapshot of environment variables, as process.env presents them. */
+export interface EnvSnapshot {
+  [name: string]: string | undefined;
+}
+
 /**
  * Get all environment variables as a record
  * Useful for debugging
  */
-export function getAllEnv(): Record<string, string | undefined> {
+export function getAllEnv(): EnvSnapshot {
   return { ...process.env };
 }
 
@@ -184,12 +189,10 @@ export function getAllEnv(): Record<string, string | undefined> {
  * Get MUD-specific environment variables from current loaded env
  * Returns variables relevant to the current MUD context
  */
-export function getMudEnv(
-  _mudName: string,
-): Record<string, string | undefined> {
+export function getMudEnv(_mudName: string): EnvSnapshot {
   // Since each MUD has its own .env file, we just return all env vars
   // that are relevant to MUD configuration (not system vars)
-  const mudVars: Record<string, string | undefined> = {};
+  const mudVars: EnvSnapshot = {};
   const relevantKeys = [
     'ENABLED',
     'HOST',

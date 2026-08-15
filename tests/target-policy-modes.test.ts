@@ -9,6 +9,7 @@
  * without an allow rule fails closed rather than open.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import {
   isReservedAddress,
@@ -45,10 +46,10 @@ describe('default deny', () => {
   });
 
   test('denies an unrecognized mode rather than falling through', () => {
-    const bogus = {
+    const bogus = asDouble<TargetPolicyConfig>()({
       ...fixed,
       targetMode: 'wide-open',
-    } as unknown as TargetPolicyConfig;
+    });
     expect(validateTarget('anywhere.example', 4000, bogus).allowed).toBe(
       false,
     );

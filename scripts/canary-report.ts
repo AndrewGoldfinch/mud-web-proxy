@@ -118,12 +118,15 @@ const longest = runs.reduce((a, b) => (b.length > a.length ? b : a), runs[0]);
 const longestDays =
   (longest[longest.length - 1].unix - longest[0].unix) / 86400;
 
+// Type predicates rather than casts: the filter is what establishes that the
+// field is present, so saying so in its signature carries that through to the
+// map instead of re-asserting it there.
 const rssPoints = longest
-  .filter((s) => s.rssKib !== null)
-  .map((s) => [s.unix, s.rssKib as number] as [number, number]);
+  .filter((s): s is Sample & { rssKib: number } => s.rssKib !== null)
+  .map((s): [number, number] => [s.unix, s.rssKib]);
 const fdPoints = longest
-  .filter((s) => s.fds !== null)
-  .map((s) => [s.unix, s.fds as number] as [number, number]);
+  .filter((s): s is Sample & { fds: number } => s.fds !== null)
+  .map((s): [number, number] => [s.unix, s.fds]);
 
 const rssSlope = slopePerDay(rssPoints);
 const fdSlope = slopePerDay(fdPoints);

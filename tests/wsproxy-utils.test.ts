@@ -1,3 +1,4 @@
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { getRuntimeConfig } from '../src/runtime-config.js';
 import { EventEmitter } from 'events';
@@ -109,8 +110,8 @@ describe('wsproxy utility regressions', () => {
     const seenSizes: number[] = [];
 
     const bodyPromise = readLimitedRequestBody(
-      req as unknown as IncomingMessage,
-      res as unknown as ServerResponse,
+      asDouble<IncomingMessage>()(req),
+      asDouble<ServerResponse>()(res),
       8,
       (bodySize) => seenSizes.push(bodySize),
     );

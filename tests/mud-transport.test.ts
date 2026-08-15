@@ -8,6 +8,8 @@ import {
   type ConnectedMudTransport,
 } from '../src/mud-transport.js';
 import type { TelnetSocket } from '../src/types/index.js';
+import { asDouble, asStub } from './support/doubles';
+import { toError } from '../src/error-text';
 
 class TestSocket extends EventEmitter {
   destroyed = false;
@@ -33,7 +35,7 @@ afterEach(() => {
 });
 
 const asTelnetSocket = (socket: TestSocket): TelnetSocket =>
-  socket as unknown as TelnetSocket;
+  asDouble<TelnetSocket>()(socket);
 
 /** Distinct from the 4,000 ms handshake deadline so the two never collide. */
 const DIAL_TIMEOUT_FOR_TESTS = 30_000;
@@ -79,8 +81,8 @@ const connectionOptions = (
 
 const observeRejection = (pending: Promise<void>) => {
   let rejection: Error | undefined;
-  const observed = pending.catch((err: unknown) => {
-    rejection = err as Error;
+  const observed = pending.catch((cause: unknown) => {
+    rejection = toError(cause);
   });
 
   return {
@@ -97,22 +99,26 @@ const installTimerStubs = () => {
   const handles: Array<ReturnType<typeof setTimeout>> = [];
   const cleared: Array<ReturnType<typeof setTimeout>> = [];
 
-  globalThis.setTimeout = ((
-    callback: (...args: unknown[]) => void,
-    delay?: number,
-    ...args: unknown[]
-  ) => {
-    callbacks.push(() => callback(...args));
-    delays.push(delay ?? 0);
-    const handle = callbacks.length as unknown as ReturnType<
-      typeof setTimeout
-    >;
-    handles.push(handle);
-    return handle;
-  }) as typeof setTimeout;
-  globalThis.clearTimeout = ((handle: ReturnType<typeof setTimeout>) => {
-    cleared.push(handle);
-  }) as typeof clearTimeout;
+  globalThis.setTimeout = asStub<typeof setTimeout>()(
+    (
+      callback: (...args: unknown[]) => void,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      callbacks.push(() => callback(...args));
+      delays.push(delay ?? 0);
+      const handle = asDouble<ReturnType<typeof setTimeout>>()(
+        callbacks.length,
+      );
+      handles.push(handle);
+      return handle;
+    },
+  );
+  globalThis.clearTimeout = asStub<typeof clearTimeout>()(
+    (handle: ReturnType<typeof setTimeout>) => {
+      cleared.push(handle);
+    },
+  );
 
   return { callbacks, cleared, delays, handles };
 };
@@ -122,18 +128,18 @@ describe('connectMudTransport success paths', () => {
     const socket = new TestSocket();
     const plainCalls: Array<[number, string]> = [];
     let tlsCalls = 0;
-    net.createConnection = ((port: number, host: string) => {
-      plainCalls.push([port, host]);
-      return asTelnetSocket(socket);
-    }) as typeof net.createConnection;
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => {
-      tlsCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (port: number, host: string) => {
+        plainCalls.push([port, host]);
+        return asTelnetSocket(socket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) => {
+        tlsCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
 
     const controller = new AbortController();
     const connected: ConnectedMudTransport[] = [];
@@ -169,18 +175,18 @@ describe('connectMudTransport success paths', () => {
     const socket = new TestSocket();
     let plainCalls = 0;
     let tlsCalls = 0;
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = ((
-      _port: number,
-      _host: string,
-      _options: tls.ConnectionOptions,
-    ) => {
-      tlsCalls++;
-      return asTelnetSocket(socket);
-    }) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(
+      (_port: number, _host: string, _options: tls.ConnectionOptions) => {
+        tlsCalls++;
+        return asTelnetSocket(socket);
+      },
+    );
 
     const controller = new AbortController();
     const connected: ConnectedMudTransport[] = [];
@@ -216,14 +222,12 @@ describe('connectMudTransport success paths', () => {
   test('TLS dials the validated address and sends SNI for the requested host', async () => {
     const socket = new TestSocket();
     const tlsCalls: Array<[number, string, tls.ConnectionOptions]> = [];
-    tls.connect = ((
-      port: number,
-      host: string,
-      options: tls.ConnectionOptions,
-    ) => {
-      tlsCalls.push([port, host, options]);
-      return asTelnetSocket(socket);
-    }) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(
+      (port: number, host: string, options: tls.ConnectionOptions) => {
+        tlsCalls.push([port, host, options]);
+        return asTelnetSocket(socket);
+      },
+    );
 
     const controller = new AbortController();
     const connected: ConnectedMudTransport[] = [];
@@ -261,15 +265,19 @@ describe('connectMudTransport TLS fallback', () => {
     const downgrades: string[] = [];
     tlsSocket.on('error', () => undefined);
 
-    net.createConnection = ((port: number, host: string) => {
-      destructionBeforePlainDial.push(tlsSocket.destroyed);
-      plainCalls.push([port, host]);
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
-    tls.connect = ((port: number, host: string) => {
-      tlsCalls.push([port, host]);
-      return asTelnetSocket(tlsSocket);
-    }) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (port: number, host: string) => {
+        destructionBeforePlainDial.push(tlsSocket.destroyed);
+        plainCalls.push([port, host]);
+        return asTelnetSocket(plainSocket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(
+      (port: number, host: string) => {
+        tlsCalls.push([port, host]);
+        return asTelnetSocket(tlsSocket);
+      },
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -312,11 +320,15 @@ describe('connectMudTransport TLS fallback', () => {
     let downgradeCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     tlsSocket.on('error', () => undefined);
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport({
@@ -355,11 +367,15 @@ describe('connectMudTransport TLS fallback', () => {
     let plainCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(plainSocket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -391,11 +407,15 @@ describe('connectMudTransport TLS fallback', () => {
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
     tlsSocket.on('error', () => undefined);
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(plainSocket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -431,11 +451,15 @@ describe('connectMudTransport TLS fallback', () => {
       let plainCalls = 0;
       const connected: ConnectedMudTransport[] = [];
       const downgrades: string[] = [];
-      net.createConnection = ((_port: number, _host: string) => {
-        plainCalls++;
-        return asTelnetSocket(new TestSocket());
-      }) as typeof net.createConnection;
-      tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+      net.createConnection = asStub<typeof net.createConnection>()(
+        (_port: number, _host: string) => {
+          plainCalls++;
+          return asTelnetSocket(new TestSocket());
+        },
+      );
+      tls.connect = asStub<typeof tls.connect>()(() =>
+        asTelnetSocket(tlsSocket),
+      );
 
       const controller = new AbortController();
       const pending = connectMudTransport(
@@ -464,11 +488,15 @@ describe('connectMudTransport TLS fallback', () => {
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
     tlsSocket.on('error', () => undefined);
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(plainSocket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -500,11 +528,15 @@ describe('connectMudTransport required policy', () => {
     let plainCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -531,11 +563,15 @@ describe('connectMudTransport required policy', () => {
     let plainCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -563,7 +599,9 @@ describe('connectMudTransport TLS handshake deadline', () => {
     const tlsSocket = new TestSocket();
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -595,11 +633,15 @@ describe('connectMudTransport TLS handshake deadline', () => {
     let plainCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(plainSocket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -637,11 +679,15 @@ describe('connectMudTransport TLS handshake deadline', () => {
     let plainCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -672,7 +718,9 @@ describe('connectMudTransport TLS handshake deadline', () => {
     const tlsSocket = new TestSocket();
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -698,7 +746,9 @@ describe('connectMudTransport TLS handshake deadline', () => {
     const tlsSocket = new TestSocket();
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -725,14 +775,16 @@ describe('connectMudTransport abort and callback ownership', () => {
     let tlsCalls = 0;
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = (() => {
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() => {
       tlsCalls++;
       return asTelnetSocket(new TestSocket());
-    }) as typeof tls.connect;
+    });
 
     const controller = new AbortController();
     controller.abort();
@@ -760,11 +812,15 @@ describe('connectMudTransport abort and callback ownership', () => {
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
     tlsSocket.on('error', () => undefined);
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(new TestSocket());
-    }) as typeof net.createConnection;
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(new TestSocket());
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -796,8 +852,9 @@ describe('connectMudTransport abort and callback ownership', () => {
     const plainSocket = new TestSocket();
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    net.createConnection = (() =>
-      asTelnetSocket(plainSocket)) as typeof net.createConnection;
+    net.createConnection = asStub<typeof net.createConnection>()(() =>
+      asTelnetSocket(plainSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -826,14 +883,16 @@ describe('connectMudTransport abort and callback ownership', () => {
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
     tlsSocket.on('error', () => undefined);
-    net.createConnection = ((_port: number, _host: string) => {
-      plainCalls++;
-      return asTelnetSocket(plainSocket);
-    }) as typeof net.createConnection;
-    tls.connect = (() => {
+    net.createConnection = asStub<typeof net.createConnection>()(
+      (_port: number, _host: string) => {
+        plainCalls++;
+        return asTelnetSocket(plainSocket);
+      },
+    );
+    tls.connect = asStub<typeof tls.connect>()(() => {
       tlsCalls++;
       return asTelnetSocket(tlsSocket);
-    }) as typeof tls.connect;
+    });
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -864,8 +923,9 @@ describe('connectMudTransport abort and callback ownership', () => {
     const callbackError = new Error('handoff failed');
     let callbackCalls = 0;
     const downgrades: string[] = [];
-    net.createConnection = (() =>
-      asTelnetSocket(plainSocket)) as typeof net.createConnection;
+    net.createConnection = asStub<typeof net.createConnection>()(() =>
+      asTelnetSocket(plainSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport({
@@ -896,7 +956,9 @@ describe('connectMudTransport abort and callback ownership', () => {
     const tlsSocket = new TestSocket();
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
-    tls.connect = (() => asTelnetSocket(tlsSocket)) as typeof tls.connect;
+    tls.connect = asStub<typeof tls.connect>()(() =>
+      asTelnetSocket(tlsSocket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport(
@@ -966,20 +1028,26 @@ describe('dial timeout', () => {
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
     let armed: number | undefined;
-    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
-      if (armed === undefined) armed = ms;
-      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
-    }) as typeof globalThis.setTimeout;
+    globalThis.setTimeout = asStub<typeof setTimeout>()(
+      (fn: () => void, ms?: number) => {
+        if (armed === undefined) armed = ms;
+        return asDouble<ReturnType<typeof setTimeout>>()({ unref() {} });
+      },
+    );
     let fire: (() => void) | undefined;
-    globalThis.setTimeout = ((fn: () => void, ms?: number) => {
-      if (armed === undefined) {
-        armed = ms;
-        fire = fn;
-      }
-      return { unref() {} } as unknown as ReturnType<typeof setTimeout>;
-    }) as typeof globalThis.setTimeout;
+    globalThis.setTimeout = asStub<typeof setTimeout>()(
+      (fn: () => void, ms?: number) => {
+        if (armed === undefined) {
+          armed = ms;
+          fire = fn;
+        }
+        return asDouble<ReturnType<typeof setTimeout>>()({ unref() {} });
+      },
+    );
 
-    net.createConnection = (() => asTelnetSocket(socket)) as never;
+    net.createConnection = asStub<typeof net.createConnection>()(() =>
+      asTelnetSocket(socket),
+    );
 
     const controller = new AbortController();
     const pending = connectMudTransport({
@@ -1000,11 +1068,13 @@ describe('dial timeout', () => {
     const connected: ConnectedMudTransport[] = [];
     const downgrades: string[] = [];
     let cleared = 0;
-    globalThis.clearTimeout = (() => {
+    globalThis.clearTimeout = asStub<typeof clearTimeout>()(() => {
       cleared++;
-    }) as typeof globalThis.clearTimeout;
+    });
 
-    net.createConnection = (() => asTelnetSocket(socket)) as never;
+    net.createConnection = asStub<typeof net.createConnection>()(() =>
+      asTelnetSocket(socket),
+    );
     const controller = new AbortController();
     const pending = connectMudTransport({
       ...connectionOptions('plain', controller.signal, connected, downgrades),

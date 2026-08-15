@@ -60,8 +60,7 @@ export async function startMockMUDTest(
   }
 
   if (mudPort !== undefined) {
-    (mockServer as unknown as { config: { port: number } }).config.port =
-      mudPort;
+    mockServer.setPort(mudPort);
   }
 
   // Start mock server

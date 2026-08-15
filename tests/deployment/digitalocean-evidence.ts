@@ -1,3 +1,7 @@
+import { z } from 'zod';
+
+import type { JsonValue } from '../../src/json-value';
+
 export interface DigitalOceanEvidence {
   dropletId: number;
   name: string;
@@ -11,37 +15,46 @@ export interface DigitalOceanEvidence {
   capturedAt: string;
 }
 
-const requireObject = (value: unknown): Record<string, unknown> => {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('DigitalOcean evidence is not an object');
-  }
-  return value as Record<string, unknown>;
-};
+/**
+ * The provider payload, declared once as a schema.
+ *
+ * Every constant the acceptance VM must have is a literal here, so a droplet
+ * that is the wrong size or image fails to parse rather than being compared
+ * field by field afterwards. Unknown keys are stripped, which is what keeps
+ * `networks` and friends out of the evidence file.
+ */
+const evidenceSchema = z.object({
+  dropletId: z.number().int().positive(),
+  name: z.string().regex(/^mwp-105-acceptance-(measure|verify)-[a-z0-9-]+$/),
+  regionSlug: z.string().regex(/^[a-z]+[0-9]+$/),
+  imageSlug: z.literal('ubuntu-26-04-x64'),
+  sizeSlug: z.literal('s-1vcpu-1gb'),
+  memoryMiB: z.literal(1024),
+  vcpus: z.literal(1),
+  diskGiB: z.literal(25),
+  status: z.literal('active'),
+  capturedAt: z
+    .string()
+    .regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/)
+    .refine((value) => !Number.isNaN(Date.parse(value))),
+});
 
 export const normalizeDigitalOceanEvidence = (
-  value: unknown,
+  value: JsonValue,
   onHostDropletId: string,
 ): DigitalOceanEvidence => {
-  const input = requireObject(value);
-  const capturedAt = input.capturedAt;
-  if (
-    !Number.isSafeInteger(input.dropletId) ||
-    (input.dropletId as number) <= 0 ||
-    typeof input.name !== 'string' ||
-    !/^mwp-105-acceptance-(measure|verify)-[a-z0-9-]+$/.test(input.name) ||
-    typeof input.regionSlug !== 'string' ||
-    !/^[a-z]+[0-9]+$/.test(input.regionSlug) ||
-    input.imageSlug !== 'ubuntu-26-04-x64' ||
-    input.sizeSlug !== 's-1vcpu-1gb' ||
-    input.memoryMiB !== 1024 ||
-    input.vcpus !== 1 ||
-    input.diskGiB !== 25 ||
-    input.status !== 'active' ||
-    typeof capturedAt !== 'string' ||
-    !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(capturedAt) ||
-    Number.isNaN(Date.parse(capturedAt))
-  ) {
-    throw new Error('DigitalOcean evidence does not match the acceptance VM');
+  const parsed = evidenceSchema.safeParse(value);
+  if (!parsed.success) {
+    // A root-level issue means the payload was not an object at all, which is
+    // a different operator mistake from a droplet that does not match.
+    const notAnObject = parsed.error.issues.some(
+      (issue) => issue.path.length === 0,
+    );
+    throw new Error(
+      notAnObject
+        ? 'DigitalOcean evidence is not an object'
+        : 'DigitalOcean evidence does not match the acceptance VM',
+    );
   }
 
   if (!/^[1-9][0-9]*$/.test(onHostDropletId)) {
@@ -50,25 +63,14 @@ export const normalizeDigitalOceanEvidence = (
   const metadataDropletId = Number(onHostDropletId);
   if (
     !Number.isSafeInteger(metadataDropletId) ||
-    metadataDropletId !== input.dropletId
+    metadataDropletId !== parsed.data.dropletId
   ) {
     throw new Error(
       'DigitalOcean control-plane evidence belongs to a different host',
     );
   }
 
-  return {
-    dropletId: input.dropletId as number,
-    name: input.name,
-    regionSlug: input.regionSlug,
-    imageSlug: 'ubuntu-26-04-x64',
-    sizeSlug: 's-1vcpu-1gb',
-    memoryMiB: 1024,
-    vcpus: 1,
-    diskGiB: 25,
-    status: 'active',
-    capturedAt,
-  };
+  return parsed.data;
 };
 
 const main = async (): Promise<void> => {

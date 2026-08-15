@@ -1,3 +1,4 @@
+import { asDouble } from '../support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { createHash } from 'crypto';
 import {
@@ -312,9 +313,9 @@ describe('Node acceptance client build boundary', () => {
       });
       expect(result.exitCode).toBe(0);
 
-      const metadata = JSON.parse(
-        readFileSync(metafile, 'utf8'),
-      ) as BuildMetafile;
+      const metadata = asDouble<BuildMetafile>()(
+        JSON.parse(readFileSync(metafile, 'utf8')),
+      );
       const clientInputs = Object.entries(metadata.inputs).filter(([name]) =>
         /systemd-(?:acceptance|load)-client\.ts$/.test(name),
       );
@@ -1527,7 +1528,9 @@ test('pins a measured Ubuntu security regression baseline', async () => {
   expect(baselineExists).toBe(true);
   if (!baselineExists) return;
 
-  const baseline = (await Bun.file(baselinePath).json()) as SecurityBaseline;
+  const baseline = asDouble<SecurityBaseline>()(
+    await Bun.file(baselinePath).json(),
+  );
   expect(baseline.image).toBe('ubuntu-26-04-x64');
   expect(baseline.osVersion).toBe('26.04');
   expect(baseline.architecture).toBe('x86_64');

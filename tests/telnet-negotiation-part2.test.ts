@@ -3,8 +3,43 @@
  * Tests MXP, MCCP, CHARSET, NEW-ENV, SGA, ECHO, and NAWS negotiations
  */
 
+import { asDouble } from './support/doubles';
 import { describe, it, expect, beforeEach, afterEach } from 'bun:test';
 import type { SocketExtended, TelnetSocket } from '../wsproxy.js';
+
+/** The telnet double, plus the two accessors the assertions in this file use. */
+interface MockTelnetSocket extends TelnetSocket {
+  getWrittenData: () => Buffer;
+  clearWrittenData: () => void;
+}
+
+/** A client socket whose telnet side is the double above, not a bare socket. */
+interface MockSocket extends SocketExtended {
+  ts: MockTelnetSocket;
+}
+
+/** What a negotiation helper reports back to its test. */
+interface NegotiationResult {
+  handled: boolean;
+  response?: Buffer;
+}
+
+interface CompressionResult {
+  handled: boolean;
+  compressionStarted?: boolean;
+}
+
+interface CharsetResult {
+  handled: boolean;
+  response?: Buffer;
+  negotiated?: boolean;
+}
+
+interface BasicNegotiationResult {
+  handled: boolean;
+  type?: string;
+  response?: Buffer;
+}
 
 // Telnet protocol constants matching wsproxy.ts
 const TELNET = {
@@ -37,10 +72,10 @@ const TELNET = {
 } as const;
 
 // Create mock Telnet socket
-function createMockTelnetSocket(): TelnetSocket {
+function createMockTelnetSocket(): MockTelnetSocket {
   const writtenData: Buffer[] = [];
 
-  const socket = {
+  const socket = asDouble<MockTelnetSocket>()({
     write: (data: string | Buffer) => {
       if (Buffer.isBuffer(data)) {
         writtenData.push(Buffer.from(data));
@@ -66,10 +101,7 @@ function createMockTelnetSocket(): TelnetSocket {
     destroy: () => {},
     end: () => {},
     setEncoding: () => {},
-  } as TelnetSocket & {
-    getWrittenData: () => Buffer;
-    clearWrittenData: () => void;
-  };
+  });
 
   return socket;
 }
@@ -77,10 +109,10 @@ function createMockTelnetSocket(): TelnetSocket {
 // Create mock extended socket
 function createMockSocket(
   overrides: Partial<SocketExtended> = {},
-): SocketExtended {
+): MockSocket {
   const telnetSocket = createMockTelnetSocket();
 
-  return {
+  return asDouble<MockSocket>()({
     req: {
       connection: {
         remoteAddress: '127.0.0.1',
@@ -112,7 +144,7 @@ function createMockSocket(
     terminate: () => {},
     remoteAddress: '127.0.0.1',
     ...overrides,
-  } as SocketExtended;
+  });
 }
 
 // Helper to create Telnet commands
@@ -144,7 +176,7 @@ export { findSequenceInBuffer };
 function handleMXPNegotiation(
   s: SocketExtended,
   data: Buffer,
-): { handled: boolean; response?: Buffer } {
+): NegotiationResult {
   const p = TELNET;
 
   if (!s.mxp_negotiated) {
@@ -173,7 +205,7 @@ function handleMXPNegotiation(
 function handleMCCPNegotiation(
   s: SocketExtended,
   data: Buffer,
-): { handled: boolean; compressionStarted?: boolean } {
+): CompressionResult {
   const p = TELNET;
 
   if (s.mccp && !s.mccp_negotiated && !s.compressed) {
@@ -203,7 +235,7 @@ function handleMCCPNegotiation(
 function handleCharsetNegotiation(
   s: SocketExtended,
   data: Buffer,
-): { handled: boolean; response?: Buffer; negotiated?: boolean } {
+): CharsetResult {
   const p = TELNET;
 
   if (!s.utf8_negotiated) {
@@ -249,7 +281,7 @@ function handleCharsetNegotiation(
 function handleNewEnvNegotiation(
   s: SocketExtended,
   data: Buffer,
-): { handled: boolean; response?: Buffer } {
+): NegotiationResult {
   const p = TELNET;
 
   if (!s.new_negotiated) {
@@ -289,7 +321,7 @@ function handleNewEnvNegotiation(
 function handleBasicNegotiations(
   s: SocketExtended,
   data: Buffer,
-): { handled: boolean; type?: string; response?: Buffer } {
+): BasicNegotiationResult {
   const p = TELNET;
 
   if (!s.sga_negotiated) {
@@ -349,9 +381,7 @@ describe('MXP (MUD eXtension Protocol) Negotiation', () => {
   });
 
   afterEach(() => {
-    (
-      mockSocket.ts as unknown as { clearWrittenData: () => void }
-    )?.clearWrittenData?.();
+    mockSocket.ts?.clearWrittenData?.();
   });
 
   describe('IAC DO MXP', () => {
@@ -365,9 +395,7 @@ describe('MXP (MUD eXtension Protocol) Negotiation', () => {
         Buffer.from([TELNET.IAC, TELNET.WILL, TELNET.MXP]),
       );
 
-      const writtenData = (
-        mockSocket.ts as unknown as { getWrittenData: () => Buffer }
-      ).getWrittenData();
+      const writtenData = mockSocket.ts.getWrittenData();
       expect(writtenData).toEqual(
         Buffer.from([TELNET.IAC, TELNET.WILL, TELNET.MXP]),
       );
@@ -386,17 +414,13 @@ describe('MXP (MUD eXtension Protocol) Negotiation', () => {
 
       // First negotiation
       handleMXPNegotiation(mockSocket, data);
-      (
-        mockSocket.ts as unknown as { clearWrittenData: () => void }
-      ).clearWrittenData();
+      mockSocket.ts.clearWrittenData();
 
       // Second negotiation should not respond
       const result = handleMXPNegotiation(mockSocket, data);
       expect(result.handled).toBe(false);
 
-      const writtenData = (
-        mockSocket.ts as unknown as { getWrittenData: () => Buffer }
-      ).getWrittenData();
+      const writtenData = mockSocket.ts.getWrittenData();
       expect(writtenData.length).toBe(0);
     });
   });
@@ -412,9 +436,7 @@ describe('MXP (MUD eXtension Protocol) Negotiation', () => {
         Buffer.from([TELNET.IAC, TELNET.DO, TELNET.MXP]),
       );
 
-      const writtenData = (
-        mockSocket.ts as unknown as { getWrittenData: () => Buffer }
-      ).getWrittenData();
+      const writtenData = mockSocket.ts.getWrittenData();
       expect(writtenData).toEqual(
         Buffer.from([TELNET.IAC, TELNET.DO, TELNET.MXP]),
       );
@@ -494,9 +516,7 @@ describe('MCCP (MUD Client Compression Protocol) Negotiation', () => {
   });
 
   afterEach(() => {
-    (
-      mockSocket.ts as unknown as { clearWrittenData: () => void }
-    )?.clearWrittenData?.();
+    mockSocket.ts?.clearWrittenData?.();
   });
 
   describe('IAC WILL MCCP2', () => {
@@ -599,9 +619,7 @@ describe('CHARSET/UTF-8 Negotiation', () => {
   });
 
   afterEach(() => {
-    (
-      mockSocket.ts as unknown as { clearWrittenData: () => void }
-    )?.clearWrittenData?.();
+    mockSocket.ts?.clearWrittenData?.();
   });
 
   describe('IAC DO CHARSET', () => {
@@ -630,9 +648,7 @@ describe('CHARSET/UTF-8 Negotiation', () => {
 
       // First request
       handleCharsetNegotiation(mockSocket, data);
-      (
-        mockSocket.ts as unknown as { clearWrittenData: () => void }
-      ).clearWrittenData();
+      mockSocket.ts.clearWrittenData();
 
       // Second request - should still respond
       const result = handleCharsetNegotiation(mockSocket, data);
@@ -724,9 +740,7 @@ describe('NEW-ENV (New Environment) Negotiation', () => {
   });
 
   afterEach(() => {
-    (
-      mockSocket.ts as unknown as { clearWrittenData: () => void }
-    )?.clearWrittenData?.();
+    mockSocket.ts?.clearWrittenData?.();
   });
 
   describe('IAC DO NEW', () => {
@@ -740,9 +754,7 @@ describe('NEW-ENV (New Environment) Negotiation', () => {
         Buffer.from([TELNET.IAC, TELNET.WILL, TELNET.NEW]),
       );
 
-      const writtenData = (
-        mockSocket.ts as unknown as { getWrittenData: () => Buffer }
-      ).getWrittenData();
+      const writtenData = mockSocket.ts.getWrittenData();
       expect(writtenData).toEqual(
         Buffer.from([TELNET.IAC, TELNET.WILL, TELNET.NEW]),
       );
@@ -761,17 +773,13 @@ describe('NEW-ENV (New Environment) Negotiation', () => {
 
       // First negotiation
       handleNewEnvNegotiation(mockSocket, data);
-      (
-        mockSocket.ts as unknown as { clearWrittenData: () => void }
-      ).clearWrittenData();
+      mockSocket.ts.clearWrittenData();
 
       // Second negotiation should not respond
       const result = handleNewEnvNegotiation(mockSocket, data);
       expect(result.handled).toBe(false);
 
-      const writtenData = (
-        mockSocket.ts as unknown as { getWrittenData: () => Buffer }
-      ).getWrittenData();
+      const writtenData = mockSocket.ts.getWrittenData();
       expect(writtenData.length).toBe(0);
     });
   });
@@ -908,9 +916,7 @@ describe('SGA, ECHO, NAWS Handling', () => {
   });
 
   afterEach(() => {
-    (
-      mockSocket.ts as unknown as { clearWrittenData: () => void }
-    )?.clearWrittenData?.();
+    mockSocket.ts?.clearWrittenData?.();
   });
 
   describe('IAC WILL SGA', () => {
@@ -1037,9 +1043,7 @@ describe('SGA, ECHO, NAWS Handling', () => {
       // SGA
       const sgaData = createTelnetCommand(TELNET.IAC, TELNET.WILL, TELNET.SGA);
       handleBasicNegotiations(mockSocket, sgaData);
-      (
-        mockSocket.ts as unknown as { clearWrittenData: () => void }
-      ).clearWrittenData();
+      mockSocket.ts.clearWrittenData();
 
       // ECHO
       const echoData = createTelnetCommand(
@@ -1048,9 +1052,7 @@ describe('SGA, ECHO, NAWS Handling', () => {
         TELNET.ECHO,
       );
       handleBasicNegotiations(mockSocket, echoData);
-      (
-        mockSocket.ts as unknown as { clearWrittenData: () => void }
-      ).clearWrittenData();
+      mockSocket.ts.clearWrittenData();
 
       // NAWS
       const nawsData = createTelnetCommand(
@@ -1102,9 +1104,7 @@ describe('SGA, ECHO, NAWS Handling', () => {
         expect(result1.handled).toBe(true);
 
         // Second should not respond
-        (
-          mockSocket.ts as unknown as { clearWrittenData: () => void }
-        ).clearWrittenData();
+        mockSocket.ts.clearWrittenData();
         const result2 = handleBasicNegotiations(mockSocket, data1);
         expect(result2.handled).toBe(false);
       }

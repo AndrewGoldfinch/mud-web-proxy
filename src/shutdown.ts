@@ -14,6 +14,8 @@
  * the guarantees about how they are run.
  */
 
+import { errorText } from './error-text';
+
 export interface ShutdownStep {
   /** Named so a drain that hangs says which step it is stuck on. */
   name: string;
@@ -81,9 +83,7 @@ export class ShutdownCoordinator {
           // Best effort. Abandoning the sequence because one socket refused to
           // close would leave listeners bound and state unflushed — the failure
           // this ordering exists to avoid.
-          log?.(
-            `shutdown: ${step.name} failed: ${(err as Error).message ?? String(err)}`,
-          );
+          log?.(`shutdown: ${step.name} failed: ${errorText(err)}`);
         }
       }
       if (deadlineTimer) clearTimeout(deadlineTimer);

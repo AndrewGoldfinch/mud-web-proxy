@@ -1,3 +1,5 @@
+import type { LogMessage } from '../src/log-redaction';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { IncomingMessage } from 'http';
 import EventEmitter from 'events';
@@ -119,7 +121,7 @@ const createTestServer = () => {
       ]),
     },
 
-    log: (_msg: unknown, _s?: MockSocketExtended) => {},
+    log: (_msg: LogMessage, _s?: MockSocketExtended) => {},
 
     originAllowed: function (): number {
       return originAllowedReturnValue;
@@ -242,7 +244,10 @@ const createTestServer = () => {
       s.send(data.toString('base64'));
     },
 
-    chat: function (_s: MockSocketExtended, _req: unknown): void {},
+    chat: function (
+      _s: MockSocketExtended,
+      _req: SecurityChatRequest,
+    ): void {},
 
     chatUpdate: function (): void {},
 
@@ -258,7 +263,10 @@ const createTestServer = () => {
 
     sendMXP: function (_s: MockSocketExtended, _msg: string): void {},
 
-    sendMSDP: function (_s: MockSocketExtended, _msdp: unknown): void {},
+    sendMSDP: function (
+      _s: MockSocketExtended,
+      _msdp: SecurityMsdpRequest,
+    ): void {},
 
     sendMSDPPair: function (
       _s: MockSocketExtended,
@@ -280,13 +288,15 @@ const createTestServer = () => {
 function createMockWebSocket(
   remoteAddress: string = '127.0.0.1',
 ): MockSocketExtended {
-  const socket = new EventEmitter() as MockSocketExtended;
+  const socket = asDouble<MockSocketExtended>()(new EventEmitter());
 
-  socket.req = {
+  socket.req = asDouble<
+    IncomingMessage & { connection: { remoteAddress: string } }
+  >()({
     connection: {
       remoteAddress,
     },
-  } as IncomingMessage & { connection: { remoteAddress: string } };
+  });
 
   socket.ttype = [];
   socket.compressed = 0;
@@ -301,7 +311,7 @@ function createMockWebSocket(
 
 // Mock Telnet Socket factory
 function createMockTelnetSocket(): MockTelnetSocket {
-  const socket = new EventEmitter() as MockTelnetSocket;
+  const socket = asDouble<MockTelnetSocket>()(new EventEmitter());
 
   socket.writable = true;
   socket.send = mock(() => {});
@@ -312,6 +322,20 @@ function createMockTelnetSocket(): MockTelnetSocket {
   socket.setNoDelay = mock(() => {});
 
   return socket;
+}
+
+/** The chat frame the srv double's `chat` receives. */
+interface SecurityChatRequest {
+  chat?: number;
+  channel?: string;
+  msg?: string;
+  name?: string;
+}
+
+/** The MSDP frame the srv double's `sendMSDP` receives. */
+interface SecurityMsdpRequest {
+  key?: string;
+  val?: string | string[];
 }
 
 describe('Security Features', () => {
@@ -613,7 +637,7 @@ describe('Security Features', () => {
 
 describe('Security Configuration Constants', () => {
   test('ONLY_ALLOW_DEFAULT_SERVER should be boolean', () => {
-    expect(typeof ONLY_ALLOW_DEFAULT_SERVER).toBe('boolean');
+    expect(ONLY_ALLOW_DEFAULT_SERVER).toEqual(expect.any(Boolean));
   });
 
   test('REPOSITORY_URL should be defined', () => {
@@ -627,18 +651,18 @@ describe('Mock factories', () => {
     const socket = createMockWebSocket('192.168.1.100');
 
     expect(socket.remoteAddress).toBe('192.168.1.100');
-    expect(typeof socket.terminate).toBe('function');
-    expect(typeof socket.send).toBe('function');
-    expect(typeof socket.on).toBe('function');
-    expect(typeof socket.emit).toBe('function');
+    expect(socket.terminate).toEqual(expect.any(Function));
+    expect(socket.send).toEqual(expect.any(Function));
+    expect(socket.on).toEqual(expect.any(Function));
+    expect(socket.emit).toEqual(expect.any(Function));
   });
 
   test('createMockTelnetSocket creates proper mock', () => {
     const socket = createMockTelnetSocket();
 
     expect(socket.writable).toBe(true);
-    expect(typeof socket.send).toBe('function');
-    expect(typeof socket.write).toBe('function');
-    expect(typeof socket.destroy).toBe('function');
+    expect(socket.send).toEqual(expect.any(Function));
+    expect(socket.write).toEqual(expect.any(Function));
+    expect(socket.destroy).toEqual(expect.any(Function));
   });
 });

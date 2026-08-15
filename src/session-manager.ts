@@ -46,6 +46,21 @@ export interface SessionManagerConfig {
   resumeGraceMs?: number;
 }
 
+/** Whether a capacity check let the caller through, and why not if it did not. */
+export interface CapacityDecision {
+  allowed: boolean;
+  reason?: string;
+}
+
+/** A point-in-time census of the session store. */
+export interface SessionStats {
+  totalSessions: number;
+  connectedSessions: number;
+  disconnectedSessions: number;
+  uniqueDevices: number;
+  uniqueIPs: number;
+}
+
 export class SessionManager {
   private sessions: Map<string, Session> = new Map();
   private socketToSession: Map<SocketExtended, Session> = new Map();
@@ -242,13 +257,7 @@ export class SessionManager {
   /**
    * Check if connection limits are exceeded
    */
-  enforceConnectionLimits(
-    deviceToken: string,
-    ip: string,
-  ): {
-    allowed: boolean;
-    reason?: string;
-  } {
+  enforceConnectionLimits(deviceToken: string, ip: string): CapacityDecision {
     // Check device limit
     const deviceSessions = this.deviceSessions.get(deviceToken);
     if (deviceSessions && deviceSessions.size >= this.config.maxPerDevice) {
@@ -293,7 +302,7 @@ export class SessionManager {
    * Keyed on the resolved client address, so it applies to clients that send
    * no device token.
    */
-  reservePendingDial(ip: string): { allowed: boolean; reason?: string } {
+  reservePendingDial(ip: string): CapacityDecision {
     const established = this.ipConnections.get(ip) || 0;
     const pending = this.pendingDialCounts.get(ip) || 0;
 
@@ -468,13 +477,7 @@ export class SessionManager {
   /**
    * Get session statistics
    */
-  getStats(): {
-    totalSessions: number;
-    connectedSessions: number;
-    disconnectedSessions: number;
-    uniqueDevices: number;
-    uniqueIPs: number;
-  } {
+  getStats(): SessionStats {
     let connected = 0;
     for (const session of this.sessions.values()) {
       if (session.clientConnected) {

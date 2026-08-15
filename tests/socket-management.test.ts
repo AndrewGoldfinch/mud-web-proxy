@@ -1,3 +1,5 @@
+import type { LogMessage } from '../src/log-redaction';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import type { IncomingMessage } from 'http';
 import EventEmitter from 'events';
@@ -117,7 +119,7 @@ const createTestServer = () => {
       ]),
     },
 
-    log: mock((_msg: unknown, _s?: MockSocketExtended) => {
+    log: mock((_msg: LogMessage, _s?: MockSocketExtended) => {
       // console.log(msg);
     }),
 
@@ -261,7 +263,7 @@ const createTestServer = () => {
       s.send(data.toString('base64'));
     },
 
-    chat: function (_s: MockSocketExtended, _req: unknown): void {},
+    chat: function (_s: MockSocketExtended, _req: ChatRequestDouble): void {},
 
     chatUpdate: function (): void {},
 
@@ -281,7 +283,10 @@ const createTestServer = () => {
 
     sendMXP: function (_s: MockSocketExtended, _msg: string): void {},
 
-    sendMSDP: function (_s: MockSocketExtended, _msdp: unknown): void {},
+    sendMSDP: function (
+      _s: MockSocketExtended,
+      _msdp: MsdpRequestDouble,
+    ): void {},
 
     sendMSDPPair: function (
       _s: MockSocketExtended,
@@ -303,13 +308,15 @@ const createTestServer = () => {
 function createMockWebSocket(
   remoteAddress: string = '127.0.0.1',
 ): MockSocketExtended {
-  const socket = new EventEmitter() as MockSocketExtended;
+  const socket = asDouble<MockSocketExtended>()(new EventEmitter());
 
-  socket.req = {
+  socket.req = asDouble<
+    IncomingMessage & { connection: { remoteAddress: string } }
+  >()({
     connection: {
       remoteAddress,
     },
-  } as IncomingMessage & { connection: { remoteAddress: string } };
+  });
 
   socket.ttype = [];
   socket.compressed = 0;
@@ -324,7 +331,7 @@ function createMockWebSocket(
 
 // Mock Telnet Socket factory
 function createMockTelnetSocket(): MockTelnetSocket {
-  const socket = new EventEmitter() as MockTelnetSocket;
+  const socket = asDouble<MockTelnetSocket>()(new EventEmitter());
 
   socket.writable = true;
   socket.send = mock(() => {});
@@ -335,6 +342,20 @@ function createMockTelnetSocket(): MockTelnetSocket {
   socket.setNoDelay = mock(() => {});
 
   return socket;
+}
+
+/** The chat frame the srv double's `chat` receives. */
+interface ChatRequestDouble {
+  chat?: number;
+  channel?: string;
+  msg?: string;
+  name?: string;
+}
+
+/** The MSDP frame the srv double's `sendMSDP` receives. */
+interface MsdpRequestDouble {
+  key?: string;
+  val?: string | string[];
 }
 
 describe('Socket Lifecycle Management', () => {
@@ -450,7 +471,7 @@ describe('Socket Lifecycle Management', () => {
       const mockSocket = createMockWebSocket();
       let logCalled = false;
       const originalLog = srv.log;
-      srv.log = (_msg: unknown, _s?: MockSocketExtended) => {
+      srv.log = (_msg: LogMessage, _s?: MockSocketExtended) => {
         logCalled = true;
       };
 
@@ -704,20 +725,20 @@ describe('Mock factories', () => {
     expect(socket.remoteAddress).toBe('192.168.1.100');
     expect(socket.ttype).toEqual([]);
     expect(socket.compressed).toBe(0);
-    expect(typeof socket.send).toBe('function');
-    expect(typeof socket.terminate).toBe('function');
-    expect(typeof socket.on).toBe('function');
-    expect(typeof socket.emit).toBe('function');
+    expect(socket.send).toEqual(expect.any(Function));
+    expect(socket.terminate).toEqual(expect.any(Function));
+    expect(socket.on).toEqual(expect.any(Function));
+    expect(socket.emit).toEqual(expect.any(Function));
   });
 
   test('createMockTelnetSocket creates proper mock', () => {
     const socket = createMockTelnetSocket();
 
     expect(socket.writable).toBe(true);
-    expect(typeof socket.send).toBe('function');
-    expect(typeof socket.write).toBe('function');
-    expect(typeof socket.destroy).toBe('function');
-    expect(typeof socket.on).toBe('function');
-    expect(typeof socket.emit).toBe('function');
+    expect(socket.send).toEqual(expect.any(Function));
+    expect(socket.write).toEqual(expect.any(Function));
+    expect(socket.destroy).toEqual(expect.any(Function));
+    expect(socket.on).toEqual(expect.any(Function));
+    expect(socket.emit).toEqual(expect.any(Function));
   });
 });

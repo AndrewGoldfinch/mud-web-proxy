@@ -29,9 +29,9 @@ const SPDX = '// SPDX-License-Identifier: GPL-3.0-or-later';
  * Keyed by gate id. `gate-has-negative-test` is absent by design: its own
  * negative case is a registry with a gap, which cannot be expressed as an
  * entry in a complete registry. It is covered directly in the test file by
- * calling `missingFixtureFindings({})`.
+ * calling `missingFixtureFindings(new Set())`.
  */
-export const NEGATIVE_FIXTURES: Record<string, GateFixture> = {
+export const NEGATIVE_FIXTURES = {
   'unsafe-temp-file': {
     file: {
       path: 'tests/x.test.ts',
@@ -109,4 +109,4 @@ export const NEGATIVE_FIXTURES: Record<string, GateFixture> = {
       ['docs/deployment/cutover.md', `    grep -c 'Unknown key' || true\n`],
     ]),
   },
-};
+} satisfies Record<string, GateFixture>;

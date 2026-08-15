@@ -16,6 +16,16 @@
  * whether or not wsproxy consulted it.
  */
 
+import { z } from 'zod';
+
+/** The challenge endpoint's success body. */
+const challengeBodySchema = z.looseObject({
+  nonce: z.string(),
+  expires: z.number().optional(),
+});
+
+/** The shape every rejection from these routes takes. */
+const errorBodySchema = z.looseObject({ error: z.string() });
 import { describe, test, expect, afterEach } from 'bun:test';
 import { spawn, type ChildProcess } from 'child_process';
 import path from 'path';
@@ -175,11 +185,8 @@ describe('App Attest enabled', () => {
     );
     expect(response.status).toBe(200);
 
-    const body = (await response.json()) as {
-      nonce: string;
-      expires: number;
-    };
-    expect(typeof body.nonce).toBe('string');
+    const body = challengeBodySchema.parse(await response.json());
+    expect(body.nonce).toEqual(expect.any(String));
     expect(body.nonce).toMatch(/^[0-9a-f]{64}$/);
     expect(body.expires).toBeGreaterThan(Date.now());
 
@@ -190,8 +197,8 @@ describe('App Attest enabled', () => {
     const proxy = await startProxy(6235, configured);
     const base = `http://127.0.0.1:${proxy.port}/attest/challenge`;
 
-    const first = (await (await fetch(base)).json()) as { nonce: string };
-    const second = (await (await fetch(base)).json()) as { nonce: string };
+    const first = challengeBodySchema.parse(await (await fetch(base)).json());
+    const second = challengeBodySchema.parse(await (await fetch(base)).json());
 
     expect(first.nonce).not.toBe(second.nonce);
 
@@ -215,7 +222,7 @@ describe('App Attest enabled', () => {
         },
       );
       expect(response.status).toBe(400);
-      expect((await response.json()) as { error: string }).toMatchObject({
+      expect(errorBodySchema.parse(await response.json())).toMatchObject({
         error: expect.stringContaining('Missing'),
       });
 

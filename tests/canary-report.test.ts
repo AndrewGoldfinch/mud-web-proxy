@@ -57,7 +57,13 @@ function series(opts: {
   return rows.join('\n') + '\n';
 }
 
-function run(csv: string): { code: number; out: string } {
+/** One invocation of the canary script under test. */
+interface ScriptRun {
+  code: number;
+  out: string;
+}
+
+function run(csv: string): ScriptRun {
   const path = join(dir, `s-${Math.random().toString(36).slice(2)}.csv`);
   writeFileSync(path, csv);
   const p = Bun.spawnSync(['bun', SCRIPT, path]);

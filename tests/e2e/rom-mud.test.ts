@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'rom';
@@ -139,8 +139,8 @@ describeRealMud('ROM MUD (basic telnet)', () => {
     const sessionMsg = messages.find((m) => m.type === 'session');
 
     if (sessionMsg) {
-      const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-      const token = (sessionMsg.data as { token: string }).token;
+      const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+      const token = (framePayload(sessionMsg) ?? {}).token;
 
       // Create new connection
       connection = new E2EConnection(config!);
@@ -166,8 +166,8 @@ describeRealMud('ROM MUD (basic telnet)', () => {
       return;
     }
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection.close();

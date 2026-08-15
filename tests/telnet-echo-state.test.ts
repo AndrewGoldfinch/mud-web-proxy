@@ -18,6 +18,8 @@
  * auto-detection handshake timing.
  */
 
+import { z } from 'zod';
+import { asDouble } from './support/doubles';
 import { describe, test, expect } from 'bun:test';
 import { EventEmitter } from 'events';
 import { TelnetParser } from '../src/telnet-parser';
@@ -40,12 +42,43 @@ function wontEcho(): Buffer {
 
 /** Minimal stand-in for `Session` — TelnetParser only calls `sendToMud`/`sendNAWS`. */
 function makeFakeSession(id = 'test-session'): Session {
-  return {
+  return asDouble<Session>()({
     id,
     sendToMud: () => true,
     sendNAWS: () => {},
-  } as unknown as Session;
+  });
 }
+
+/** One frame this suite decodes, by the fields it asserts on. */
+const echoFrameSchema = z.looseObject({
+  type: z.string().optional(),
+  payload: z.string().optional(),
+  replayed: z.boolean().optional(),
+  suppressed: z.boolean().optional(),
+});
+
+/** The comparable form the assertions below are written against. */
+type DecodedFrame =
+  | { type: 'data'; text: string; replayed?: boolean }
+  | { type: 'echo'; suppressed?: boolean; replayed?: boolean };
+
+/**
+ * The two private methods this suite drives directly.
+ *
+ * Named rather than `(si as any)`: the suite bypasses the JSON `connect`
+ * handshake on purpose, and this records exactly which internals that costs.
+ */
+interface SessionIntegrationInternals {
+  processMudData: (
+    session: Session,
+    socket: SocketExtended,
+    data: Buffer,
+  ) => void;
+  handleResume: (socket: SocketExtended, msg: ResumeRequest) => void;
+}
+
+const siInternals = (si: SessionIntegration): SessionIntegrationInternals =>
+  asDouble<SessionIntegrationInternals>()(si);
 
 describe('TelnetParser — echo-state segment ordering', () => {
   test('WILL ECHO alone produces a single echo segment, no text', () => {
@@ -189,7 +222,7 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
 
   function makeClientSocket(): MockSocket {
     const messages: string[] = [];
-    const s = new EventEmitter() as MockSocket;
+    const s = asDouble<MockSocket>()(new EventEmitter());
     s.readyState = 1;
     s.remoteAddress = '127.0.0.1';
     s.messages = messages;
@@ -202,24 +235,24 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
     s.terminate = () => {};
     s.ttype = [];
     s.compressed = 0;
-    s.req = {
+    s.req = asDouble<MockSocket['req']>()({
       headers: {},
       connection: { remoteAddress: '127.0.0.1' },
       url: '/',
       method: 'GET',
-    } as MockSocket['req'];
+    });
     return s;
   }
 
-  function decodedMessages(socket: MockSocket): Record<string, unknown>[] {
+  function decodedMessages(socket: MockSocket): DecodedFrame[] {
     return socket.messages
-      .map((m) => JSON.parse(m) as Record<string, unknown>)
+      .map((m) => echoFrameSchema.parse(JSON.parse(m)))
       .filter((m) => m.type === 'data' || m.type === 'echo')
       .map((m) =>
         m.type === 'data'
           ? {
               type: 'data',
-              text: Buffer.from(m.payload as string, 'base64').toString(),
+              text: Buffer.from(m.payload ?? '', 'base64').toString(),
               replayed: m.replayed,
             }
           : { type: 'echo', suppressed: m.suppressed, replayed: m.replayed },
@@ -293,8 +326,7 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
       wontEcho(),
       Buffer.from('Welcome!\n'),
     ]);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (si as any).processMudData(session, socket, chunk);
+    siInternals(si).processMudData(session, socket, chunk);
 
     expect(decodedMessages(socket)).toEqual([
       { type: 'data', text: 'Password: ', replayed: undefined },
@@ -318,8 +350,7 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
       wontEcho(),
       Buffer.from('Welcome!\n'),
     ]);
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (si as any).processMudData(session, firstSocket, chunk);
+    siInternals(si).processMudData(session, firstSocket, chunk);
 
     const resumeSocket = makeClientSocket();
     const resumeMsg: ResumeRequest = {
@@ -328,8 +359,7 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
       token: session.authToken,
       lastSeq: 0,
     };
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (si as any).handleResume(resumeSocket, resumeMsg);
+    siInternals(si).handleResume(resumeSocket, resumeMsg);
 
     const replayed = decodedMessages(resumeSocket);
     expect(replayed).toEqual([

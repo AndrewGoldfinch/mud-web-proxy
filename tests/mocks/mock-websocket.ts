@@ -2,6 +2,9 @@
  * Mock WebSocket server and client for testing
  */
 
+/** Whatever the awaited event carried, as the emitter passed it. */
+export type EmittedEventArgs = readonly unknown[];
+import { asDouble } from '../support/doubles';
 import { EventEmitter } from 'events';
 import type { IncomingMessage } from 'http';
 
@@ -27,7 +30,10 @@ export class MockWebSocketClient extends EventEmitter {
 
   send(data: string | Buffer | ArrayBuffer): void {
     const message: MockWebSocketMessage = {
-      type: typeof data === 'string' ? 'utf8' : 'binary',
+      type:
+        Buffer.isBuffer(data) || data instanceof ArrayBuffer
+          ? 'binary'
+          : 'utf8',
       data: data instanceof ArrayBuffer ? Buffer.from(data) : data,
     };
     this._messages.push(message);
@@ -146,10 +152,10 @@ export class MockWebSocketServer extends EventEmitter {
 
 // Create mock request
 function createMockRequest(): IncomingMessage {
-  const req = new EventEmitter() as IncomingMessage;
-  req.connection = {
+  const req = asDouble<IncomingMessage>()(new EventEmitter());
+  req.connection = asDouble<IncomingMessage['connection']>()({
     remoteAddress: '127.0.0.1',
-  } as IncomingMessage['connection'];
+  });
   req.headers = {};
   req.url = '/';
   req.method = 'GET';
@@ -172,7 +178,7 @@ export function waitForEvent(
   emitter: EventEmitter,
   event: string,
   timeout = 5000,
-): Promise<unknown> {
+): Promise<EmittedEventArgs> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       reject(new Error(`Timeout waiting for event: ${event}`));

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'ire';
@@ -86,7 +86,7 @@ describeRealMud('IRE MUD (heavy GMCP)', () => {
 
     // Check for Char package (IRE sends Char.Vitals)
     if (gmcpMsg) {
-      const data = gmcpMsg.data as { package?: string; data?: unknown };
+      const data = framePayload(gmcpMsg) ?? {};
       const hasCharPackage =
         data.package?.startsWith('Char.') ||
         JSON.stringify(data).includes('Char.');
@@ -118,7 +118,7 @@ describeRealMud('IRE MUD (heavy GMCP)', () => {
 
     const messages = connection.getMessages();
     const errorMessages = messages.filter(
-      (m) => m.type === 'error' || (m.data as { error?: string }).error,
+      (m) => m.type === 'error' || (framePayload(m) ?? {}).error,
     );
 
     // No protocol errors
@@ -170,8 +170,8 @@ describeRealMud('IRE MUD (heavy GMCP)', () => {
       return;
     }
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection.close();

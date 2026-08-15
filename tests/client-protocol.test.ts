@@ -10,33 +10,33 @@ import {
 describe('recognize', () => {
   test('object with type field is typed', () => {
     expect(recognize({ type: 'input', text: 'hi' })).toEqual({
-      shape: 'typed',
+      kind: 'typed',
       type: 'input',
     });
   });
 
   test('object with connect field and no type is legacy', () => {
     expect(recognize({ connect: 1, host: 'a.example', port: 23 })).toEqual({
-      shape: 'legacy',
+      kind: 'legacy',
     });
   });
 
   test('type wins when both type and connect are present', () => {
     expect(recognize({ type: 'input', connect: 1 })).toEqual({
-      shape: 'typed',
+      kind: 'typed',
       type: 'input',
     });
   });
 
   test('object with neither type nor connect is unrecognized', () => {
-    expect(recognize({ foo: 'bar' })).toEqual({ shape: 'unrecognized' });
+    expect(recognize({ foo: 'bar' })).toEqual({ kind: 'unrecognized' });
   });
 
   test('arrays, null, and primitives are unrecognized', () => {
-    expect(recognize([1, 2])).toEqual({ shape: 'unrecognized' });
-    expect(recognize(null)).toEqual({ shape: 'unrecognized' });
-    expect(recognize('hello')).toEqual({ shape: 'unrecognized' });
-    expect(recognize(42)).toEqual({ shape: 'unrecognized' });
+    expect(recognize([1, 2])).toEqual({ kind: 'unrecognized' });
+    expect(recognize(null)).toEqual({ kind: 'unrecognized' });
+    expect(recognize('hello')).toEqual({ kind: 'unrecognized' });
+    expect(recognize(42)).toEqual({ kind: 'unrecognized' });
   });
 });
 

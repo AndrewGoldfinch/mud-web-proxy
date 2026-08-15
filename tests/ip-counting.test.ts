@@ -8,6 +8,8 @@
  *   6. MUD termination decrements IP count via removeSession
  */
 
+import { parseFrame, type ProxyFrame } from './support/frames';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach, afterEach } from 'bun:test';
 import { EventEmitter } from 'events';
 import net from 'net';
@@ -27,7 +29,7 @@ function makeSocket(
   opts: { remoteAddress?: string; xff?: string } = {},
 ): MockSocket {
   const messages: string[] = [];
-  const s = new EventEmitter() as MockSocket;
+  const s = asDouble<MockSocket>()(new EventEmitter());
   s.readyState = 1; // WebSocket.OPEN
   s.remoteAddress = opts.remoteAddress ?? '127.0.0.1';
   s.messages = messages;
@@ -42,12 +44,12 @@ function makeSocket(
   s.terminate = () => {};
   s.ttype = [];
   s.compressed = 0;
-  s.req = {
+  s.req = asDouble<MockSocket['req']>()({
     headers: opts.xff ? { 'x-forwarded-for': opts.xff } : {},
     connection: { remoteAddress: opts.remoteAddress ?? '127.0.0.1' },
     url: '/',
     method: 'GET',
-  } as MockSocket['req'];
+  });
   return s;
 }
 
@@ -63,19 +65,16 @@ function isBlocked(mgr: SessionManager, ip: string): boolean {
  * an unstubbed connection can fail and append `connection_failed` before the
  * assertion runs, which is what made these tests flaky in CI but not locally.
  */
-function findMsg(
-  socket: MockSocket,
-  type: string,
-): Record<string, unknown> | undefined {
+function findMsg(socket: MockSocket, type: string): ProxyFrame | undefined {
   return socket.messages
-    .map((m) => JSON.parse(m) as Record<string, unknown>)
+    .map((m) => parseFrame(m))
     .find((m) => m.type === type);
 }
 
-function lastMsg(socket: MockSocket): Record<string, unknown> {
+function lastMsg(socket: MockSocket): ProxyFrame {
   const raw = socket.messages.at(-1);
   if (!raw) throw new Error('no messages on socket');
-  return JSON.parse(raw);
+  return parseFrame(raw);
 }
 
 /**
@@ -84,7 +83,7 @@ function lastMsg(socket: MockSocket): Record<string, unknown> {
  */
 function waitForMsg(
   socket: MockSocket,
-  match: (msg: Record<string, unknown>) => boolean,
+  match: (msg: ProxyFrame) => boolean,
   label: string,
   timeout = 3000,
 ): Promise<void> {
@@ -96,7 +95,7 @@ function waitForMsg(
     const check = () => {
       const found = socket.messages.some((m) => {
         try {
-          return match(JSON.parse(m) as Record<string, unknown>);
+          return match(parseFrame(m));
         } catch {
           return false;
         }
@@ -585,7 +584,7 @@ describe('MUD termination: IP count decremented when session is destroyed', () =
     await new Promise<void>((resolve) =>
       server.listen(0, '127.0.0.1', resolve),
     );
-    const { port } = server.address() as net.AddressInfo;
+    const { port } = asDouble<net.AddressInfo>()(server.address());
 
     const si = new SessionIntegration({
       targets: {

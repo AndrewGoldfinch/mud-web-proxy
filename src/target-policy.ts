@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 import { normalizeAddress, parseIPv4 } from './wsproxy-utils';
+import { z } from 'zod';
+import type { JsonValue } from './json-value';
 
 export type TargetMode = 'fixed' | 'allowlist' | 'arbitrary';
 
@@ -24,16 +26,19 @@ const deny = (reason: string): TargetValidationResult => ({
   reason,
 });
 
-const normalizeHost = (host: unknown): string | null => {
-  if (typeof host !== 'string') return null;
-  const normalized = host.trim().toLowerCase().replace(/\.$/, '');
+const hostTextSchema = z.string();
+const portNumberSchema = z.number().int().min(1).max(65_535);
+
+const normalizeHost = (host: JsonValue | undefined): string | null => {
+  const text = hostTextSchema.safeParse(host);
+  if (!text.success) return null;
+  const normalized = text.data.trim().toLowerCase().replace(/\.$/, '');
   return normalized.length > 0 ? normalized : null;
 };
 
-const normalizePort = (port: unknown): number | null => {
-  if (typeof port !== 'number' || !Number.isInteger(port)) return null;
-  if (port < 1 || port > 65_535) return null;
-  return port;
+const normalizePort = (port: JsonValue | undefined): number | null => {
+  const parsed = portNumberSchema.safeParse(port);
+  return parsed.success ? parsed.data : null;
 };
 
 const targetKey = (host: string, port: number): string => `${host}:${port}`;
@@ -322,8 +327,8 @@ export const resolveTargetAddress = async (
  * safety is `resolveTargetAddress`, which the connect path must also call.
  */
 export const validateTarget = (
-  hostInput: unknown,
-  portInput: unknown,
+  hostInput: JsonValue | undefined,
+  portInput: JsonValue | undefined,
   policy?: TargetPolicyConfig,
 ): TargetValidationResult => {
   const host = normalizeHost(hostInput);

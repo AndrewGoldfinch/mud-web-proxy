@@ -62,22 +62,15 @@ export async function startTestProxy(
         // into the next suite ("Is port NNNN in use?").
         SHUTDOWN_GRACE_MS: '100',
         SHUTDOWN_DEADLINE_MS: '2000',
-        ...(extraEnv?.MAX_MESSAGES_PER_SECOND
-          ? { MAX_MESSAGES_PER_SECOND: extraEnv.MAX_MESSAGES_PER_SECOND }
-          : {}),
-        ...(extraEnv?.MAX_MESSAGES_PER_SECOND_PER_IP
-          ? {
-              MAX_MESSAGES_PER_SECOND_PER_IP:
-                extraEnv.MAX_MESSAGES_PER_SECOND_PER_IP,
-            }
-          : {}),
+        // Set unconditionally rather than spread-if-present: Bun drops an
+        // undefined env value exactly as an absent key would be, so the four
+        // conditional spreads this replaces only obscured that.
+        MAX_MESSAGES_PER_SECOND: extraEnv?.MAX_MESSAGES_PER_SECOND,
+        MAX_MESSAGES_PER_SECOND_PER_IP:
+          extraEnv?.MAX_MESSAGES_PER_SECOND_PER_IP,
         AUTH_MODE: extraEnv?.AUTH_MODE || 'none',
-        ...(extraEnv?.PROXY_SHARED_SECRET
-          ? { PROXY_SHARED_SECRET: extraEnv.PROXY_SHARED_SECRET }
-          : {}),
-        ...(extraEnv?.NODE_EXTRA_CA_CERTS
-          ? { NODE_EXTRA_CA_CERTS: extraEnv.NODE_EXTRA_CA_CERTS }
-          : {}),
+        PROXY_SHARED_SECRET: extraEnv?.PROXY_SHARED_SECRET,
+        NODE_EXTRA_CA_CERTS: extraEnv?.NODE_EXTRA_CA_CERTS,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });

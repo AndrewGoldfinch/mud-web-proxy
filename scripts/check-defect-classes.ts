@@ -517,12 +517,12 @@ export const docLogLiteralGate: CorpusGate = {
  * the real registry, which is complete.
  */
 export function missingFixtureFindings(
-  registry: Record<string, unknown>,
+  covered: ReadonlySet<string>,
   ids: string[] = ALL_GATE_IDS,
 ): Finding[] {
   return ids
     .filter((id) => id !== 'gate-has-negative-test')
-    .filter((id) => registry[id] === undefined)
+    .filter((id) => !covered.has(id))
     .map((id) => ({
       gate: 'gate-has-negative-test',
       file: 'scripts/gate-fixtures.ts',
@@ -537,7 +537,8 @@ export const gateHasNegativeTestGate: CorpusGate = {
   // The first version grepped the test file for the gate id, which an import
   // or a comment satisfied — an unfailable check guarding against unfailable
   // checks (review on #116).
-  scanCorpus: () => missingFixtureFindings(NEGATIVE_FIXTURES),
+  scanCorpus: () =>
+    missingFixtureFindings(new Set(Object.keys(NEGATIVE_FIXTURES))),
 };
 
 export const FILE_GATES: FileGate[] = [

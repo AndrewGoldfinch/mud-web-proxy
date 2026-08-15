@@ -11,6 +11,7 @@
  * The decision is extracted here so it can be exercised without sockets.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import {
   isTlsNegotiationError,
@@ -20,7 +21,7 @@ import {
 
 const err = (message: string, code?: string): Error => {
   const e = new Error(message);
-  if (code) (e as NodeJS.ErrnoException).code = code;
+  if (code) asDouble<NodeJS.ErrnoException>()(e).code = code;
   return e;
 };
 
@@ -161,7 +162,7 @@ describe("Node's real mid-handshake close message", () => {
     const e = new Error(
       'Client network socket disconnected before secure TLS connection was established',
     );
-    (e as NodeJS.ErrnoException).code = 'ECONNRESET';
+    asDouble<NodeJS.ErrnoException>()(e).code = 'ECONNRESET';
     return e;
   };
 
@@ -183,7 +184,7 @@ describe("Node's real mid-handshake close message", () => {
 
   test('a bare reset with no TLS wording is still transport, not TLS', () => {
     const bare = new Error('read ECONNRESET');
-    (bare as NodeJS.ErrnoException).code = 'ECONNRESET';
+    asDouble<NodeJS.ErrnoException>()(bare).code = 'ECONNRESET';
     expect(isTlsNegotiationError(bare)).toBe(false);
     expect(shouldFallBackToPlain('prefer', 'error', bare)).toBe(false);
   });

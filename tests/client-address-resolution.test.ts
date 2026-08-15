@@ -11,6 +11,7 @@
  * because two copies of this logic already diverged once (#28).
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { isTrustedPeer, resolveClientAddress } from '../src/wsproxy-utils.js';
 
@@ -105,7 +106,7 @@ describe('trusted peers: walking the chain right to left', () => {
     expect(
       resolveClientAddress(
         '127.0.0.1',
-        { 'x-forwarded-for': ['1.2.3.4'] as unknown as string },
+        { 'x-forwarded-for': asDouble<string>()(['1.2.3.4']) },
         LOCAL,
       ),
     ).toBe('1.2.3.4');

@@ -1,3 +1,5 @@
+import { asStub } from './support/doubles';
+import { asDouble } from './support/doubles';
 import { describe, it, expect, beforeEach, afterEach, jest } from 'bun:test';
 import type { WebSocket } from 'ws';
 import type { IncomingMessage } from 'http';
@@ -37,12 +39,18 @@ interface SocketExtended extends WebSocket {
   remoteAddress: string;
 }
 
+/** One argument an emitted telnet event can carry. */
+type TelnetEventArg = Buffer | Error | string | number | undefined;
+
+/** A listener registered through the socket double's on/once. */
+type TelnetListener = (...args: TelnetEventArg[]) => void;
+
 interface TelnetSocket {
   send: (data: string | Buffer) => void;
   write: (data: Buffer) => boolean;
   destroy: () => void;
-  on: (event: string, listener: unknown) => unknown;
-  once: (event: string, listener: unknown) => unknown;
+  on: (event: string, listener: TelnetListener) => TelnetSocket;
+  once: (event: string, listener: TelnetListener) => TelnetSocket;
   writable: boolean;
 }
 
@@ -133,7 +141,7 @@ let srv = createMockSrv();
 const createMockSocket = (
   overrides: Partial<SocketExtended> = {},
 ): SocketExtended => {
-  return {
+  return asDouble<SocketExtended>()({
     ttype: [],
     compressed: 0,
     req: {
@@ -145,7 +153,7 @@ const createMockSocket = (
     remoteAddress: '127.0.0.1',
     ts: undefined,
     ...overrides,
-  } as unknown as SocketExtended;
+  });
 };
 
 // Helper to create a mock TelnetSocket
@@ -160,31 +168,25 @@ const createMockTelnetSocket = (
     end: jest.fn(),
     setEncoding: jest.fn(),
     writable: true,
-    on: jest.fn((event: string, listener: unknown) => {
+    on: jest.fn((event: string, listener: TelnetListener) => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(listener);
       return mockSocket;
     }),
-    once: jest.fn((event: string, listener: unknown) => {
+    once: jest.fn((event: string, listener: TelnetListener) => {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(listener);
       return mockSocket;
     }),
-    emit: (event: string, ...args: unknown[]) => {
-      if (listeners[event]) {
-        listeners[event].forEach((listener) => {
-          if (typeof listener === 'function') {
-            (listener as (...args: unknown[]) => void)(...args);
-          }
-        });
-      }
+    emit: (event: string, ...args: TelnetEventArg[]) => {
+      // Every registered listener is a TelnetListener by construction — the
+      // only way into `listeners` is the on/once stubs above.
+      listeners[event]?.forEach((listener) => listener(...args));
     },
     _listeners: listeners,
     ...overrides,
   };
-  return mockSocket as TelnetSocket & {
-    emit: (event: string, ...args: unknown[]) => void;
-  };
+  return asDouble<TelnetSocket>()(mockSocket);
 };
 
 // Parse function (simplified version from wsproxy.ts)
@@ -221,7 +223,7 @@ const parse = (s: SocketExtended, d: Buffer): number => {
   if (req.utf8) s.utf8 = req.utf8;
   if (req.debug) s.debug = req.debug;
 
-  if (req.chat) srv.chat(s, req as unknown as ChatRequest);
+  if (req.chat) srv.chat(s, asDouble<ChatRequest>()(req));
   if (req.connect) srv.initT(s);
 
   if (req.bin && s.ts) {
@@ -514,15 +516,15 @@ describe('Error Handling', () => {
       // Mock zlib to trigger error using a simple wrapper
       let deflateCalled = false;
       const errorMock = (
-        _data: unknown,
+        _data: Buffer,
         callback: (err: Error | null, buffer: Buffer) => void,
       ) => {
         deflateCalled = true;
         callback(new Error('Compression failed'), Buffer.from(''));
       };
 
-      (zlib as unknown as { deflateRaw: typeof zlib.deflateRaw }).deflateRaw =
-        errorMock as typeof zlib.deflateRaw;
+      asDouble<{ deflateRaw: typeof zlib.deflateRaw }>()(zlib).deflateRaw =
+        asStub<typeof zlib.deflateRaw>()(errorMock);
 
       sendClient(s, data);
 
@@ -542,7 +544,7 @@ describe('Error Handling', () => {
       // Mock zlib to trigger error
       let deflateCalled = false;
       const errorMock = (
-        _data: unknown,
+        _data: Buffer,
         callback: (err: Error | null, buffer: Buffer) => void,
       ) => {
         deflateCalled = true;
@@ -550,8 +552,8 @@ describe('Error Handling', () => {
       };
 
       const originalDeflateRaw = zlib.deflateRaw;
-      (zlib as unknown as { deflateRaw: typeof zlib.deflateRaw }).deflateRaw =
-        errorMock as typeof zlib.deflateRaw;
+      asDouble<{ deflateRaw: typeof zlib.deflateRaw }>()(zlib).deflateRaw =
+        asStub<typeof zlib.deflateRaw>()(errorMock);
 
       // Should still send data even if compression fails
       sendClient(s, data);
@@ -591,7 +593,7 @@ describe('Error Handling', () => {
       try {
         iconv.encode(data.toString(), 'latin1');
       } catch (ex) {
-        srv.log('error: ' + (ex as Error).toString(), s);
+        srv.log('error: ' + String(ex), s);
       }
 
       // Encoding errors should be logged
@@ -610,7 +612,7 @@ describe('Error Handling', () => {
       try {
         iconv.encode(testString, 'invalid-encoding');
       } catch (ex) {
-        srv.log('error: ' + (ex as Error).toString(), s);
+        srv.log('error: ' + String(ex), s);
       }
 
       // Verify error was logged
@@ -633,7 +635,7 @@ describe('Error Handling', () => {
         // May convert to similar chars or skip
         expect(encoded).toBeDefined();
       } catch (ex) {
-        srv.log('Encoding error: ' + (ex as Error).toString(), s);
+        srv.log('Encoding error: ' + String(ex), s);
       }
     });
   });
@@ -733,7 +735,7 @@ describe('Error Handling', () => {
           throw new Error('Socket already closed');
         }
         terminateCalled = true;
-      }) as unknown as () => void;
+      });
 
       // First call should succeed
       s.terminate();
@@ -744,11 +746,11 @@ describe('Error Handling', () => {
     });
 
     it('should handle socket with missing methods', () => {
-      const s = {
+      const s = asDouble<SocketExtended>()({
         ...createMockSocket(),
         sendUTF: undefined,
         terminate: undefined,
-      } as unknown as SocketExtended;
+      });
 
       // Should handle missing sendUTF gracefully
       expect(s.sendUTF).toBeUndefined();

@@ -1,3 +1,5 @@
+import { z } from 'zod';
+import { toError } from '../src/error-text';
 import { describe, test, expect } from 'bun:test';
 import { createHash, generateKeyPairSync, createSign } from 'crypto';
 import type { KeyObject } from 'crypto';
@@ -155,7 +157,7 @@ describe('verifyAssertion', () => {
         storedSignCount: 0,
       });
     } catch (err) {
-      caught = err as Error;
+      caught = toError(err);
     }
 
     expect(caught).toBeDefined();
@@ -167,9 +169,17 @@ describe('verifyAssertion', () => {
     expect(message).not.toContain('|');
     expect(message.length).toBeLessThan(600);
     // The full matrix is still available to callers, for debug-level logging.
-    const details = (caught as { attemptDetails?: string[] }).attemptDetails;
-    expect(Array.isArray(details)).toBe(true);
-    expect(details!.length).toBeGreaterThan(10);
+    // Read off the error rather than asserted onto it: only the enriched
+    // failure carries an attempt list.
+    const details = z
+      .array(z.string())
+      .safeParse(
+        caught && 'attemptDetails' in caught
+          ? caught.attemptDetails
+          : undefined,
+      );
+    expect(details.success).toBe(true);
+    expect(details.success && details.data.length).toBeGreaterThan(10);
   });
 
   test('rejects replayed signCount', async () => {

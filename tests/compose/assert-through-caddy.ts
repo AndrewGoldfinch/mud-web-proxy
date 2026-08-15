@@ -6,6 +6,16 @@
  * WebSocket upgrade through, and that the proxy sees the real client rather
  * than Caddy.
  */
+import { z } from 'zod';
+
+/** One curl invocation through the edge proxy. */
+interface CurlResult {
+  code: number;
+  body: string;
+}
+
+/** A proxy frame, read only for the fields these assertions check. */
+const caddyFrameSchema = z.looseObject({ type: z.string().optional() });
 import { spawnSync } from 'child_process';
 
 const BASE = 'https://localhost';
@@ -38,7 +48,7 @@ if (!CA) {
   process.exit(1);
 }
 
-const curl = (args: string[]): { code: number; body: string } => {
+const curl = (args: string[]): CurlResult => {
   const r = spawnSync('curl', ['-s', '--cacert', CA, ...args], {
     encoding: 'utf8',
   });
@@ -176,7 +186,7 @@ try {
   await wait(3000);
   const typed = frames.map((f) => {
     try {
-      return JSON.parse(f) as Record<string, unknown>;
+      return caddyFrameSchema.parse(JSON.parse(f));
     } catch {
       return {};
     }

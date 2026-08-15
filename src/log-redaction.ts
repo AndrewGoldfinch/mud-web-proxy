@@ -24,6 +24,9 @@
 import { createHash } from 'crypto';
 
 /** Length of the truncated hex digest used for identifiers. */
+import { z } from 'zod';
+import type { JsonValue } from './json-value';
+
 const SHORT_HASH_HEX_CHARS = 12;
 
 /**
@@ -82,21 +85,32 @@ export interface RedactionOptions {
   secrets: (string | undefined)[];
 }
 
-const toText = (value: unknown): string => {
-  if (typeof value === 'string') return value;
-  if (value instanceof Error) return value.message;
+/** What a log call can carry: rendered text, an error, or a value to serialise. */
+export type LogMessage =
+  string | number | boolean | null | undefined | Error | JsonValue;
+
+const logTextSchema = z.string();
+
+const toText = (value: LogMessage): string => {
   if (value === undefined) return 'undefined';
   if (value === null) return 'null';
-  if (typeof value === 'object') {
-    try {
-      return JSON.stringify(value) ?? String(value);
-    } catch {
-      // Circular or otherwise unserializable: the shape is not worth throwing
-      // from inside a log call for.
-      return '[unserializable]';
-    }
+  if (value instanceof Error) return value.message;
+
+  const text = logTextSchema.safeParse(value);
+  if (text.success) return text.data;
+
+  // Primitives stringify to themselves; `Object(v) === v` is true for exactly
+  // the non-primitives, which are the ones worth sending through JSON so the
+  // line carries their contents rather than "[object Object]".
+  if (Object(value) !== value) return String(value);
+
+  try {
+    return JSON.stringify(value) ?? String(value);
+  } catch {
+    // Circular or otherwise unserializable: not worth throwing from inside a
+    // log call for.
+    return '[unserializable]';
   }
-  return String(value);
 };
 
 /**
@@ -109,7 +123,7 @@ const toText = (value: unknown): string => {
  * is gone.
  */
 export const redactLogMessage = (
-  value: unknown,
+  value: LogMessage,
   options: RedactionOptions,
 ): string => {
   let text = neutralizeControlSequences(toText(value));

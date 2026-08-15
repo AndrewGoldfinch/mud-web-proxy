@@ -17,11 +17,12 @@
  * reclaimed.
  */
 
+import { asDouble } from './support/doubles';
 import { describe, expect, test } from 'bun:test';
 import { SessionManager } from '../src/session-manager.js';
 import type { SocketExtended } from '../src/types/index.js';
 
-const socket = () => ({ readyState: 1 }) as unknown as SocketExtended;
+const socket = () => asDouble<SocketExtended>()({ readyState: 1 });
 
 const managerWith = (graceMs: number) =>
   new SessionManager({

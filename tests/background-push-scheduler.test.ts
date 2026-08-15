@@ -1,9 +1,8 @@
+import { asDouble } from './support/doubles';
 import { describe, it, expect } from 'bun:test';
-import {
-  BackgroundPushScheduler,
-  type BackgroundPushSchedulerConfig,
-} from '../src/background-push-scheduler';
+import { BackgroundPushScheduler } from '../src/background-push-scheduler';
 import { Session } from '../src/session';
+import type { NotificationManager } from '../src/notification-manager';
 import type { ActivityContentState } from '../src/types';
 
 class MockPushNotifier {
@@ -33,19 +32,19 @@ class MockPushNotifier {
 describe('BackgroundPushScheduler', () => {
   it('uses scheduler defaults when runtime options are present but undefined', () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never, {
-      silentPushIntervalMs: undefined,
-      activityPushIntervalMs: undefined,
-      activityAckTimeoutMs: undefined,
-      fallbackCooldownMs: undefined,
-      maxFallbacksPerHour: undefined,
-      maxSnippetLength: undefined,
-    });
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+      {
+        silentPushIntervalMs: undefined,
+        activityPushIntervalMs: undefined,
+        activityAckTimeoutMs: undefined,
+        fallbackCooldownMs: undefined,
+        maxFallbacksPerHour: undefined,
+        maxSnippetLength: undefined,
+      },
+    );
 
-    const resolved = Reflect.get(
-      scheduler,
-      'config',
-    ) as BackgroundPushSchedulerConfig;
+    const resolved = scheduler.resolvedConfig;
 
     expect(resolved).toEqual({
       silentPushIntervalMs: 1200000,
@@ -59,19 +58,19 @@ describe('BackgroundPushScheduler', () => {
 
   it('preserves explicit zero scheduler options', () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never, {
-      silentPushIntervalMs: 0,
-      activityPushIntervalMs: 0,
-      activityAckTimeoutMs: 0,
-      fallbackCooldownMs: 0,
-      maxFallbacksPerHour: 0,
-      maxSnippetLength: 0,
-    });
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+      {
+        silentPushIntervalMs: 0,
+        activityPushIntervalMs: 0,
+        activityAckTimeoutMs: 0,
+        fallbackCooldownMs: 0,
+        maxFallbacksPerHour: 0,
+        maxSnippetLength: 0,
+      },
+    );
 
-    const resolved = Reflect.get(
-      scheduler,
-      'config',
-    ) as BackgroundPushSchedulerConfig;
+    const resolved = scheduler.resolvedConfig;
 
     expect(resolved).toEqual({
       silentPushIntervalMs: 0,
@@ -85,7 +84,9 @@ describe('BackgroundPushScheduler', () => {
 
   it('tracks and untracks sessions', async () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never);
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+    );
     const session = new Session('mud.example.com', 4000);
     session.deviceToken = 'dev-1';
 
@@ -98,10 +99,13 @@ describe('BackgroundPushScheduler', () => {
 
   it('throttles silent pushes per session', async () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never, {
-      silentPushIntervalMs: 60_000,
-      activityPushIntervalMs: 60_000,
-    });
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+      {
+        silentPushIntervalMs: 60_000,
+        activityPushIntervalMs: 60_000,
+      },
+    );
     const session = new Session('mud.example.com', 4000);
     session.deviceToken = 'dev-1';
     session.markClientBackgrounded();
@@ -115,10 +119,13 @@ describe('BackgroundPushScheduler', () => {
 
   it('throttles activity pushes per session', async () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never, {
-      silentPushIntervalMs: 60_000,
-      activityPushIntervalMs: 60_000,
-    });
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+      {
+        silentPushIntervalMs: 60_000,
+        activityPushIntervalMs: 60_000,
+      },
+    );
     const session = new Session('mud.example.com', 4000);
     session.activityPushToken = 'act-1';
     session.markClientBackgrounded();
@@ -132,7 +139,9 @@ describe('BackgroundPushScheduler', () => {
 
   it('does not push when sequence has no new data', async () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never);
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+    );
     const session = new Session('mud.example.com', 4000);
     session.deviceToken = 'dev-1';
     session.activityPushToken = 'act-1';
@@ -148,11 +157,14 @@ describe('BackgroundPushScheduler', () => {
 
   it('coalesces activity snippets to max length', async () => {
     const notifier = new MockPushNotifier();
-    const scheduler = new BackgroundPushScheduler(notifier as never, {
-      maxSnippetLength: 12,
-      activityPushIntervalMs: 0,
-      silentPushIntervalMs: 60_000,
-    });
+    const scheduler = new BackgroundPushScheduler(
+      asDouble<NotificationManager>()(notifier),
+      {
+        maxSnippetLength: 12,
+        activityPushIntervalMs: 0,
+        silentPushIntervalMs: 60_000,
+      },
+    );
     const session = new Session('mud.example.com', 4000);
     session.activityPushToken = 'act-1';
     session.markClientBackgrounded();

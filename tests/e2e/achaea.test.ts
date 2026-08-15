@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'bun:test';
 import { loadE2EConfig } from './config-loader';
-import { E2EConnection } from './connection-helper';
+import { E2EConnection, framePayload } from './connection-helper';
 import { startTestProxy, type ProxyLauncher } from './proxy-launcher';
 
 const MUD_NAME = 'achaea';
@@ -109,7 +109,7 @@ describeRealMud('Achaea MUD (IRE - heavy GMCP)', () => {
     }
 
     // Check for Char package (Achaea sends Char.Vitals)
-    const data = gmcpMsg.data as { package?: string; data?: unknown };
+    const data = framePayload(gmcpMsg) ?? {};
     const hasCharPackage =
       data.package?.startsWith('Char.') ||
       JSON.stringify(data).includes('Char.');
@@ -148,7 +148,7 @@ describeRealMud('Achaea MUD (IRE - heavy GMCP)', () => {
 
     const messages = connection.getMessages();
     const errorMessages = messages.filter(
-      (m) => m.type === 'error' || (m.data as { error?: string }).error,
+      (m) => m.type === 'error' || (framePayload(m) ?? {}).error,
     );
 
     // No protocol errors
@@ -171,7 +171,7 @@ describeRealMud('Achaea MUD (IRE - heavy GMCP)', () => {
     let foundPrompt = false;
     for (const msg of messages) {
       if (msg.type === 'data') {
-        const data = msg.data as { payload?: string };
+        const data = framePayload(msg) ?? {};
         if (data.payload) {
           const text = Buffer.from(data.payload, 'base64')
             .toString()
@@ -224,8 +224,8 @@ describeRealMud('Achaea MUD (IRE - heavy GMCP)', () => {
       return;
     }
 
-    const sessionId = (sessionMsg.data as { sessionId: string }).sessionId;
-    const token = (sessionMsg.data as { token: string }).token;
+    const sessionId = (framePayload(sessionMsg) ?? {}).sessionId;
+    const token = (framePayload(sessionMsg) ?? {}).token;
 
     // Close connection
     connection.close();

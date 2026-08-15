@@ -1,3 +1,5 @@
+import { asStub } from './support/doubles';
+import { asDouble } from './support/doubles';
 import { describe, test, expect, beforeEach, afterEach, mock } from 'bun:test';
 import EventEmitter from 'events';
 import fs from 'fs';
@@ -85,7 +87,7 @@ interface MockCallTracker {
 }
 
 const setHttp2Connect = (connect: typeof http2.connect): void => {
-  (http2 as unknown as { connect: typeof http2.connect }).connect = connect;
+  asDouble<{ connect: typeof http2.connect }>()(http2).connect = connect;
 };
 
 /**
@@ -111,10 +113,10 @@ const createManager = (): NotificationManager => {
   };
   const manager = new NotificationManager(config, new TriggerMatcher());
   config.enabled = true;
-  const internals = manager as unknown as {
+  const internals = asDouble<{
     authToken: string;
     tokenExpiry: number;
-  };
+  }>()(manager);
   internals.authToken = 'mock-auth-token';
   internals.tokenExpiry = Date.now() + 60_000;
   return manager;
@@ -131,11 +133,11 @@ describe('NotificationManager APNS connection reuse', () => {
     connectMock = mock((_authority: string | URL) => {
       const client = new MockAPNSClient(requestResponder);
       clients.push(client);
-      return client as unknown as http2.ClientHttp2Session;
+      return asDouble<http2.ClientHttp2Session>()(client);
     });
-    setHttp2Connect(connectMock as unknown as typeof http2.connect);
-    console.log = mock(() => {}) as typeof console.log;
-    console.error = mock(() => {}) as typeof console.error;
+    setHttp2Connect(asDouble<typeof http2.connect>()(connectMock));
+    console.log = asStub<typeof console.log>()(mock(() => {}));
+    console.error = asStub<typeof console.error>()(mock(() => {}));
   });
 
   afterEach(() => {
@@ -228,7 +230,7 @@ describe('NotificationManager APNS connection reuse', () => {
       'session-1',
     );
 
-    const logCalls = (console.log as unknown as MockCallTracker).mock.calls;
+    const logCalls = asDouble<MockCallTracker>()(console.log).mock.calls;
     const successLogs = logCalls.filter((call) =>
       String(call[0]).includes('APNS request success'),
     );

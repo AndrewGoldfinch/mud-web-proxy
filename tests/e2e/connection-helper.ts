@@ -3,6 +3,10 @@
  * Manages WebSocket connections to proxy and verifies protocol negotiations
  */
 
+import { z } from 'zod';
+import type { JsonValue } from '../../src/json-value';
+import { asDouble } from '../support/doubles';
+import { errorText } from '../../src/error-text';
 import type { E2EConfig } from './config-loader';
 
 export interface ConnectionResult {
@@ -23,9 +27,36 @@ export interface ConnectionResult {
 
 export interface E2EMessage {
   type: string;
-  data: unknown;
+  data: JsonValue;
   timestamp: number;
 }
+
+/**
+ * The payload fields the e2e assertions read off a proxy frame.
+ *
+ * `looseObject`, so a frame carrying more than this still parses; the schema
+ * names what the tests depend on rather than the whole envelope.
+ */
+const framePayloadSchema = z.looseObject({
+  seq: z.number().optional(),
+  payload: z.string().optional(),
+  replayed: z.boolean().optional(),
+  package: z.string().optional(),
+  data: z.unknown().optional(),
+  sessionId: z.string().optional(),
+  token: z.string().optional(),
+  error: z.string().optional(),
+});
+
+export type FramePayload = z.infer<typeof framePayloadSchema>;
+
+/** A frame's payload, or undefined when the frame does not carry an object. */
+export const framePayload = (
+  message: E2EMessage,
+): FramePayload | undefined => {
+  const parsed = framePayloadSchema.safeParse(message.data);
+  return parsed.success ? parsed.data : undefined;
+};
 
 export class E2EConnection {
   private ws: WebSocket | null = null;
@@ -127,7 +158,7 @@ export class E2EConnection {
           clearTimeout(timeout);
           resolve({
             success: false,
-            error: 'WebSocket error: ' + (event as ErrorEvent).message,
+            error: 'WebSocket error: ' + asDouble<ErrorEvent>()(event).message,
             negotiatedProtocols: this.negotiatedProtocols,
             messages: this.messages,
           });
@@ -139,7 +170,7 @@ export class E2EConnection {
       } catch (err) {
         resolve({
           success: false,
-          error: (err as Error).message,
+          error: errorText(err),
           negotiatedProtocols: this.negotiatedProtocols,
           messages: this.messages,
         });
@@ -236,7 +267,7 @@ export class E2EConnection {
           clearTimeout(timeout);
           resolve({
             success: false,
-            error: 'WebSocket error: ' + (event as ErrorEvent).message,
+            error: 'WebSocket error: ' + asDouble<ErrorEvent>()(event).message,
             negotiatedProtocols: this.negotiatedProtocols,
             messages: this.messages,
           });
@@ -244,7 +275,7 @@ export class E2EConnection {
       } catch (err) {
         resolve({
           success: false,
-          error: (err as Error).message,
+          error: errorText(err),
           negotiatedProtocols: this.negotiatedProtocols,
           messages: this.messages,
         });
@@ -383,11 +414,9 @@ export class E2EConnection {
   getLastSequence(): number {
     let lastSeq = 0;
     for (const msg of this.messages) {
-      if (
-        (msg.type === 'data' || msg.type === 'gmcp') &&
-        typeof (msg.data as any)?.seq === 'number'
-      ) {
-        lastSeq = Math.max(lastSeq, (msg.data as any).seq);
+      const seq = framePayload(msg)?.seq;
+      if ((msg.type === 'data' || msg.type === 'gmcp') && seq !== undefined) {
+        lastSeq = Math.max(lastSeq, seq);
       }
     }
     return lastSeq;
@@ -397,12 +426,14 @@ export class E2EConnection {
    * Get all messages received after a given sequence number
    */
   getMessagesAfterSeq(seq: number): E2EMessage[] {
-    return this.messages.filter(
-      (m) =>
+    return this.messages.filter((m) => {
+      const messageSeq = framePayload(m)?.seq;
+      return (
         (m.type === 'data' || m.type === 'gmcp') &&
-        typeof (m.data as any)?.seq === 'number' &&
-        (m.data as any).seq > seq,
-    );
+        messageSeq !== undefined &&
+        messageSeq > seq
+      );
+    });
   }
 
   /**
@@ -410,9 +441,9 @@ export class E2EConnection {
    */
   getDataPayloads(): string[] {
     return this.messages
-      .filter((m) => m.type === 'data' && (m.data as any)?.payload)
+      .filter((m) => m.type === 'data' && framePayload(m)?.payload)
       .map((m) => {
-        const payload = (m.data as any).payload;
+        const payload = framePayload(m)?.payload ?? '';
         try {
           return Buffer.from(payload, 'base64').toString('utf8');
         } catch {
