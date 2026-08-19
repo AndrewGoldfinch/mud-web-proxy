@@ -1,11 +1,10 @@
-# MUD Proxy Server: Implementation Guide for MUDBasher
+# MUD proxy server implementation guide for MUDBasher
 
-> **Superseded, retained for context.** This document predates the v4
-> architecture and describes the proxy as it was being designed for one iOS
-> client. It is **not** the wire contract: see
-> [`protocols.md`](protocols.md), which is derived from the implementation and
-> is what an external client author should build against. Nothing here is
-> maintained against current behaviour.
+**Note:** This document is superseded, and retained only for context. It
+predates the v4 architecture and describes the proxy as it was being designed
+for one iOS client. It is _not_ the wire contract. For the contract, which is
+derived from the implementation, see [Client protocols](protocols.md). Nothing
+here is maintained against current behavior.
 
 ## The architecture at a glance
 
@@ -26,21 +25,21 @@
 
 The proxy maintains a persistent telnet connection to the MUD server. The iOS app connects to the proxy over WebSocket. When the app backgrounds and the WebSocket drops, the proxy keeps the MUD connection alive and buffers output. When the app returns, it reconnects and the proxy replays what was missed.
 
-## Choosing your tech stack
+## Choose your tech stack
 
-You have three realistic options for the proxy server:
+You have three realistic options for the proxy server.
 
-**TypeScript/Bun (chosen approach):** The `mud-web-proxy` project (github.com/maldorne/mud-web-proxy) has been migrated to TypeScript (~1160 lines) running on Bun. It already handles WebSocket-to-telnet bridging with MCCP, GMCP, MSDP, MXP, ATCP, and full telnet option negotiation out of the box. It has a comprehensive test suite (12 test files) using Bun's native test framework. The `ws` library handles WebSocket, and `net.Socket` handles raw TCP to the MUD. We'll extend it with session persistence and push notifications.
+**TypeScript and Bun (the chosen approach):** the `mud-web-proxy` project has been migrated to TypeScript, roughly 1,160 lines, running on Bun. It already handles WebSocket-to-telnet bridging with MCCP, GMCP, MSDP, MXP, ATCP, and full telnet option negotiation. It has a test suite of 12 files that uses Bun's native test framework. The `ws` library handles WebSocket, and `net.Socket` handles raw TCP to the MUD. This project extends it with session persistence and push notifications.
 
-**Swift (Vapor)** keeps your entire stack in one language. Vapor has built-in WebSocket support via SwiftNIO and first-class APNS integration through the `VaporAPNS` package. You'd write the telnet handling yourself using SwiftNIO's `ClientBootstrap`. Deployment is slightly more involved — you need to compile a Linux binary.
+**Swift with Vapor** keeps your entire stack in one language. Vapor has built-in WebSocket support through SwiftNIO, and APNS integration through the `VaporAPNS` package. You write the telnet handling yourself, using SwiftNIO's `ClientBootstrap`. Deployment takes more work, because you need to compile a Linux binary.
 
-**Go** is fast, deploys as a single static binary, and has gorilla/websocket for WebSockets plus standard `net` for TCP. The krishproxy project (github.com/Untermina/krishproxy) is a minimal Go WebSocket-to-telnet proxy you could build on. APNS would use a library like `sideshow/apns2`.
+**Go** deploys as a single static binary, and has `gorilla/websocket` for WebSockets plus the standard `net` package for TCP. The krishproxy project is a minimal Go WebSocket-to-telnet proxy that you could build on. APNS would use a library such as `sideshow/apns2`.
 
-We went with **TypeScript/Bun** — the existing mud-web-proxy codebase provides a solid, well-tested foundation for the telnet protocol layer, and Bun gives us fast startup, built-in TypeScript support, and a native test runner.
+This project uses TypeScript and Bun. The existing mud-web-proxy codebase provides a tested foundation for the telnet protocol layer, and Bun gives fast startup, built-in TypeScript support, and a native test runner.
 
 ## The session model
 
-This is the core of what makes a proxy different from a simple WebSocket-to-telnet bridge. A bridge creates and destroys telnet connections with each WebSocket connection. A proxy decouples them.
+The session model is what makes a proxy different from a plain WebSocket-to-telnet bridge. A bridge creates and destroys a telnet connection with each WebSocket connection. A proxy decouples them.
 
 ### Session lifecycle
 
@@ -73,7 +72,7 @@ This is the core of what makes a proxy different from a simple WebSocket-to-teln
 
 ### Sequence numbering
 
-Every chunk of data the proxy sends to the client gets a monotonically increasing sequence number. The client tracks the last sequence it processed. On reconnect, the client sends that number, and the proxy knows exactly where to resume. This is how ZNC and IRCCloud handle reconnection — it's proven.
+Every chunk of data the proxy sends to the client gets a monotonically increasing sequence number. The client tracks the last sequence it processed. On reconnect, the client sends that number, and the proxy resumes from exactly that point. That approach is how ZNC and IRCCloud handle reconnection.
 
 ```
 Proxy → Client: { seq: 1042, data: <raw bytes base64> }
@@ -86,37 +85,37 @@ Proxy → Client: { seq: 1044, data: <raw bytes base64> }  // new
 
 ### Buffer strategy
 
-The output buffer should be a circular/ring buffer. 50KB is a good default — enough for several minutes of MUD output, small enough that replaying it doesn't flood the client. ZNC uses a line-count-based buffer (default 50 lines, configurable up to 5000). For a MUD, byte-count works better since output isn't line-delimited the same way IRC is.
+The output buffer must be a ring buffer. A 50 KB default is enough for several minutes of MUD output, and small enough that replaying it doesn't flood the client. ZNC uses a line-count-based buffer, 50 lines by default and configurable up to 5,000. For a MUD, a byte count works better, because MUD output isn't line-delimited the way IRC output is.
 
-Drop the oldest data when the buffer fills. Don't let a buffer grow unbounded — a busy MUD channel can produce megabytes overnight.
+Drop the oldest data when the buffer fills. Don't let a buffer grow unbounded—a busy MUD channel can produce megabytes overnight.
 
 ## Telnet protocol handling
 
-This is where most MUD proxy projects get complicated. The proxy sits between the MUD server and your iOS client, and it needs to handle (or at least pass through) the telnet protocol layer.
+Telnet is where most MUD proxy projects get complicated. The proxy sits between the MUD server and your iOS client, and it needs to handle the telnet protocol layer, or at least pass it through.
 
 ### What the proxy must handle itself
 
-**Telnet option negotiation (IAC sequences)** between the proxy and the MUD server. The proxy acts as a telnet client. It should negotiate:
+**Telnet option negotiation, meaning IAC sequences,** between the proxy and the MUD server. The proxy acts as a telnet client. It negotiates the following options:
 
-- NAWS (window size) — send a reasonable default like 80x24, or let the iOS client specify dimensions
-- TTYPE (terminal type) — send "MUDBasher" or "xterm-256color"
-- Charset negotiation — request UTF-8
+- NAWS, the window size: send a default such as 80x24, or let the iOS client specify the dimensions.
+- TTYPE, the terminal type: send `MUDBasher` or `xterm-256color`.
+- Charset negotiation: request UTF-8.
 
-**MCCP (Mud Client Compression Protocol)** — the proxy should negotiate MCCP2 (telnet option 86) with the MUD server and decompress incoming data before buffering it. Don't pass compressed data to the iOS client. Decompress server-side. The proxy gets the bandwidth savings on the MUD-to-proxy leg, and the proxy-to-client leg uses WSS compression if needed.
+**MCCP, the Mud Client Compression Protocol**: the proxy negotiates MCCP2, telnet option 86, with the MUD server and decompresses incoming data before buffering it. Don't pass compressed data to the iOS client. Decompress server-side. The proxy gets the bandwidth savings on the MUD-to-proxy leg, and the proxy-to-client leg uses WSS compression if needed.
 
-**TCP keepalives** on the telnet socket. Set idle time to 60s, interval 30s, count 3. Also send application-level keepalives (a telnet NOP or GMCP ping) every 60 seconds to prevent MUD server idle timeouts.
+**TCP keepalives** on the telnet socket. Set the idle time to 60 seconds, the interval to 30 seconds, and the count to 3. Also send application-level keepalives (a telnet NOP or GMCP ping) every 60 seconds to prevent MUD server idle timeouts.
 
 ### What the proxy should pass through transparently
 
-**GMCP data** — pass the raw GMCP subnegotiation payloads through to the iOS client as structured messages over the WebSocket. The client already knows how to parse GMCP. The proxy just needs to extract GMCP subnegotiations from the telnet stream and forward them as a separate message type.
+**GMCP data**: pass the raw GMCP subnegotiation payloads through to the iOS client as structured messages over the WebSocket. The client already parses GMCP. The proxy needs to extract GMCP subnegotiations from the telnet stream and forward them as a separate message type.
 
-**ANSI escape sequences** — pass through raw. The iOS client renders them.
+**ANSI escape sequences**: pass them through raw. The iOS client renders them.
 
-**MXP** — pass through raw if supported. Let the client handle rendering.
+**MXP**: pass it through raw if the client supports it, and let the client handle rendering.
 
 ### Wire format between proxy and iOS client
 
-Use a simple JSON-envelope protocol over WebSocket:
+Use a JSON-envelope protocol over WebSocket:
 
 ```json
 // Proxy → Client: MUD output
@@ -141,9 +140,9 @@ Use a simple JSON-envelope protocol over WebSocket:
 { "type": "naws", "width": 80, "height": 40 }
 ```
 
-Binary payloads (MUD output) are base64-encoded to survive JSON transport. The overhead is ~33%, which is negligible for text-based games. If you want tighter encoding, you could use WebSocket binary frames with a minimal header instead of JSON, but JSON is easier to debug.
+Binary payloads, meaning MUD output, are base64-encoded to survive JSON transport. The overhead is roughly 33%, which is negligible for text-based games. For tighter encoding, you could use WebSocket binary frames with a minimal header instead of JSON, but JSON is easier to debug.
 
-A JSON object the proxy recognizes but cannot accept — an unknown `type`, a missing required field, a value out of range — is answered with an `invalid_request` error and is **never** forwarded to the MUD. Ordinary player input that happens to begin with `{` still reaches the MUD unchanged; only recognized shapes are validated.
+The proxy answers a JSON object that it recognizes but can't accept—an unknown `type`, a missing required field, or a value out of range—with an `invalid_request` error, and never forwards it to the MUD. Ordinary player input that happens to begin with `{` still reaches the MUD unchanged, because the proxy validates only recognized shapes.
 
 ```json
 // Proxy → Client: rejected control message
@@ -157,7 +156,7 @@ A JSON object the proxy recognizes but cannot accept — an unknown `type`, a mi
 
 ### Legacy connect protocol
 
-Before the typed session protocol existed, clients opened a connection with a bare object carrying a `connect` field. That form is **still supported, and frozen**: it will not gain new fields or new message types. New clients must use the typed protocol above.
+Before the typed session protocol existed, clients opened a connection with a bare object carrying a `connect` field. That form is still supported, and frozen: it gains no new fields and no new message types. Write any new client against the typed protocol described earlier in this document.
 
 ```json
 // Client → Proxy: legacy connect
@@ -167,40 +166,40 @@ Before the typed session protocol existed, clients opened a connection with a ba
 { "connect": 1 }
 ```
 
-`host` and `port` are both optional. A bare `{"connect": 1}` means the proxy's configured default target (`TN_HOST` / `TN_PORT`). The default is not privileged — it goes through the same target validation as any other, so under `TARGET_MODE=allowlist` it is refused unless `TN_HOST` is itself listed.
+`host` and `port` are both optional. A bare `{"connect": 1}` means the proxy's configured default target, `TN_HOST` and `TN_PORT`. The default is not privileged: it goes through the same target validation as any other, so under `TARGET_MODE=allowlist` the proxy refuses it unless `TN_HOST` is itself listed.
 
-Both protocols share one policy path — `authorizeConnect` — so the legacy form is subject to the identical target validation, connection limits, dial reservation, and DNS-rebinding guard as the typed form. Authentication is enforced at the WebSocket upgrade rather than per message, so it applies to both by construction: under `AUTH_MODE=shared-secret` a legacy client without valid credentials never gets a socket.
+Both protocols share one policy path, `authorizeConnect`, so the legacy form is subject to the same target validation, connection limits, dial reservation, and DNS-rebinding guard as the typed form. Authentication is enforced at the WebSocket upgrade rather than per message, so it applies to both by construction: under `AUTH_MODE=shared-secret` a legacy client without valid credentials never gets a socket.
 
 **Policy is shared; the data plane deliberately is not.** A legacy connection is a raw telnet bridge, not a session:
 
-|                    | typed                                          | legacy                                      |
-| ------------------ | ---------------------------------------------- | ------------------------------------------- |
-| MUD output         | `{"type":"data","seq":…,"payload":"<base64>"}` | bare base64, no envelope                    |
-| Player input       | `{"type":"input","text":"…"}`                  | raw bytes, forwarded as sent                |
-| On connect         | `{"type":"session","sessionId":…,"token":…}`   | no frame; telnet data simply begins flowing |
-| On rejection       | `{"type":"error","code":…}`                    | base64-encoded plaintext line, then close   |
-| Buffering / resume | yes, via `sessionId` + `token`                 | none                                        |
-| Client disconnect  | session survives for resume                    | MUD connection is torn down                 |
+| Aspect               | Typed                                          | Legacy                                    |
+| -------------------- | ---------------------------------------------- | ----------------------------------------- |
+| MUD output           | `{"type":"data","seq":…,"payload":"<base64>"}` | Bare base64, with no envelope             |
+| Player input         | `{"type":"input","text":"…"}`                  | Raw bytes, forwarded as sent              |
+| On connect           | `{"type":"session","sessionId":…,"token":…}`   | No frame. Telnet data begins flowing      |
+| On rejection         | `{"type":"error","code":…}`                    | Base64-encoded plaintext line, then close |
+| Buffering and resume | Yes, with `sessionId` and `token`              | None                                      |
+| Client disconnect    | The session survives for resume                | The MUD connection is torn down           |
 
-Everything a legacy client receives is base64 — including rejection messages. Routing legacy through the session stack instead would hand it typed JSON envelopes it would print into the player's terminal, and a resumable session it holds no token for; the connection would then be orphaned until the session timeout, since nothing could ever reclaim it.
+Everything a legacy client receives is base64, rejection messages included. Routing legacy through the session stack instead would hand it typed JSON envelopes that it would print into the player's terminal, and a resumable session that it holds no token for. The connection would then be orphaned until the session timeout, because nothing could reclaim it.
 
 Because a legacy connection has no session to own its capacity, it is counted against `maxPerIP` for the lifetime of the socket and released when the socket closes.
 
-A second connect on a socket that already has a connection is rejected, on both protocols.
+The proxy rejects a second connect on a socket that already has a connection, on both protocols.
 
 ## Push notifications
 
-The proxy is in the perfect position to trigger push notifications, since it sees all MUD output while the client is disconnected.
+The proxy is well placed to trigger push notifications, because it receives all MUD output while the client is disconnected.
 
 ### What to alert on
 
 Parse the MUD output stream for patterns that indicate events worth interrupting the user:
 
-- **Tells/pages** — private messages from other players. Pattern: `Soandso tells you` or similar, varies by MUD.
-- **Combat initiation** — `Soandso attacks you!` or being engaged in combat.
-- **Party/group invites**
-- **Death** — your character died.
-- **Custom triggers** — let the user define regex patterns in the iOS app that get synced to the proxy.
+- **Tells and pages**: private messages from other players. The pattern is `Soandso tells you` or something similar, and it varies by MUD.
+- **Combat initiation**: `Soandso attacks you!`, or the player being engaged in combat.
+- **Party and group invites.**
+- **Death**: the player's character died.
+- **Custom triggers**: let the user define regular expressions in the iOS app that sync to the proxy.
 
 Store the user's APNS device token in the session. When a trigger fires and `clientConnected == false`, send a push.
 
@@ -225,28 +224,28 @@ app.apns.configuration = try .init(
 )
 ```
 
-**With TypeScript/Bun**, use the `apn` package or make raw HTTP/2 requests to `api.push.apple.com`.
+**With TypeScript and Bun**, use the `apn` package, or make raw HTTP/2 requests to `api.push.apple.com`.
 
 ### Notification types
 
-**Visible notifications** (priority 10) — use for tells, combat, death. These are highly reliable and work even after force-quit.
+**Visible notifications**, priority 10: use these for tells, combat, and death. They are delivered even after a force-quit.
 
-**Silent notifications** (`content-available: 1`) — use to pre-fetch buffered output before the user opens the app. But they're throttled to maybe 2-4 per hour and won't fire if the user force-quit. Don't rely on them.
+**Silent notifications**, `content-available: 1`: use these to pre-fetch buffered output before the user opens the app. They are throttled to roughly 2-4 per hour, and they don't fire if the user force-quit the app, so don't rely on them.
 
-**Notification Service Extension** — runs in a separate process for ~30 seconds, even if the app is killed. You can fetch recent MUD output from the proxy's REST API and include it in the notification body. The user sees the actual tell text in their notification without opening the app.
+**Notification Service Extension**: runs in a separate process for roughly 30 seconds, even if the app has stopped. You can fetch recent MUD output from the proxy's REST API and include it in the notification body. The user sees the actual tell text in their notification without opening the app.
 
 ## Deployment options
 
 ### Self-hosted VPS (recommended to start)
 
-A $5-6/month VPS handles this easily. The proxy is lightweight — each session is one TCP socket, one WebSocket, and a 50KB buffer.
+A VPS at $5 to $6 per month is enough. Each session is one TCP socket, one WebSocket, and a 50 KB buffer.
 
-| Provider     | Cheapest tier  | Notes                     |
-| ------------ | -------------- | ------------------------- |
-| DigitalOcean | $4/mo (512MB)  | Simple, good docs         |
-| Hetzner      | €3.79/mo (2GB) | Best value, EU or US-East |
-| Vultr        | $5/mo (1GB)    | Many regions              |
-| Linode       | $5/mo (1GB)    | Owned by Akamai           |
+| Provider     | Lowest tier           | Notes                           |
+| ------------ | --------------------- | ------------------------------- |
+| DigitalOcean | $4 per month, 512 MB  | Simple, with good documentation |
+| Hetzner      | €3.79 per month, 2 GB | Low cost, EU or US-East         |
+| Vultr        | $5 per month, 1 GB    | Many regions                    |
+| Linode       | $5 per month, 1 GB    | Owned by Akamai                 |
 
 **Setup with Bun on Ubuntu:**
 
@@ -275,7 +274,7 @@ bun start
 
 ### Fly.io
 
-Good for a managed deployment with auto-TLS. Their free tier supports WebSockets natively and you don't have to deal with certificate renewal. Deploy with `fly launch`, add a `Dockerfile`, and you're live. The main caveat: Fly machines can be stopped when idle if you enable auto-stop. For a MUD proxy that needs to maintain connections, disable `auto_stop_machines`.
+Fly.io suits a managed deployment with automatic TLS. Its free tier supports WebSockets natively, and you don't handle certificate renewal yourself. Deploy with `fly launch` and add a `Dockerfile`. The main caveat is that Fly machines can stop when idle if you enable auto-stop. For a MUD proxy that must maintain connections, disable `auto_stop_machines`.
 
 ```toml
 # fly.toml
@@ -289,22 +288,22 @@ app = "mudbasher-proxy"
   min_machines_running = 1
 ```
 
-### Offering it as a hosted service
+### Offer it as a hosted service
 
-If you want MUDBasher users to not need their own server, you host the proxy as a service. Each user gets a session endpoint. This is the IRCCloud model. You'd need:
+If you want MUDBasher users not to need their own server, host the proxy as a service. Each user gets a session endpoint, which is the IRCCloud model. You would need the following:
 
-- Multi-tenant session management (sessions keyed by user account)
-- Authentication (sign in with Apple, simple JWT)
-- Rate limiting and abuse prevention
-- A bigger VPS or autoscaling (but even a $20/mo box handles hundreds of concurrent sessions)
+- Multi-tenant session management, with sessions keyed by user account.
+- Authentication, such as Sign in with Apple and a JWT.
+- Rate limiting and abuse prevention.
+- A larger VPS or autoscaling, although even a $20 per month box handles hundreds of concurrent sessions.
 
 This becomes a recurring infrastructure cost you'd need to cover through subscription revenue or include in the app price.
 
 ## iOS client-side implementation
 
-### Connecting via WebSocket
+### Connect over WebSocket
 
-Use `URLSessionWebSocketTask` (available since iOS 13) or `NWConnection` with WebSocket options. `URLSessionWebSocketTask` is simpler:
+Use `URLSessionWebSocketTask`, available from iOS 13, or `NWConnection` with WebSocket options. `URLSessionWebSocketTask` is simpler:
 
 ```swift
 class ProxyConnection {
@@ -348,7 +347,7 @@ class ProxyConnection {
 }
 ```
 
-### Handling app lifecycle
+### Handle the app lifecycle
 
 ```swift
 // In your AppDelegate or SceneDelegate
@@ -376,7 +375,7 @@ func sceneWillEnterForeground(_ scene: UIScene) {
 }
 ```
 
-### Registering for push notifications
+### Register for push notifications
 
 ```swift
 UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, _ in
@@ -395,13 +394,13 @@ func application(_ app: UIApplication, didRegisterForRemoteNotificationsWithDevi
 
 ## Security considerations
 
-**Authentication between app and proxy.** Don't let arbitrary clients connect to your proxy and use it as an open telnet relay. Options:
+**Authentication between app and proxy.** Don't let arbitrary clients connect to your proxy and use it as an open telnet relay. Consider these options:
 
-- API key baked into the app (simplest, fine for a personal server)
-- Sign in with Apple → JWT token → proxy validates
-- Per-session tokens generated at connection time
+- An API key baked into the app, which is fine for a personal server.
+- Sign in with Apple, which yields a JWT that the proxy validates.
+- Per-session tokens generated at connection time.
 
-**TLS everywhere.** The proxy must serve WSS (WebSocket over TLS), not plain WS. iOS App Transport Security requires it, and you don't want MUD credentials flying over plaintext. Let's Encrypt handles this for free.
+**TLS everywhere.** The proxy must serve WSS (WebSocket over TLS), not plain WS. iOS App Transport Security requires it, and you don't want MUD credentials traveling in plaintext. Let's Encrypt handles this for free.
 
 **Don't store MUD passwords on the proxy.** The iOS client sends login credentials through the proxy to the MUD server. The proxy passes them through. It never needs to persist them. If you add auto-reconnect on the proxy side (re-logging into the MUD if the telnet connection drops), you'd need to store credentials, which adds risk.
 
@@ -409,11 +408,11 @@ func application(_ app: UIApplication, didRegisterForRemoteNotificationsWithDevi
 
 ## What to build first
 
-1. ~~**Fork mud-web-proxy**~~ — **DONE.** Forked and migrated to TypeScript/Bun with comprehensive test suite
-2. **Add session persistence** — decouple WS lifecycle from telnet lifecycle, add the output buffer and sequence numbering
-3. **Test with MUDBasher** — connect via WSS, verify MUD interaction works, verify reconnection replays correctly
-4. **Add APNS** — implement tell detection and push notifications
-5. **Deploy to a VPS** — DigitalOcean or Hetzner, systemd, certbot for TLS
-6. **Add a "Proxy" settings screen in MUDBasher** — let users enter their proxy URL or use your hosted one
+1. ~~**Fork mud-web-proxy.**~~ Done. Forked and migrated to TypeScript and Bun, with a test suite.
+2. **Add session persistence.** Decouple the WebSocket lifecycle from the telnet lifecycle, and add the output buffer and sequence numbering.
+3. **Test with MUDBasher.** Connect over WSS, verify that MUD interaction works, and verify that reconnection replays correctly.
+4. **Add APNS.** Implement tell detection and push notifications.
+5. **Deploy to a VPS.** Use DigitalOcean or Hetzner, with systemd and certbot for TLS.
+6. **Add a Proxy settings screen in MUDBasher.** Let users enter their own proxy URL, or use your hosted one.
 
-Step 1 is complete. The critical path is now steps 2-3. Push notifications and hosted deployment are polish. Get session persistence working first — that's the whole point.
+Step 1 is complete, and steps 2 and 3 are the critical path. Push notifications and hosted deployment are polish. Get session persistence working first, because that is the whole point.

@@ -2,50 +2,51 @@
 
 ## Scope
 
-This runbook moves production from the legacy PM2/git-checkout host to a new
-Ubuntu 26.04 LTS x64 Droplet. It consumes the native host layout in
-[Native systemd deployment](systemd.md); MWP-103 supplies the verified release
-and MWP-105 supplies the systemd and Caddy files. MWP-106 owns execution of the
-production cutover. This runbook does not convert the old host in place.
+This runbook moves production from the legacy PM2 and git-checkout host to a
+fresh Ubuntu 26.04 LTS x64 Droplet. It consumes the native host layout in
+[Native systemd deployment](systemd.md). MWP-103 supplies the verified release,
+MWP-105 supplies the systemd and Caddy files, and MWP-106 owns execution of the
+production cutover. This runbook doesn't convert the old host in place.
 
-Complete the private cutover record before the window. Do not put production
+Complete the private cutover record before the window. Don't put production
 hostnames, addresses, Droplet IDs, secret values, resolved legacy paths, or
 legacy supervisor commands in this repository.
 
 ## Known production facts
 
-These describe the **source host** and must be re-checked at the window, not
-assumed. They changed materially on 2026-08-01 and the earlier set is kept
-below because the rollback reasoning still depends on it.
+These facts describe the _source host_, and you must re-check them at the
+window rather than assuming them. They changed materially on 2026-08-01, and
+this document keeps the earlier set because the rollback reasoning still
+depends on it.
 
-Current, as of 2026-08-01:
+As of 2026-08-01:
 
-- Production runs **4.0.0-rc.8** on **Node.js 20.x**, deployed via PM2 from a
-  git checkout at `/opt/mud-proxy`. It is **not** Bun. An earlier revision of
-  this runbook claimed Bun 1.3.14; that was wrong, and the error had
-  consequences. Because the cutover was not recognised as a runtime change,
-  no rehearsal exercised App Attest under Bun, and the 2026-08-02 attempt was
-  rolled back when every existing device failed to assert (see below).
+- Production runs 4.0.0-rc.8 on Node.js 20.x, deployed with PM2 from a git
+  checkout at `/opt/mud-proxy`. It is _not_ Bun. An earlier revision of this
+  runbook claimed Bun 1.3.14. That claim was wrong, and the error had
+  consequences: because nobody recognized the cutover as a runtime change, no
+  rehearsal exercised App Attest under Bun, and the 2026-08-02 attempt was
+  rolled back when every existing device failed to assert.
   Re-verify the interpreter at the window with `readlink -f /proc/<pid>/exe`
   rather than trusting `ps`, which reports the configured interpreter name.
-- `TARGET_MODE=arbitrary`. The service fronts many MUDs; see
-  [the target policy section](#carry-the-target-policy-across-unchanged).
+- `TARGET_MODE=arbitrary`. The service fronts many MUDs. See
+  [Carry the target policy across unchanged](#carry-the-target-policy-across-unchanged).
 - App Attest is enabled and `REQUIRE_APP_AUTH=true`. It is the authentication
   that makes arbitrary mode safe, not an optional extra.
-- The key store held **5,172** entries in ~3.2 MB at
-  `/opt/mud-proxy/config/attested-keys.json` and grows continuously.
-  Re-measure at the window; this figure is a scale indicator, not the floor.
-- rc.8 writes the store **atomically** — a staging directory, fsync, then
-  rename — so a copy taken from a running service is far less likely to be
-  torn than under v3.1.0.
+- The key store held 5,172 entries in roughly 3.2 MB at
+  `/opt/mud-proxy/config/attested-keys.json`, and it grows continuously.
+  Re-measure at the window. This figure is a scale indicator, not the floor.
+- rc.8 writes the store _atomically_—a staging directory, fsync, then
+  rename—so a copy taken from a running service is far less likely to be torn
+  than under v3.1.0.
 
-Moving to the native host is therefore **also a runtime migration**, Node to
-Bun. Treat runtime-sensitive code paths — anything touching crypto, TLS, or
-native bindings — as unverified until exercised under Bun with
+Moving to the native host is therefore _also a runtime migration_, from Node to
+Bun. Treat runtime-sensitive code paths—anything touching crypto, TLS, or
+native bindings—as unverified until exercised under Bun with
 production-shaped data. Bun links BoringSSL where Node links OpenSSL, and the
-two differ in behaviour, not merely in performance. App Attest assertion
+two differ in behavior, not merely in performance. App Attest assertion
 verification is the worked example: it relied on an OpenSSL default-digest
-behaviour BoringSSL removed, passed every rehearsal because registration is
+behavior BoringSSL removed, passed every rehearsal because registration is
 unaffected, and failed for every existing device in production.
 
 The pre-v4 facts, which still govern rollback because the rollback target may
@@ -56,26 +57,27 @@ predate this deployment:
 - v3.1.0 debounces saves for exactly two seconds.
 - v3.1.0 accepts and re-serializes the additive v4 `lastUsedAt` field.
 
-The atomic-write improvement does **not** license copying a live store. Stop
-the service first regardless: atomicity protects against a torn file, not
-against a write landing between the copy and the stop.
+The atomic-write improvement doesn't license copying a live store. Stop the
+service first regardless: atomicity protects against a torn file, not against
+a write landing between the copy and the stop.
 
 App Attest state must be transferred, but the cost of getting it wrong is
 narrower than an earlier draft of this runbook implied. Correcting that
 matters: an operator who believes the store is irreplaceable makes different
 decisions under time pressure than one who knows the true failure mode.
 
-Losing the store is **not** a permanent lockout. Three things establish that:
+Losing the store is not a permanent lockout. Three facts establish that:
 
 - The server keeps `/attest/challenge` and `/attest/register` registered
   whenever App Attest is enabled (`wsproxy.ts`). An unknown key rejects the
-  _upgrade_; it does not close registration.
+  _upgrade_, and it doesn't close registration.
 - The iOS client rotates automatically. On any registration failure it clears
   the stored key, generates a fresh Secure Enclave key, attests, and registers
   (`ProxyAppAttestManager.registerIfNeeded`).
 - Unknown-key rejection is already routine: the 90-day inactivity TTL reclaims
-  keys in normal operation, so clients must handle it or they would break
-  every 90 days regardless. See `docs/ios-client-integration.md`.
+  keys in normal operation, so clients must handle it, or they would break
+  every 90 days regardless. See
+  [iOS client integration guide](../ios-client-integration.md).
 
 What losing the store actually costs:
 
@@ -87,23 +89,23 @@ What losing the store actually costs:
   against Apple's per-device attestation rate limits. Recovery is slowed, not
   prevented.
 
-That is why the checksum and key-count floor below are still required — they
-turn a silent, staggered degradation into a check that either passes or stops
-the cutover. Treat a shortfall as a stop condition, not as a catastrophe.
+That is why the checksum and the key-count floor that follow are still
+required: they turn a silent, staggered degradation into a check that either
+passes or stops the cutover. Treat a shortfall as a stop condition, not as a catastrophe.
 
 ## Transfer inventory
 
-Transfer only:
+Transfer only the following:
 
-- semantically migrated environment configuration;
-- referenced non-TLS secret files, currently the APNS signing key when
-  enabled; and
-- the App Attest key store.
+- Semantically migrated environment configuration.
+- Referenced non-TLS secret files, which today means the APNS signing key when
+  it is enabled.
+- The App Attest key store.
 
 The new environment is a semantic migration, not a copy of the old file.
-Build it from the [configuration reference](../configuration.md), retaining
+Build it from the [Configuration reference](../configuration.md), retaining
 the required production values while applying the native boundary from
-`systemd.md`:
+[Native systemd deployment](systemd.md):
 
 ```text
 BIND_HOST=127.0.0.1
@@ -114,29 +116,30 @@ ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
 
 `ALLOW_INSECURE_INBOUND_NO_TLS`, `TLS_CERT_PATH`, and `TLS_KEY_PATH` must be
 absent. Caddy owns inbound TLS. Place `/etc/mud-web-proxy.env` and any
-referenced APNS key in the ownership and modes required by `systemd.md`.
+referenced APNS key in the ownership and modes that
+[Native systemd deployment](systemd.md) requires.
 
 ### Carry the target policy across unchanged
 
-**`TARGET_MODE` is deliberately absent from the boundary above.** It is not a
-host-topology value; it is the service's contract with its users, and it must
-be migrated from the old environment rather than defaulted.
+**`TARGET_MODE` is deliberately absent from the preceding boundary.** It is not
+a host-topology value. It is the service's contract with its users, and you
+must migrate it from the old environment rather than defaulting it.
 
 Production serves many MUDs and runs `TARGET_MODE=arbitrary`. Taking the
-default (`fixed`) would restrict every client to a single target and reject
-everyone else with "This proxy only allows connections to …" — a silent,
-total regression for most users that looks like a healthy service. Read the
-old environment; do not infer this value.
+default, `fixed`, would restrict every client to a single target and reject
+everyone else with "This proxy only allows connections to …". That is a
+silent, total regression for most users that looks like a healthy service.
+Read the old environment. Don't infer this value.
 
 `arbitrary` carries mandatory companions, and the proxy refuses to start
 without them rather than falling back to something permissive:
 
-- `ARBITRARY_ALLOWED_PORTS` — the ports clients may reach.
-- Enforced authentication — either `AUTH_MODE=shared-secret` with a ≥32-byte
-  `PROXY_SHARED_SECRET`, or `REQUIRE_APP_AUTH=true` with App Attest
-  configured. Production uses the App Attest path, which is why App Attest is
-  not optional for this deployment: it is what keeps arbitrary mode from
-  being an open relay.
+- `ARBITRARY_ALLOWED_PORTS`: the ports that clients can reach.
+- Enforced authentication: either `AUTH_MODE=shared-secret` with a
+  `PROXY_SHARED_SECRET` of 32 bytes or more, or `REQUIRE_APP_AUTH=true` with
+  App Attest configured. Production uses the App Attest path, which is why App
+  Attest is not optional for this deployment: it is what keeps arbitrary mode
+  from being an open relay.
 
 Verify the migrated environment before the window, against the release being
 deployed, rather than discovering a rejected value at service start:
@@ -149,50 +152,51 @@ bun -e 'import{getRuntimeConfig}from"./src/runtime-config.ts";getRuntimeConfig(p
 
 ## Deliberately excluded data
 
-Do not transfer or restore as application state:
+Don't transfer or restore any of the following as application state:
 
-- the old Git checkout, `.git`, source, tests, and build output;
-- the old `node_modules`;
-- PM2 state, process dumps, and `ecosystem.config.cjs`;
-- the old Bun installation;
-- Bun's package-download cache. **Note where this lives on the new host.**
-  `deploy/sysusers.d/mud-web-proxy.conf` sets the service user's home to
-  `/var/lib/mud-web-proxy`, the same directory as the App Attest state, so
-  Bun writes `~/.bun` there at runtime (292 KiB observed on a rehearsal
-  host, 2026-08-01). Transfer the **file** `attested-keys.json`, never the
-  directory — copying the directory carries this cache along, contradicting
-  this exclusion, and on a reverse copy would overwrite the new host's cache
-  with the old host's;
-- repository-root `cert.pem` and `privkey.pem`;
-- Certbot or other old-host ACME state;
-- runtime logs;
-- `chat.json`, which the current application does not read or write;
-- in-memory WebSocket, Telnet, and resumable-session state;
-- App Attest challenge nonces; and
-- cached APNS tokens and live-activity scheduling state.
+- The old Git checkout, `.git`, source, tests, and build output.
+- The old `node_modules` directory.
+- PM2 state, process dumps, and the `ecosystem.config.cjs` file.
+- The old Bun installation.
+- Bun's package-download cache. Note where this cache lives on the new host.
+  The `deploy/sysusers.d/mud-web-proxy.conf` file sets the service user's home
+  to `/var/lib/mud-web-proxy`, the same directory as the App Attest state, so
+  Bun writes `~/.bun` there at runtime. A rehearsal host showed 292 KiB on
+  2026-08-01. Transfer the _file_ `attested-keys.json`, never the directory.
+  Copying the directory carries this cache along, which contradicts this
+  exclusion, and on a reverse copy it would overwrite the new host's cache with
+  the old host's.
+- The repository-root `cert.pem` and `privkey.pem` files.
+- Certbot state, or other old-host ACME state.
+- Runtime logs.
+- The `chat.json` file, which the application doesn't read or write.
+- In-memory WebSocket, Telnet, and resumable-session state.
+- App Attest challenge nonces.
+- Cached APNS tokens and live-activity scheduling state.
 
-Caddy obtains new certificates on the new host. Do not copy old TLS material
-or certificate private keys.
+Caddy obtains new certificates on the new host. Don't copy old TLS material or
+certificate private keys.
 
 ## Private cutover record
 
 Store this encrypted administrative record outside the repository. It must
 contain no placeholders at window start:
 
-- resolved old App Attest path;
-- old and new Droplet IDs;
-- routing mechanism, plus previous A/AAAA values and TTL when DNS is used;
-- active and rollback release identifiers and artifact checksum;
-- pre-stop and final App Attest source path, SHA-256, JSON object key count,
-  numeric owner, and numeric mode;
-- any post-traffic reverse-copy source path, SHA-256, JSON object key count,
-  numeric owner, and numeric mode;
-- cutover operator and cutover timestamps;
-- exact old-supervisor restart command;
-- exact ingress block and restore commands;
-- exact routing forward and reverse commands;
-- retention deadline; and
-- deletion owner.
+- The resolved old App Attest path.
+- The old and new Droplet IDs.
+- The routing mechanism, plus previous A and AAAA values and the TTL when you
+  use DNS.
+- The active and rollback release identifiers, and the artifact checksum.
+- The pre-stop and final App Attest source path, SHA-256, JSON object key
+  count, numeric owner, and numeric mode.
+- Any post-traffic reverse-copy source path, SHA-256, JSON object key count,
+  numeric owner, and numeric mode.
+- The cutover operator and the cutover timestamps.
+- The exact old-supervisor restart command.
+- The exact ingress block and restore commands.
+- The exact routing forward and reverse commands.
+- The retention deadline.
+- The deletion owner.
 
 The record must also state that the rollback release accepts and re-serializes
 the additive `lastUsedAt` field. This repository defines the fields but
@@ -204,32 +208,32 @@ Before a declared low-traffic window, the production owner must:
 
 1. Create an Ubuntu 26.04 LTS x64 Droplet with automated backups enabled.
    If an existing Reserved IP is used, create it in the same datacenter.
-2. Apply the production Cloud Firewall: public TCP 80/443, TCP 22 only from
-   administrative sources, and no public rule for 6200.
+2. Apply the production Cloud Firewall: public TCP 80 and 443, TCP 22 only
+   from administrative sources, and no public rule for 6200.
 3. Install and verify the monitoring agent and notified CPU, memory, disk,
    and load alerts.
-4. Install the host prerequisites. A clean Ubuntu 26.04 image has **neither**,
-   and both are needed by steps this runbook already requires:
+4. Install the host prerequisites. A clean Ubuntu 26.04 image has neither of
+   them, and steps that this runbook already requires need both:
 
    ```bash
    apt-get update && apt-get install -y unzip gh
    ```
 
-   - `unzip` — the Bun installer aborts without it (`error: unzip is required
-to install bun`), so step 5 fails outright rather than degrading.
-   - `gh` — needed to verify the release attestation before extraction. If it
-     is unavailable in your environment, treat the checksum as the minimum
-     bar and record that provenance was not verified, rather than skipping
+   - `unzip`. The Bun installer aborts without it, with `error: unzip is
+required to install bun`, so step 5 fails outright rather than degrading.
+   - `gh`. You need it to verify the release attestation before extraction. If
+     it is unavailable in your environment, treat the checksum as the minimum
+     bar and record that you didn't verify provenance, rather than skipping
      the step silently.
 
    Verified on a disposable Ubuntu 26.04 host on 2026-08-01: both were
    missing on a fresh image.
 
-5. Install the exact versioned Bun runtime, Bun 1.3.14, and verify the
-   release-local runtime reports that exact version. Do not use an unversioned
+5. Install the exact versioned Bun runtime, Bun 1.3.14, and verify that the
+   release-local runtime reports that exact version. Don't use an unversioned
    system Bun.
-6. Install the verified MWP-103 release and the MWP-105 systemd/Caddy files
-   according to `systemd.md`. Verify artifact checksum and provenance before
+6. Install the verified MWP-103 release and the MWP-105 systemd and Caddy
+   files according to [Native systemd deployment](systemd.md). Verify artifact checksum and provenance before
    extraction, install the unit, and keep both the proxy and Caddy inactive.
    On the new host, run this as root to record both service states and require
    both to be exactly `inactive`:
@@ -272,8 +276,8 @@ to install bun`), so step 5 fails outright rather than degrading.
    systemd service stopped. Any pre-window application-health check must use
    an isolated foreground verification process and configuration with a
    disposable App Attest state path. It must not use or mutate production App
-   Attest state. The production systemd service must not start until the
-   validated post-stop final store is installed. Do not send production traffic
+   Attest state. The production systemd service must not start until you
+   install the validated post-stop final store. Don't send production traffic
    to the new host yet.
 
 Record the old and new Droplet IDs, routing mechanism, releases, artifact
@@ -283,9 +287,10 @@ the window.
 ## Take the App Attest safety copy
 
 Use encrypted administrative staging. The staging directory must be mode
-`0700` and every staged file must be mode `0600`; `umask 077` below enforces
-the latter for newly created files. This is the **validated pre-stop safety
-copy**. Its JSON object key count is the **key-count floor**.
+`0700`, and every staged file must be mode `0600`. The `umask 077` in the
+following block enforces the file mode for newly created files. The result is
+the _validated pre-stop safety copy_, and its JSON object key count is the
+_key-count floor_.
 
 ```bash
 set -euo pipefail
@@ -344,7 +349,7 @@ printf '%s\n' "$OLD_KEYS_PATH" \
 chmod 0600 "$PRE_STOP_STORE" "$STAGING_DIR"/attested-keys.pre-stop.*
 ```
 
-If JSON validation fails, the copy may have intersected v3.1.0's
+If JSON validation fails, the copy might have intersected v3.1.0's
 truncate-and-write window. The strict block exits without replacing an
 existing validated safety copy. Wait and repeat the complete block. Never
 accept an invalid copy. The numeric UID, GID, and mode record is the authority
@@ -359,18 +364,18 @@ new-host loopback health is accepted.
 
 When no existing Reserved IP is available, use DNS instead:
 
-- lower the relevant A/AAAA record TTL to `300` at least one full previous
-  TTL before the window, preferably 24 hours before;
-- verify the authoritative answer serves the lower TTL before the window;
-- record the previous A/AAAA values and exact reversal command; and
-- treat rollback as bounded by resolver caches, not instant.
+- Lower the relevant A and AAAA record TTL to `300` at least one full previous
+  TTL before the window, and preferably 24 hours before.
+- Verify that the authoritative answer serves the lower TTL before the window.
+- Record the previous A and AAAA values, and the exact reversal command.
+- Treat rollback as bounded by resolver caches rather than instant.
 
 ## Cutover window
 
-Announce a low-traffic maintenance window. Active sessions do not survive
-cutover. Every player disconnects and all in-memory resume buffers are lost.
-The current v3.1.0 release predates the v4 `1001 / Server restarting` close
-frame, so do not promise that legacy connections receive it.
+Announce a low-traffic maintenance window. Active sessions don't survive
+cutover. Every player disconnects, and every in-memory resume buffer is lost.
+The v3.1.0 release predates the v4 `1001 / Server restarting` close frame, so
+don't promise that legacy connections receive it.
 
 Before changing public routing:
 
@@ -439,12 +444,13 @@ Before changing public routing:
 
 This block validates JSON before calculating its count, requires both counts
 to be decimal integers, persists the final count, and accepts the final file
-only after every gate passes. If it exits nonzero, run **Failure before routing
-changes** immediately and abort the window. Do not run any new-host install,
-service-start, or routing command with an invalid or smaller final store.
+only after every gate passes. If it exits nonzero, run
+[Failure before routing changes](#failure-before-routing-changes) immediately,
+and abort the window. Don't run any new-host install, service-start, or
+routing command with an invalid or smaller final store.
 
 Install and verify the valid final store before the first service start. This
-single strict block is the aggregate checksum/count pre-start gate. It writes
+single strict block is the aggregate checksum and count pre-start gate. It writes
 through a mode-`0600` unique temporary file in the state directory, validates
 the temporary copy, atomically renames it over the configured destination,
 verifies the final destination, and starts services only after every
@@ -566,7 +572,7 @@ NEW_SERVICES_MAY_BE_RUNNING=0
 trap - EXIT
 ```
 
-Do not execute the recorded routing-forward command unless this entire block
+Don't execute the recorded routing-forward command unless this entire block
 exits zero. Thus a failed JSON, numeric-count, checksum, ownership, mode,
 service-start, loopback-health, or post-start count gate cannot be masked by a
 later command. A nonzero service-start or later gate automatically attempts to
@@ -682,8 +688,8 @@ RESTORED_STAT="$(
 
 Only after the restore block exits zero, run the exact old-supervisor restart
 command and exact old-ingress restoration command recorded during pre-stage,
-verify old-host health, and abort the cutover window. Do this before any
-routing change. Do not infer whether the legacy supervisor is PM2, systemd, or
+verify old-host health, and abort the cutover window. Do all of that before any
+routing change. Don't infer whether the legacy supervisor is PM2, systemd, or
 another wrapper.
 
 Public routing has not changed at this point.
@@ -692,36 +698,36 @@ Public routing has not changed at this point.
 
 After new-host loopback health succeeds, execute the pre-recorded routing
 forward command: reassign the Reserved IP or update DNS. Require all of the
-following before accepting the cutover:
+following before you accept the cutover:
 
-- public `/health` succeeds;
-- WSS upgrades correctly;
-- a complete MUD session succeeds;
-- forwarded client attribution is correct;
-- the App Attest store remains a JSON object with the unchanged final key
-  count after service start; and
-- the store-preservation evidence below.
+- Public `/health` succeeds.
+- WSS upgrades correctly.
+- A complete MUD session succeeds.
+- Forwarded client attribution is correct.
+- The App Attest store remains a JSON object with the unchanged final key count
+  after service start.
+- The store-preservation evidence in the following section holds.
 
-### Proving the store actually moved
+### Prove that the store actually moved
 
 Registration stays open on the new host whether or not the transfer worked, so
-a freshly installed client registers and connects happily against an empty
-store — it would report success for the exact failure this gate exists to
+a freshly installed client registers and connects successfully against an empty
+store. It would report success for the exact failure that this gate exists to
 catch. Something must distinguish "the state moved" from "the server accepts
 new devices".
 
-**Do not wait for an assertion from a key whose registration predates the
-cutover.** An earlier revision of this runbook made that the mandatory gate.
-It is unsatisfiable in practice, and the 2026-08-02 cutover sat blocked on it:
+**Don't wait for an assertion from a key whose registration predates the
+cutover.** An earlier revision of this runbook made that the mandatory gate. It
+is unsatisfiable in practice, and the 2026-08-02 cutover sat blocked on it:
 
-- the iOS client re-registers on reconnect rather than asserting with its
-  stored key — on the old host, 107 registrations against 141 upgrades;
-- re-registration rewrites `registeredAt` and resets `signCount`, so the
-  entry no longer looks transferred; and
-- the cutover's own outage disconnects every client, forcing all of them
+- The iOS client re-registers on reconnect rather than asserting with its
+  stored key. On the old host, that was 107 registrations against 141 upgrades.
+- Re-registration rewrites `registeredAt` and resets `signCount`, so the entry
+  no longer looks transferred.
+- The cutover's own outage disconnects every client, which forces all of them
   through exactly that path.
 
-**And do not accept anything a returning device produces as evidence that the
+**And don't accept anything a returning device produces as evidence that the
 transfer worked.** The Secure Enclave key survives in the Keychain, so a
 re-registering device re-attests the _same_ key: same keyId, same `publicKey`,
 fresh `registeredAt`, overwriting in place. An empty store refilled by the
@@ -731,9 +737,9 @@ wrote itself, and never logs an unknown key. Matching public keys, successful
 assertions, and zero unknown-key rejections all pass under the precise failure
 this gate exists to catch. Each is corroboration; none is proof.
 
-What re-registration cannot fabricate is a device that never came back. Twelve
-devices reconnected during the 2026-08-02 window; the store held 5,230
-entries. **That gap is the evidence.** Gate on it.
+What re-registration can't fabricate is a device that never came back. Twelve
+devices reconnected during the 2026-08-02 window, and the store held 5,230
+entries. That gap is the evidence. Gate on it.
 
 #### Capture the live store and compare it to the snapshot
 
@@ -798,12 +804,12 @@ MISMATCHED="$(jq -er '.mismatched' <<<"$EVIDENCE")"
 the new host, including the thousands belonging to devices that never
 reconnected. Nothing but a loaded store can produce that.
 
-The one legitimate cause of `missing > 0` is TTL eviction at load —
+The one legitimate cause of `missing > 0` is TTL eviction at load:
 `loadAttestedKeys` drops entries whose `lastUsedAt` is older than 90 days.
-Entries with no `lastUsedAt` are backfilled to load time and survive, so this
-only reaches keys that were already stale. If the gate trips, list the missing
-entries and confirm every one of them is past the TTL before proceeding;
-anything else is a lost store.
+Entries with no `lastUsedAt` are backfilled to load time and survive, so
+eviction only reaches keys that were already stale. If the gate trips, list the
+missing entries and confirm that every one of them is past the TTL before you
+proceed. Anything else is a lost store.
 
 ```bash
 jq -n --slurpfile s "$FINAL_STORE" --slurpfile l "$LIVE_STORE" '
@@ -815,17 +821,16 @@ jq -n --slurpfile s "$FINAL_STORE" --slurpfile l "$LIVE_STORE" '
 
 #### Corroboration
 
-`mismatched == 0` says the key material you transferred matches what real
-devices present — it rules out corruption in transfer, not a lost store.
+`mismatched == 0` says that the key material you transferred matches what real
+devices present. It rules out corruption in transfer, not a lost store.
 
 `asserted_untouched > 0` is the strongest single signal available: an entry
 whose `registeredAt` still matches the snapshot has not been rewritten on this
 host, and `lastAssertedAt` is written only by `updateSignCount` on a
-successful assertion and is never backfilled. A count above zero means the
-server verified an assertion against material it did not itself write. Record
-it when it appears — but it depends on some device asserting before it
-re-registers, which the cutover outage works against, so it cannot be
-mandatory.
+successful assertion and is never backfilled. A count above zero means that the
+server verified an assertion against material it didn't write itself. Record
+that count when it appears. It depends on some device asserting before it
+re-registers, which the cutover outage works against, so it can't be mandatory.
 
 The journal count belongs here too, and the message to search for is the log
 line, not the HTTP status text. `wsproxy.ts` logs `Rejected upgrade: unknown
@@ -842,26 +847,26 @@ UNKNOWN_KEY_REJECTS="$(
 printf 'unknown-key rejections since cutover: %s\n' "$UNKNOWN_KEY_REJECTS"
 ```
 
-Finally, beware timestamp-based checks: `lastUsedAt` is bulk-rewritten at
-load, so "used since cutover" is meaningless — in one production store 4,974
-of 5,230 entries shared a single load-time timestamp. Use `lastAssertedAt`,
-which is never backfilled.
+Finally, be careful with timestamp-based checks. The load rewrites
+`lastUsedAt` in bulk, so "used since cutover" is meaningless: in one production
+store, 4,974 of 5,230 entries shared a single load-time timestamp. Use
+`lastAssertedAt`, which is never backfilled.
 
-Record acceptance evidence, the final checksum/count, and the cutover
+Record the acceptance evidence, the final checksum and count, and the cutover
 timestamp. Start the old-Droplet retention clock only after acceptance.
 
 ## Production resource observation
 
 The MWP-105 limits were measured on a clean single-vCPU Ubuntu 26.04 host
 under synthetic load, not under production traffic. Accepting them without
-observing real traffic assumes the two match; this gate is what makes that
-an observation rather than an assumption.
+observing real traffic assumes that the two match, and this gate is what makes
+that an observation rather than an assumption.
 
-It runs inside the already-approved old-Droplet retention window and does
-not extend it. Deleting the old Droplet before this completes removes the
-rollback target for the failure this gate exists to detect.
+It runs inside the already-approved old-Droplet retention window, and it
+doesn't extend that window. Deleting the old Droplet before this gate completes
+removes the rollback target for the failure that the gate exists to detect.
 
-Record these five values at three points — immediately after routing, after
+Record these five values at three points—immediately after routing, after
 representative traffic, and at 24 hours:
 
 ```bash
@@ -871,41 +876,41 @@ cat /sys/fs/cgroup/system.slice/mud-web-proxy.service/memory.events
 ```
 
 Retain both outputs with the acceptance evidence. `memory.events` is the
-decisive one: `MemoryCurrent` alone cannot distinguish a service sitting
-comfortably under its ceiling from one being repeatedly reclaimed at it.
+decisive one: `MemoryCurrent` alone can't distinguish a service sitting
+comfortably under its ceiling from one that is repeatedly reclaimed at it.
 
-### Interpreting the result
+### Interpret the result
 
-| Event increments              | Meaning                                                              |
-| ----------------------------- | -------------------------------------------------------------------- |
-| `oom`, `oom_kill`, or `max`   | **Blocks acceptance.** Abort and run the fail-closed recovery below. |
-| `high`                        | Requires explicit review before acceptance.                          |
-| none, peaks below the profile | Accepted.                                                            |
+| Event increments              | Meaning                                                                                         |
+| ----------------------------- | ----------------------------------------------------------------------------------------------- |
+| `oom`, `oom_kill`, or `max`   | **Blocks acceptance.** Abort, and run the fail-closed recovery described later in this section. |
+| `high`                        | Requires explicit review before acceptance.                                                     |
+| none, peaks below the profile | Accepted.                                                                                       |
 
-An `oom`, `oom_kill`, or `max` increment means `MemoryMax=512M` is being
-reached under real traffic. That is a sizing error, not a transient: the
-service is being killed or stalled while serving. Abort acceptance and
-execute the existing fail-closed recovery — the old Droplet is still the
-rollback target precisely because this window has not closed.
+An `oom`, `oom_kill`, or `max` increment means that the service reaches
+`MemoryMax=512M` under real traffic. That is a sizing error, not a transient
+one: the service is stopped or stalled while serving. Abort acceptance and
+execute the existing fail-closed recovery. The old Droplet is still the
+rollback target precisely because this window hasn't closed.
 
 A `high` increment means `MemoryHigh=384M` throttled allocation without
-reaching the hard ceiling. The service survives, so this does not block
-automatically, but it must be reviewed rather than waved through: it is the
-signal that appears before an `oom` on the next traffic peak.
+reaching the hard ceiling. The service survives, so this event doesn't block
+acceptance automatically, but review it rather than passing it through: it is
+the signal that appears before an `oom` on the next traffic peak.
 
 Compare the observed peaks against the Task 5 clean-host profile in
 `tests/deployment/systemd-security-baseline.json` and the sampled figures in
 [Systemd acceptance](systemd-acceptance.md). A production peak materially
-above the clean-host profile means the synthetic load under-represented real
-traffic, and the profile — not just the limit — needs revisiting.
+above the clean-host profile means that the synthetic load under-represented
+real traffic, and that the profile, not only the limit, needs revisiting.
 
-### Changing a limit
+### Change a limit
 
 Update the MWP-105 resource design first, then the unit. `MemoryHigh`,
-`MemoryMax`, `TasksMax`, and `LimitNOFILE` are a set, not independent knobs:
-`LimitNOFILE=1024` is budgeted against `MAX_SESSIONS_GLOBAL=200`, so raising
-the session cap without raising the descriptor limit exhausts descriptors
-before the session cap is ever reached. Editing the unit alone leaves the
+`MemoryMax`, `TasksMax`, and `LimitNOFILE` are one set, not independent
+controls: `LimitNOFILE=1024` is budgeted against `MAX_SESSIONS_GLOBAL=200`, so
+raising the session cap without raising the descriptor limit exhausts
+descriptors before the service ever reaches the session cap. Editing the unit alone leaves the
 design describing a system that no longer exists.
 
 ## Infrastructure rollback
@@ -928,13 +933,13 @@ Only then run the recorded routing reverse command if it was applied, restart
 the old service with its recorded command, restore old ingress, and verify
 old-host health and a complete client session.
 
-If the new host has served public traffic, its App Attest store may contain
+If the new host has served public traffic, its App Attest store can contain
 new registrations or higher assertion counters. Use this complete reverse
 transfer before restarting the old service or reversing routing. It stops the
 new proxy and Caddy and verifies both are inactive, records and validates the
 new store, then uses a mode-`0600` unique temporary file in the old path's
 directory and the original recorded numeric destination owner and mode. A
-partial transfer cannot replace the old live file:
+partial transfer can't replace the old live file:
 
 ```bash
 set -euo pipefail
@@ -1060,8 +1065,8 @@ REVERSED_FINAL_STAT="$(
 
 Only after this block exits zero, execute the private record's exact routing
 reverse command, old-supervisor restart command, and old-ingress restoration
-command, then verify old-host health and a complete client session. Do not
-infer or publish those production commands.
+command, then verify old-host health and a complete client session. Don't infer
+or publish those production commands.
 
 The v3.1.0 loader accepts and re-serializes the additive `lastUsedAt` field,
 so this reverse copy preserves new registrations and assertion counters
@@ -1083,6 +1088,6 @@ conditions hold:
 4. No cutover incident remains open.
 5. Native release-level offline rollback was exercised.
 
-At deletion, remove the old Droplet and its residual production keys. Do not
+At deletion, remove the old Droplet and its residual production keys. Don't
 delete or unassign a Reserved IP that has moved to the new host. Record the
 deletion operator and time.

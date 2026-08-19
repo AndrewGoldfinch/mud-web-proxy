@@ -2,10 +2,10 @@
 
 ## Setup
 
-Development and CI use exactly the Bun release pinned in
-[`.bun-version`](.bun-version). A different minor version will silently change
-test results — unknown flags are ignored rather than rejected, so a wrong
-version looks like a real failure.
+Development and CI use exactly the Bun release pinned in the
+[`.bun-version`](.bun-version) file. A different minor version silently
+changes test results: unknown flags are ignored rather than rejected, so a
+wrong version looks like a real failure.
 
 ```bash
 git clone https://github.com/AndrewGoldfinch/mud-web-proxy
@@ -23,10 +23,10 @@ bun run preflight
 
 That is the single command that matters. It mirrors CI's `quality` job step for
 step, and unlike CI it runs every gate rather than stopping at the first
-failure — so three problems cost one run instead of three.
+failure—so three problems cost one run instead of three.
 
 `bun run preflight:full` additionally runs the mock end-to-end suite, the
-dependency scan, and the container test. Neither covers `secret-scan`, which is
+dependency scan, and the container test. Neither command covers `secret-scan`, which is
 a GitHub Action with no local equivalent.
 
 If preflight and CI ever disagree, the script is wrong. Fix
@@ -41,10 +41,10 @@ If preflight and CI ever disagree, the script is wrong. Fix
 - **Logging**: use `srv.log()`, not `console.log`. Oxlint only warns on
   `no-console`, so this is on you.
 - **Errors**: render with `errorText(err)` from `src/error-text.ts`, never a
-  cast — a thrown non-Error would otherwise log as `undefined`.
+  cast—a thrown non-Error would otherwise log as `undefined`.
 - **Imports**: ES modules, `import type` for type-only imports.
 
-Comments should say _why_, not _what_. This codebase's comments carry the
+Comments must say _why_, not _what_. This codebase's comments carry the
 reasoning behind non-obvious decisions, and that is deliberate.
 
 ## Tests
@@ -52,9 +52,9 @@ reasoning behind non-obvious decisions, and that is deliberate.
 A test that stays green when you delete the protection it covers is not a
 test. Where you add a guard, prove the test fails without it.
 
-New configuration variables need a `docs/configuration.md` entry —
+New configuration variables need a `docs/configuration.md` entry—
 `check:config-docs` enforces it. New startup errors need a troubleshooting
-entry in `docs/operations.md` — `check:ops-docs` enforces that one.
+entry in `docs/operations.md`—`check:ops-docs` enforces that one.
 
 ## Pull requests
 
@@ -66,7 +66,7 @@ reference, changelog.
 
 ## Licensing
 
-This project is [GPL-3.0-or-later](LICENSE). Contributions are accepted under
-the same licence. [`NOTICE`](NOTICE) records upstream authorship and the
-attribution required for MIT-derived portions; if you touch those portions,
-leave their headers intact.
+This project is [GPL-3.0-or-later](LICENSE). This project accepts
+contributions under the same license. The [`NOTICE`](NOTICE) file records
+upstream authorship and the attribution that MIT-derived portions require. If
+you touch those portions, leave their headers intact.

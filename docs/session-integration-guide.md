@@ -1,25 +1,31 @@
-# Session Integration Guide
+# Session integration guide
 
 ## Overview
 
-This guide explains how to integrate the session persistence layer into the existing mud-web-proxy.
+This guide explains how to integrate the session persistence layer into
+mud-web-proxy.
 
-## What Was Built
+## Components
 
-The session persistence system consists of:
+The session persistence system consists of the following modules:
 
-1. **CircularBuffer** (`src/circular-buffer.ts`) - Fixed-size buffer with sequence numbering
-2. **Session** (`src/session.ts`) - Manages telnet connection and buffer
-3. **SessionManager** (`src/session-manager.ts`) - Stores and manages all sessions
-4. **TriggerMatcher** (`src/trigger-matcher.ts`) - Pattern matching for notifications
-5. **NotificationManager** (`src/notification-manager.ts`) - APNS integration
-6. **SessionIntegration** (`src/session-integration.ts`) - High-level integration module
+- **CircularBuffer** (`src/circular-buffer.ts`): a fixed-size buffer with
+  sequence numbering.
+- **Session** (`src/session.ts`): manages one telnet connection and its buffer.
+- **SessionManager** (`src/session-manager.ts`): stores and manages all
+  sessions.
+- **TriggerMatcher** (`src/trigger-matcher.ts`): matches patterns for
+  notifications.
+- **NotificationManager** (`src/notification-manager.ts`): integrates with
+  APNS.
+- **SessionIntegration** (`src/session-integration.ts`): the high-level
+  integration module.
 
-## New Protocol Messages
+## Protocol messages
 
-### Client → Proxy
+### Client to proxy
 
-**Connect** (creates new session):
+**Connect** (creates a session):
 
 ```json
 {
@@ -32,7 +38,7 @@ The session persistence system consists of:
 }
 ```
 
-**Resume** (reattaches to existing session):
+**Resume** (reattaches to a running session):
 
 ```json
 {
@@ -43,7 +49,7 @@ The session persistence system consists of:
 }
 ```
 
-**Input** (send command to MUD):
+**Input** (sends a command to the MUD):
 
 ```json
 {
@@ -52,7 +58,7 @@ The session persistence system consists of:
 }
 ```
 
-**NAWS** (update window size):
+**NAWS** (updates the window size):
 
 ```json
 {
@@ -62,9 +68,9 @@ The session persistence system consists of:
 }
 ```
 
-### Proxy → Client
+### Proxy to client
 
-**Session Created**:
+**Session created**:
 
 ```json
 {
@@ -105,9 +111,9 @@ The session persistence system consists of:
 }
 ```
 
-## Integration Example
+## Integration example
 
-Add to top of wsproxy.ts:
+Add the following to the top of the `wsproxy.ts` file:
 
 ```typescript
 import { SessionIntegration } from './src/session-integration';
@@ -138,7 +144,7 @@ const sessionIntegration = new SessionIntegration({
 });
 ```
 
-Modify `srv.parse`:
+Modify the `srv.parse` function:
 
 ```typescript
 parse: function (s: SocketExtended, d: Buffer): number {
@@ -159,7 +165,7 @@ parse: function (s: SocketExtended, d: Buffer): number {
 },
 ```
 
-Modify `srv.closeSocket`:
+Modify the `srv.closeSocket` function:
 
 ```typescript
 closeSocket: function (s: SocketExtended): void {
@@ -183,7 +189,7 @@ closeSocket: function (s: SocketExtended): void {
 
 ## Configuration
 
-### Environment Variables
+### Environment variables
 
 ```bash
 # Session management
@@ -204,7 +210,7 @@ APNS_ENVIRONMENT=sandbox
 
 ## Testing
 
-### Unit Tests
+### Unit tests
 
 ```bash
 bun test src/circular-buffer.test.ts
@@ -214,9 +220,9 @@ bun test src/trigger-matcher.test.ts
 bun test src/notification-manager.test.ts
 ```
 
-### Manual Testing
+### Manual testing
 
-1. Connect with new protocol:
+1. Connect with the typed protocol:
 
 ```javascript
 const ws = new WebSocket('wss://localhost:6200');
@@ -239,7 +245,7 @@ ws.onmessage = (e) => {
 };
 ```
 
-2. Disconnect and reconnect with resume:
+2. Disconnect, then reconnect with a resume message:
 
 ```javascript
 ws.send(
@@ -252,7 +258,7 @@ ws.send(
 );
 ```
 
-3. Test notifications (background app, send tell):
+3. Background the app, then send a tell to test notifications:
 
 ```javascript
 // In MUD
@@ -260,49 +266,53 @@ ws.send(
 // Should trigger APNS notification
 ```
 
-## Security Considerations
+## Security considerations
 
-1. **Auth Tokens**: 64-character hex strings, generated with crypto.randomBytes(32)
-2. **Token Validation**: Required for resume operations
-3. **Rate Limiting**: 5 sessions per device, 10 per IP
-4. **Session Timeout**: 24 hours of inactivity
-5. **No Password Storage**: Credentials pass through to MUD
+- **Authentication tokens**: 64-character hex strings, generated with
+  `crypto.randomBytes(32)`.
+- **Token validation**: required for every resume operation.
+- **Rate limiting**: 5 sessions per device, 10 per IP address.
+- **Session timeout**: 24 hours of inactivity.
+- **No password storage**: credentials pass through to the MUD.
 
 ## Performance
 
-- **Buffer Size**: 50KB per session (configurable)
-- **Session Capacity**: 50+ concurrent on 512MB VPS
-- **Cleanup Interval**: Every 5 minutes
-- **Notification Retry**: Every 1 minute, max 3 retries
+- **Buffer size**: 50 KB per session, configurable.
+- **Session capacity**: at least 50 concurrent sessions on a 512 MB VPS.
+- **Cleanup interval**: every five minutes.
+- **Notification retry**: every minute, up to three retries.
 
 ## Troubleshooting
 
 ### Session not found
 
-- Check session ID and token are correct
-- Session may have timed out (24 hours)
+- Check that the session ID and the token are correct.
+- The session might have timed out after 24 hours of inactivity.
 
 ### Notifications not working
 
-- Check APNS key file exists and is readable
-- Verify device token is being sent
-- Check APNS environment (sandbox vs production)
+- Check that the APNS key file exists and is readable.
+- Verify that the client sends the device token.
+- Check the APNS environment: `sandbox` or `production`.
 
 ### Buffer not replaying
 
-- Verify lastSeq parameter in resume
-- Check if sequence is still in buffer (may have been evicted)
+- Verify the `lastSeq` parameter in the resume message.
+- Check whether the sequence is still in the buffer. The buffer might have
+  evicted it.
 
-## Migration Guide
+## Migration
 
-The session integration requires the new message format:
+The session integration requires the typed message format:
 
-- Messages must have a `type` field: `connect`, `resume`, `input`, `naws`, or `disconnect`
-- Messages without a `type` field are forwarded directly to the MUD server
+- Each message must have a `type` field: `connect`, `resume`, `input`, `naws`,
+  or `disconnect`.
+- The proxy forwards messages without a `type` field directly to the MUD
+  server.
 
-To migrate:
+To migrate, follow these steps:
 
-1. Deploy updated proxy
-2. Update client to use new message format with `type` field
-3. Add APNS configuration (optional)
-4. Test session persistence and notifications
+1. Deploy the updated proxy.
+2. Update the client to send the `type` field on every message.
+3. Optional: Add APNS configuration.
+4. Test session persistence and notifications.

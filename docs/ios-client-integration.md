@@ -1,35 +1,49 @@
-# iOS Client Integration Guide
+# iOS client integration guide
 
-This guide covers everything needed to connect an iOS app to mud-web-proxy with App Attest authentication enabled (`REQUIRE_APP_AUTH=true`).
+This guide covers what you need to connect an iOS app to
+mud-web-proxy with App Attest authentication enabled (`REQUIRE_APP_AUTH=true`).
 
-> **App Attest is EXPERIMENTAL and optional.**
->
-> It is **disabled by default**. Until you set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`, the `/attest/*` routes are not registered at all and return 404 — you can ignore this entire guide if you are not shipping an iOS app.
->
-> The Apple attestation and assertion verification in `src/app-attest.ts` **has not received an independent cryptographic review**. It is a from-scratch implementation of Apple's format, and bugs in that kind of code are not self-announcing: a verifier that is too permissive still accepts every genuine client, so it looks like it works. Do not rely on App Attest as your only access control. Pair it with `AUTH_MODE=shared-secret`, which is checked first and independently.
+**Caution:** App Attest is experimental and optional, and it is off by
+default. Until you set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`, the
+proxy doesn't register the `/attest/*` routes at all, and they return 404. If
+you aren't shipping an iOS app, you can ignore this guide.
+
+**Caution:** The Apple attestation and assertion verification in the
+`src/app-attest.ts` file hasn't had an independent cryptographic review. It is
+a from-scratch implementation of Apple's format, and bugs in that kind of code
+don't announce themselves: a verifier that is too permissive still accepts
+every genuine client, so it looks like it works. Don't rely on App Attest as
+your only access control. Pair it with `AUTH_MODE=shared-secret`, which the
+proxy checks first and independently.
 
 ## Overview
 
-Apple App Attest is the only supported path, and it requires a physical device: the Secure Enclave holds a key pair, and Apple cryptographically proves it belongs to your genuine app binary.
+Apple App Attest is the only supported path, and it requires a physical
+device: the Secure Enclave holds a key pair, and Apple cryptographically
+proves that the key pair belongs to your app binary.
 
-Each WebSocket connection requires a fresh server challenge signed by the device. Registration (generating and attesting the key) happens once per device install and is stored in the iOS Keychain.
+Each WebSocket connection requires a fresh server challenge that the device
+signs. Registration—generating and attesting the key—happens once per device
+install, and the resulting key ID goes into the iOS Keychain.
 
-The Simulator cannot attest and there is no certificate-based fallback any more — see [Part 2](#part-2-simulator-and-debug-builds).
-
----
+The Simulator can't attest, and there is no certificate-based fallback
+anymore. For details, see
+[Simulator and debug builds](#simulator-and-debug-builds).
 
 ## Prerequisites
 
-- Xcode project with a valid bundle ID and Apple Developer team
-- App Attest capability enabled in your entitlements (`com.apple.developer.devicecheck.appattest-environment` set to `production` or `development`)
-- Server running with `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID` set — both, or startup aborts — and `REQUIRE_APP_AUTH=true` once you are ready to enforce
-- A physical iOS device. The Simulator cannot produce an attestation.
+- An Xcode project with a valid bundle ID and an Apple Developer team.
+- The App Attest capability enabled in your entitlements, with
+  `com.apple.developer.devicecheck.appattest-environment` set to `production`
+  or `development`.
+- A server running with both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`
+  set—startup aborts unless you set both—and with `REQUIRE_APP_AUTH=true`
+  after you are ready to enforce attestation.
+- A physical iOS device. The Simulator can't produce an attestation.
 
----
+## App Attest for release and TestFlight builds
 
-## Part 1: App Attest (Release / TestFlight Builds)
-
-### 1.1 Required frameworks
+### Required frameworks
 
 ```swift
 import CryptoKit
@@ -37,9 +51,10 @@ import DeviceCheck
 import Foundation
 ```
 
-### 1.2 Registration (one-time per device)
+### Registration, once per device
 
-Call this on first launch (or after a fresh install). Store the result in the Keychain — never regenerate unless the stored key is lost.
+Call the following code on first launch, or after a fresh install. Store the
+result in the Keychain, and regenerate it only if the stored key is lost.
 
 ```swift
 actor AppAttestManager {
@@ -144,9 +159,10 @@ enum AttestError: Error {
 }
 ```
 
-### 1.3 Per-connection assertion
+### Per-connection assertion
 
-Before every WebSocket connection, fetch a fresh challenge and generate an assertion. The assertion headers are added to the WebSocket upgrade request.
+Before every WebSocket connection, fetch a fresh challenge and generate an
+assertion. Add the assertion headers to the WebSocket upgrade request.
 
 ```swift
 extension AppAttestManager {
@@ -175,7 +191,7 @@ extension AppAttestManager {
 }
 ```
 
-### 1.4 Opening the WebSocket
+### Open the WebSocket
 
 ```swift
 func openWebSocket(
@@ -197,20 +213,26 @@ func openWebSocket(
 }
 ```
 
-**URLs:**
+The preceding code uses two URLs:
 
-- `proxyBaseURL` — the HTTPS base URL, e.g. `https://your-proxy.example.com:6200`
-- `proxyURL` — the WebSocket URL, e.g. `wss://your-proxy.example.com:6200`
+- `proxyBaseURL`: the HTTPS base URL, for example,
+  `https://your-proxy.example.com:6200`.
+- `proxyURL`: the WebSocket URL, for example,
+  `wss://your-proxy.example.com:6200`.
 
----
+## Simulator and debug builds
 
-## Part 2: Simulator and Debug Builds
+The iOS Simulator has no Secure Enclave, so
+`DCAppAttestService.shared.isSupported` is `false` there and the Simulator
+can't produce an assertion. Earlier versions of this proxy covered that gap
+with a mutual-TLS fallback: the proxy accepted a client certificate bundled
+into debug builds in place of an assertion.
 
-The iOS Simulator has no Secure Enclave, so `DCAppAttestService.shared.isSupported` is `false` there and no assertion can be produced. Earlier versions of this proxy papered over that with a mutual-TLS fallback: a client certificate bundled into debug builds was accepted in place of an assertion.
+That fallback has been removed. `ALLOW_MTLS_FALLBACK` and
+`MTLS_CLIENT_CA_PATH` no longer exist, and the proxy aborts at startup if
+either one is still set in your environment.
 
-**That fallback has been removed.** `ALLOW_MTLS_FALLBACK` and `MTLS_CLIENT_CA_PATH` no longer exist, and the proxy aborts at startup if either is still set in your environment.
-
-It was removed because of how it was gated. The condition was `ALLOW_MTLS_FALLBACK && NODE_ENV !== 'production'` — and `NODE_ENV` is unset on a plain `bun start`, which is not `'production'`. A deployment that never set `NODE_ENV` therefore had the fallback available, meaning any client holding a certificate signed by the configured CA could skip attestation entirely. The guard read as a production safeguard and behaved as the opposite.
+The fallback was removed because of how it was gated. The condition was `ALLOW_MTLS_FALLBACK && NODE_ENV !== 'production'`—and `NODE_ENV` is unset on a plain `bun start`, which is not `'production'`. A deployment that never set `NODE_ENV` therefore had the fallback available, meaning any client holding a certificate signed by the configured CA could skip attestation entirely. The guard read as a production safeguard and behaved as the opposite.
 
 ### What to use instead
 
@@ -249,18 +271,24 @@ func makeWebSocketTask(proxyURL: URL, proxyBaseURL: URL) async throws -> URLSess
 }
 ```
 
-Two consequences worth planning around:
+Plan around two consequences:
 
-- **A shared secret is a shared secret.** Anyone holding it can connect. Use a different one for development than for anything reachable from the internet, and do not compile it into a Release build.
-- **The two modes are independent.** `AUTH_MODE=shared-secret` and App Attest can both be enabled on the same deployment, and pairing them is the recommended posture given the review gap noted at the top of this guide. Shared-secret authentication is checked first, before any App Attest work, so a failed attempt costs nothing.
+- **A shared secret is a shared secret.** Anyone who holds it can connect. Use
+  a different secret for development than for anything reachable from the
+  internet, and don't compile it into a Release build.
+- **The two modes are independent.** You can enable both
+  `AUTH_MODE=shared-secret` and App Attest on the same deployment, and pairing
+  them is the recommended posture given the review gap described earlier in
+  this guide. The proxy checks shared-secret authentication first, before any
+  App Attest work, so a failed attempt costs nothing.
 
-Testing the real attestation path requires a physical device. There is no way around that, and a fallback that pretends otherwise is a fallback that ships.
+Testing the real attestation path requires a physical device. There is no way
+around that, and a fallback that hides this fact is a fallback that ships to
+production.
 
----
+## Utilities
 
-## Part 3: Utilities
-
-### Hex string ↔ Data
+### Convert a hex string to Data
 
 The server returns the nonce as a lowercase hex string. Convert it to `Data` before hashing:
 
@@ -282,9 +310,9 @@ extension Data {
 }
 ```
 
----
+## Full app launch flow
 
-## Part 4: Full App Launch Flow
+The following code registers the device once, at launch:
 
 ```swift
 @main
@@ -305,27 +333,23 @@ struct MudApp: App {
 }
 ```
 
----
+## Error handling reference
 
-## Part 5: Error Handling Reference
+| Scenario                                                 | Cause                                                                                     | Fix                                                                      |
+| -------------------------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `registrationFailed("Invalid or expired nonce")`         | The nonce expired after its 60-second lifetime, before `POST /attest/register` arrived    | Reduce latency, then retry with a fresh challenge                        |
+| HTTP 404 from `/attest/challenge` or `/attest/register`  | App Attest is not configured, so the routes are not registered                            | Set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`                   |
+| HTTP 429 from `/attest/challenge`                        | More than 30 challenges per minute from one source address                                | Request one nonce per connection, not per retry                          |
+| HTTP 429 from `/attest/register`                         | More than 5 registrations per minute from one source address                              | Register once per install, and cache the `keyId` in the Keychain         |
+| `registrationFailed("rpIdHash does not match bundleId")` | `APPATTEST_BUNDLE_ID` doesn't match the app's actual bundle ID                            | Verify that the variable matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode    |
+| `DCError.invalidInput` from Apple                        | The device isn't eligible, because it is too old or runs a version of iOS earlier than 14 | Check `DCAppAttestService.shared.isSupported`                            |
+| WebSocket connection rejected without a 101 response     | The assertion headers are missing, or the assertion failed                                | Re-register if the `keyId` is lost, and check nonce freshness            |
+| Previously working device rejected after a long gap      | Its key passed the 90-day inactivity limit and was reclaimed                              | Re-register. This outcome is expected, not a fault                       |
+| Server aborts at startup naming `ALLOW_MTLS_FALLBACK`    | A retired variable is still present in the environment                                    | Remove it. See [Simulator and debug builds](#simulator-and-debug-builds) |
 
-| Scenario                                                 | Cause                                                          | Fix                                                          |
-| -------------------------------------------------------- | -------------------------------------------------------------- | ------------------------------------------------------------ |
-| `registrationFailed("Invalid or expired nonce")`         | Nonce expired (60s TTL) before `POST /attest/register` arrived | Reduce latency; retry with a fresh challenge                 |
-| HTTP 404 from `/attest/challenge` or `/attest/register`  | App Attest is not configured, so the routes are not registered | Set both `APPATTEST_BUNDLE_ID` and `APPATTEST_TEAM_ID`       |
-| HTTP 429 from `/attest/challenge`                        | More than 30 challenges/minute from one source address         | Request one nonce per connection, not per retry              |
-| HTTP 429 from `/attest/register`                         | More than 5 registrations/minute from one source address       | Register once per install; cache the `keyId` in the Keychain |
-| `registrationFailed("rpIdHash does not match bundleId")` | `APPATTEST_BUNDLE_ID` doesn't match app's actual bundle ID     | Verify env var matches `PRODUCT_BUNDLE_IDENTIFIER` in Xcode  |
-| `DCError.invalidInput` from Apple                        | Device not eligible (too old, or running iOS < 14)             | Check `DCAppAttestService.shared.isSupported`                |
-| WebSocket connection rejected (no 101)                   | Assertion headers missing or assertion failed                  | Re-register if keyId lost; check nonce freshness             |
-| Previously-working device rejected after a long gap      | Its key passed the 90-day inactivity TTL and was reclaimed     | Re-register; this is expected, not a fault                   |
-| Server aborts at startup naming `ALLOW_MTLS_FALLBACK`    | Retired variable still present in the environment              | Remove it; see [Part 2](#part-2-simulator-and-debug-builds)  |
+## Server configuration reference
 
----
-
-## Part 6: Server Configuration Reference
-
-Add to your `.env`:
+Add the following settings to your `.env` file:
 
 ```bash
 # These two together are what enable App Attest. There is no separate
@@ -346,14 +370,16 @@ PROXY_SHARED_SECRET=<at least 32 bytes>
 # ATTESTED_KEYS_PATH=./config/attested-keys.json
 ```
 
-The proxy serves both HTTP endpoints on the same port as WebSockets (default `6200`), **and only when App Attest is configured** — otherwise they 404 like any unknown path:
+The proxy serves both HTTP endpoints on the same port as the WebSocket
+listener, `6200` by default, and only when App Attest is configured.
+Otherwise they return 404 like any unknown path.
 
-| Endpoint            | Method | Used by iOS                    | Rate limit        | Description                                         |
-| ------------------- | ------ | ------------------------------ | ----------------- | --------------------------------------------------- |
-| `/attest/challenge` | GET    | Registration + each connection | 30/min per source | Returns `{nonce: "hex64chars", expires: timestamp}` |
-| `/attest/register`  | POST   | Registration only              | 5/min per source  | Body: `{keyId, attestation: base64, nonce: hex}`    |
+| Endpoint            | Method | Used by iOS                      | Rate limit               | Description                                         |
+| ------------------- | ------ | -------------------------------- | ------------------------ | --------------------------------------------------- |
+| `/attest/challenge` | GET    | Registration and each connection | 30 per minute per source | Returns `{nonce: "hex64chars", expires: timestamp}` |
+| `/attest/register`  | POST   | Registration only                | 5 per minute per source  | Body: `{keyId, attestation: base64, nonce: hex}`    |
 
-The WebSocket upgrade must include headers:
+The WebSocket upgrade must include the following headers:
 
 | Header               | Value                                               |
 | -------------------- | --------------------------------------------------- |
