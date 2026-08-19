@@ -1,4 +1,4 @@
-# Tracked Artifact Policy
+# Tracked artifact policy
 
 This repository tracks source code, tests, documentation, package manifests,
 `bun.lock`, and non-secret example configuration files.
@@ -19,11 +19,11 @@ Local runtime configuration and credentials must stay untracked:
 - client CA material
 - local E2E JSON configs
 
-Generated output is also untracked. Build output, coverage reports, dependency
-folders, logs, and release bundles should be recreated from source in CI or
-published as external release artifacts.
+Generated output is also untracked. Recreate build output, coverage reports,
+dependency folders, logs, and release bundles from source in CI, or publish
+them as external release artifacts.
 
-## Quality Gates
+## Quality gates
 
 CI runs the source checks without requiring private MUD credentials:
 
@@ -40,12 +40,10 @@ Dependency vulnerability checks run with:
 bun run audit
 ```
 
-The audit job uses `bun audit --audit-level=moderate`; moderate, high, and
-critical findings fail CI until they are fixed or explicitly reviewed. The
-current script ignores the known ESLint/type-tooling transitive advisories that
-remain in the latest compatible toolchain. Remove those ignores as upstream
-packages publish patched dependency graphs.
+The audit job runs `bun audit --audit-level=moderate`. Moderate, high, and
+critical findings fail CI until you fix them or review them explicitly. The
+script carries no advisory ignore list.
 
-Secret scanning runs in CI with Gitleaks. Findings fail the check and should be
-reviewed before merge. Do not add real secrets as allowlist fixtures; use
-synthetic placeholders if a test or example needs secret-shaped text.
+Secret scanning runs in CI with Gitleaks. Findings fail the check, so review
+them before you merge. If a test or example needs secret-shaped text, use
+synthetic placeholders. Don't add real secrets as allowlist fixtures.

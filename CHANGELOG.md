@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Public documentation now follows the
+  [Google developer documentation style guide](https://developers.google.com/style):
+  sentence-case headings, second person, active voice, present tense, American
+  spelling, and its word list. `docs/MOCK_MUD.md` is renamed to
+  `docs/mock-mud.md` to match the guide's filename rules; update any bookmark
+  to the old path. Three factual defects were corrected on the way: an
+  unresolved git merge conflict committed into the mock MUD guide, a claim in
+  `docs/artifact-policy.md` that the audit script ignores ESLint advisories
+  (it carries no ignore list, and ESLint was removed), and a stale caveat in
+  `docs/deployment/images.md` that the Compose stack might not exist in a
+  checkout.
+
 - Refusals at the WebSocket upgrade now record a reason in the log. A rejected
   Origin names the value that was received — the usual cause is one that is
   nearly right, a trailing slash or `http` for `https` — and a missing Origin

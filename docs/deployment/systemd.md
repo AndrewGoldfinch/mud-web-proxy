@@ -12,17 +12,17 @@ ships these MWP-105 artifacts:
 - [`config/mud-web-proxy.env.systemd.example`](../../config/mud-web-proxy.env.systemd.example)
   is the native environment starting point.
 - [`deploy/caddy/Caddyfile.example`](../../deploy/caddy/Caddyfile.example)
-  is the reusable HTTPS/WSS edge template.
+  is the reusable HTTPS and WSS edge template.
 
 MWP-103 supplies a verified release bundle. The production state-transfer,
 final App Attest, activation, and rollback gates remain in the
-[New-Droplet cutover runbook](new-droplet-cutover.md); this guide does not
-replace them.
+[New-Droplet production cutover](new-droplet-cutover.md) runbook, and this
+guide doesn't replace them.
 
 ## Supported host
 
 The only supported host is Ubuntu 26.04 LTS x64, using DigitalOcean image
-`ubuntu-26-04-x64`. The old host release is irrelevant: this is a new-host
+`ubuntu-26-04-x64`. The old host release is irrelevant, because this procedure is a new-host
 cutover, not an in-place conversion. See the [Ubuntu 26.04 release
 notes](https://documentation.ubuntu.com/release-notes/26.04/) and
 [DigitalOcean Droplets updates](https://docs.digitalocean.com/products/droplets/#latest-updates).
@@ -86,14 +86,14 @@ DynamicUser=no
 ```
 
 `DynamicUser=yes` is forbidden. It relocates state under `/var/lib/private`,
-uses a transient UID/GID, and conflicts with pre-seeded
+uses a transient UID and GID, and conflicts with pre-seeded
 `mud-web-proxy:mud-web-proxy` state.
 
 On Ubuntu 26.04, systemd creates the configured state directory when absent,
 sets the innermost directory's owner and `StateDirectoryMode`, and recursively
 changes ownership only when that directory initially has the wrong owner or
 group. When the directory already has the configured owner and group, systemd
-leaves child ownership unchanged as an optimization. It does not infer or
+leaves child ownership unchanged as an optimization. It doesn't infer or
 repair the pre-seeded JSON file's `0600` mode. The installer must therefore
 verify the directory and file independently before first start. See Ubuntu
 26.04's
@@ -110,8 +110,9 @@ release asset; verify its published SHA-256; install it under
 
 Those are the requirements; this is the sequence that satisfies them. Nothing
 else on this page installs the runtime, and the `curl … | bash` installer in
-the README puts Bun in `~/.bun`, which is **not** the path the unit executes —
-so skipping this leaves `$BUN` below pointing at a file that does not exist:
+the README puts Bun in `~/.bun`, which is _not_ the path that the unit
+executes. Skipping this step leaves the `$BUN` variable in the following
+commands pointing at a file that doesn't exist:
 
 ```bash
 BUN_VERSION="$(cat "$RELEASE_DIR/.bun-version")"
@@ -141,23 +142,23 @@ ATTESTED_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
 ```
 
 `ALLOW_INSECURE_INBOUND_NO_TLS`, `TLS_CERT_PATH`, and `TLS_KEY_PATH` must be
-absent. The acknowledgement is required only off loopback. Caddy, not the
+absent. The acknowledgment is required only off loopback. Caddy, not the
 application, owns inbound TLS. Add production target, authentication, origin,
 trusted-proxy, App Attest, APNS, resource-limit, and shutdown settings using
-the [configuration reference](../configuration.md); do not blindly copy the
-old environment.
+the [Configuration reference](../configuration.md). Don't copy the old
+environment without reviewing it.
 
 ## Install the native operator files
 
 Run this installation sequence as root on the new Ubuntu 26.04 host, after
 the MWP-103 release has been verified and before the MWP-104 final activation
-gate. It installs no production App Attest state and does not start either
+gate. It installs no production App Attest state, and it doesn't start either
 service. Keep the production environment and final App Attest store out of
 this procedure until the cutover runbook permits them.
 
 Install Caddy from its official stable Ubuntu repository. The package starts
-`caddy.service`; stop it immediately so the packaged default cannot serve
-before the rendered configuration is validated.
+`caddy.service`. Stop it immediately, so that the packaged default can't serve
+before you validate the rendered configuration.
 
 ```bash
 sudo apt install -y \
@@ -177,7 +178,7 @@ sudo systemctl stop caddy.service
 ```
 
 Install the persistent identity and verify its locked shell, home directory,
-and matching primary group. `DynamicUser=yes` is prohibited: it would create a
+and matching primary group. `DynamicUser=yes` is prohibited, because it would create a
 transient identity and relocate state under `/var/lib/private`, breaking the
 pre-seeded `mud-web-proxy:mud-web-proxy` App Attest store. The shipped unit
 sets `DynamicUser=no` explicitly.
@@ -211,7 +212,7 @@ passwd -S mud-web-proxy | awk '
 Install the unit and prepare a root-owned staging copy of the environment.
 Replace every example target, origin, authentication, App Attest, APNS, and
 other production value in the staging file according to the
-[configuration reference](../configuration.md). Do not add
+[Configuration reference](../configuration.md). Don't add
 `ALLOW_INSECURE_INBOUND_NO_TLS`, `TLS_CERT_PATH`, or `TLS_KEY_PATH`: the
 application is plaintext only on loopback and Caddy owns inbound TLS.
 
@@ -223,9 +224,9 @@ systemctl daemon-reload
 systemd-analyze verify /etc/systemd/system/mud-web-proxy.service
 ```
 
-Render Caddy only after setting a real public proxy hostname. `PROXY_HOSTNAME`
-and `MUD_HOSTNAME` below are operator inputs, not repository production
-values. The placeholder gate rejects every shipped example hostname, including
+Render Caddy only after you set a real public proxy hostname. `PROXY_HOSTNAME`
+and `MUD_HOSTNAME` in the following commands are operator inputs, not
+repository production values. The placeholder gate rejects every shipped example hostname, including
 the example allowed origin. Caddy owns public ports 80 and 443; never create a
 firewall rule for port 6200.
 
@@ -281,7 +282,7 @@ stat -c '%a %U:%G %n' \
   /etc/caddy/Caddyfile
 ```
 
-## Installing a release
+## Install a release
 
 ### Host prerequisites
 
@@ -292,14 +293,14 @@ requires. Install them before anything else:
 apt-get update && apt-get install -y unzip
 ```
 
-`unzip` is not optional — the Bun installer aborts with `error: unzip is
-required to install bun`, so the runtime install below fails outright rather
-than degrading.
+`unzip` is not optional. The Bun installer aborts with `error: unzip is
+required to install bun`, so the runtime install that follows fails outright
+rather than degrading.
 
-**Do not install `gh` from apt.** Ubuntu 26.04 ships `gh` 2.46, and
-`gh attestation` was added in 2.47, so the apt package cannot run the
-provenance check this page requires — verified on a clean 26.04 Droplet on
-2026-08-07, where `gh attestation --help` exits non-zero. Install a current
+**Caution:** Don't install `gh` from apt. Ubuntu 26.04 ships `gh` 2.46, and
+`gh attestation` arrived in 2.47, so the apt package can't run the provenance
+check that this page requires. That result was verified on a clean 26.04
+Droplet on 2026-08-07, where `gh attestation --help` exits non-zero. Install a current
 release from GitHub instead:
 
 ```bash
@@ -316,9 +317,9 @@ gh attestation --help >/dev/null    # must succeed before continuing
 Releases publish `mud-web-proxy-<version>.tar.gz`, `SHA256SUMS`, and an SPDX
 SBOM, each carrying a build-provenance attestation.
 
-Verification is a required step, not an optional one. Both checks run
-**before extraction**, because extracting first means an unverified archive
-has already written to the filesystem:
+Verification is a required step, not an optional one. Both checks run _before
+extraction_, because extracting first means that an unverified archive has
+already written to the filesystem.
 
 `gh release download` authenticates even against a public repository, so on a
 clean host it stops with `To get started with GitHub CLI, please run:
@@ -340,16 +341,16 @@ gh attestation verify "mud-web-proxy-${VERSION}.tar.gz" \
   --owner AndrewGoldfinch
 ```
 
-The two answer different questions and neither substitutes for the other. A
-checksum proves the file matches a digest you were given; it says nothing
-about who produced that digest. The attestation is what ties the artifact to
-this repository. If either fails, stop — do not extract.
+The two answer different questions, and neither one substitutes for the other.
+A checksum proves that the file matches a digest you were given, and says
+nothing about who produced that digest. The attestation is what ties the
+artifact to this repository. If either check fails, stop. Don't extract.
 
-The bundle contains no dependencies and no Bun binary. `node_modules` is
-installed on the host from the bundled `bun.lock`, and the runtime is the
-shared, versioned installation under `/opt/mud-web-proxy/runtimes/`, linked
-per release. Bundling either would make the archive
-architecture-specific and duplicate a runtime for every retained release.
+The bundle contains no dependencies and no Bun binary. The host installs
+`node_modules` from the bundled `bun.lock` file, and the runtime is the shared,
+versioned installation under `/opt/mud-web-proxy/runtimes/`, linked per
+release. Bundling either one would make the archive architecture-specific and
+duplicate a runtime for every retained release.
 
 ### Install
 
@@ -503,11 +504,12 @@ curl --fail --silent --show-error \
 ```
 
 Production acceptance still requires WSS and a complete mock-MUD session.
-A new-Droplet pre-stage does not run this phase.
+A new-Droplet pre-stage doesn't run this phase.
 
 ## Offline rollback
 
-Rollback performs no download, dependency installation, or package-manager resolution.
+Rollback performs no download, no dependency installation, and no
+package-manager resolution.
 
 Run this procedure as root. It reads the persistent record, rejects an empty or
 malformed target, repeats the complete release/runtime validation, creates a
@@ -603,8 +605,8 @@ mock-MUD session.
 
 Before a stable release, MWP-123 asks for seven days of evidence that memory,
 file descriptors, reconnects, and session cleanup are flat under real traffic.
-Growth in any of them is a blocker, and "it seemed fine" does not clear the
-bar — so it is sampled rather than watched.
+Growth in any of them is a blocker, and "it seemed fine" doesn't clear the
+bar, so the canary samples rather than watches.
 
 Install the sampler and its timer on the host running the release candidate:
 
@@ -624,7 +626,7 @@ directory on purpose: the release bundle ships a deliberate six-file
 allowlist, and a one-week diagnostic does not belong in every published
 artifact.
 
-It is read-only — `/proc`, `systemctl show`, and the journal — and needs no
+It is read-only—`/proc`, `systemctl show`, and the journal—and needs no
 configuration change to the service it watches. One row every five minutes
 lands in `/var/lib/mud-web-proxy-canary/samples.csv`, roughly 2,000 rows over
 a week.
@@ -645,10 +647,10 @@ bun scripts/canary-report.ts /var/lib/mud-web-proxy-canary/samples.csv
 measurement, and the script refuses to call it green rather than letting the
 canary become a formality.
 
-The thresholds come from the limits the unit already enforces — `MemoryMax`
-and `LimitNOFILE` — set so that the observed trend would not reach the
-ceiling within a year of uptime. Restarts are handled by judging the longest
-unbroken run: a service that keeps dying looks flat, because each restart
+The thresholds come from the limits the unit already enforces—`MemoryMax`
+and `LimitNOFILE`—set so that the observed trend would not reach the
+ceiling within a year of uptime. The report judges restarts by the longest
+unbroken run: a service that keeps failing looks flat, because each restart
 resets the counters, and flatness earned that way is not health.
 
 Attach the CSV and the report to MWP-123 before closing it.
@@ -677,8 +679,8 @@ certificates on the new host instead of transferring old TLS keys.
 
 ## DigitalOcean firewall, monitoring, and backups
 
-Allow public TCP 80/443 and TCP 22 only from administrative sources; create no
-public rule for 6200. Install the DigitalOcean metrics agent and alert on CPU,
+Allow public TCP 80 and 443, and allow TCP 22 only from administrative
+sources. Create no public rule for 6200. Install the DigitalOcean metrics agent and alert on CPU,
 memory, disk, and load. Enable automated Droplet backups plus separate
 encrypted file backups. See [DigitalOcean firewall rules](https://docs.digitalocean.com/products/networking/firewalls/how-to/configure-rules/),
 [monitoring quickstart](https://docs.digitalocean.com/products/monitoring/getting-started/quickstart/),
@@ -686,12 +688,12 @@ and [backup guidance](https://docs.digitalocean.com/support/how-do-i-manually-ba
 
 ## Operator commands
 
-Do not enable or start either service before the MWP-104 final App Attest
+Don't enable or start either service before the MWP-104 final App Attest
 transfer gate. At that gate, start the loopback proxy first, prove its health,
 then start Caddy and prove that its service is active. The linked post-routing
-gate proves public HTTPS/WSS. If a gate fails, follow the
-[cutover runbook's rollback procedure](new-droplet-cutover.md), which requires
-both new services to be inactive before restoring the old host.
+gate proves public HTTPS and WSS. If a gate fails, follow the rollback
+procedure in [New-Droplet production cutover](new-droplet-cutover.md), which
+requires both new services to be inactive before you restore the old host.
 
 ```bash
 systemctl enable mud-web-proxy.service caddy.service
@@ -701,9 +703,9 @@ systemctl start caddy.service
 systemctl is-active --quiet caddy.service
 ```
 
-The linked post-routing MWP-104 gate owns the public HTTPS/WSS probe. Do not
-use a public hostname curl here: before routing changes, it can reach the old
-host rather than this prepared host.
+The linked post-routing MWP-104 gate owns the public HTTPS and WSS probe.
+Don't use a public hostname with `curl` here: before routing changes, it can
+reach the old host rather than this prepared host.
 
 For routine operation, use systemd directly. PM2 is unsupported and must not
 supervise `mud-web-proxy.service`; there must be one systemd-managed process,
@@ -726,8 +728,8 @@ systemd-analyze verify /etc/systemd/system/mud-web-proxy.service
 systemd-analyze security --no-pager mud-web-proxy.service
 ```
 
-Port 6200 must appear only as `127.0.0.1:6200`; Caddy is the public HTTPS/WSS
-listener. The live descriptor count is available from the reported `MainPID`:
+Port 6200 must appear only as `127.0.0.1:6200`. Caddy is the public HTTPS and
+WSS listener. The live descriptor count is available from the reported `MainPID`:
 
 ```bash
 main_pid="$(systemctl show -p MainPID --value mud-web-proxy.service)"
@@ -738,12 +740,12 @@ find "/proc/${main_pid}/fd" -mindepth 1 -maxdepth 1 | wc -l
 
 `MAX_SESSIONS_GLOBAL=200` rejects excess sessions before the service consumes
 an accidental host-default limit. `LimitNOFILE=1024` budgets four descriptors
-per admitted session (800 total) and reserves 224 for listeners, DNS/TLS,
-APNS, journald, and transient accepts. A session normally uses a client and a
+per admitted session, 800 in total, and reserves 224 for listeners, DNS and
+TLS, APNS, journald, and transient accepts. A session normally uses a client and a
 MUD descriptor; four is deliberate headroom, not an assertion that each
 session always needs four.
 
-The initial one-vCPU, one-GiB host envelope is provisional:
+The initial one-vCPU, 1 GiB host envelope is provisional:
 
 ```text
 MemoryHigh=384M
@@ -754,17 +756,17 @@ LimitNOFILE=1024
 
 The clean-host profile is a lower bound: it sustains 50 concurrent
 WebSocket-to-mock-MUD sessions with bidirectional traffic for 60 seconds. It
-does not prove the 200-session production cap. `MemoryHigh` is the pressure
+doesn't prove the 200-session production cap. `MemoryHigh` is the pressure
 boundary; at `MemoryMax=512M`, systemd can OOM-kill and restart the proxy,
 disconnecting every active session. That is an availability trade to reserve
-capacity for Caddy, the kernel, journald, SSH, and a one-GiB host. MWP-106
+capacity for Caddy, the kernel, journald, SSH, and a 1 GiB host. MWP-106
 must record representative production `MemoryCurrent`, `MemoryPeak`, task,
 descriptor, and `memory.events` measurements before these values are treated
 as production sizing.
 
 #### Steady-state memory observation
 
-`MemoryCurrent` on its own cannot distinguish a service resting well under
+`MemoryCurrent` on its own can't distinguish a service resting well under
 its ceiling from one being reclaimed at it repeatedly. The cgroup event
 counters are what separate the two:
 
@@ -774,13 +776,13 @@ systemctl show mud-web-proxy \
 cat /sys/fs/cgroup/system.slice/mud-web-proxy.service/memory.events
 ```
 
-| Event increments            | Meaning                                                                |
-| --------------------------- | ---------------------------------------------------------------------- |
-| `oom`, `oom_kill`, or `max` | The hard ceiling is being reached. Sessions are being dropped; resize. |
-| `high`                      | `MemoryHigh` throttled allocation. Review before it becomes an `oom`.  |
-| none                        | Operating inside the envelope.                                         |
+| Event increments            | Meaning                                                                    |
+| --------------------------- | -------------------------------------------------------------------------- |
+| `oom`, `oom_kill`, or `max` | The service is reaching the hard ceiling and dropping sessions. Resize it. |
+| `high`                      | `MemoryHigh` throttled allocation. Review before it becomes an `oom`.      |
+| none                        | Operating inside the envelope.                                             |
 
-During a cutover this is a gate rather than a diagnostic: an `oom`,
+During a cutover this measurement is a gate rather than a diagnostic: an `oom`,
 `oom_kill`, or `max` increment blocks native-deployment acceptance outright,
 and a `high` increment requires explicit review. See
 [Production resource observation](new-droplet-cutover.md#production-resource-observation)
@@ -789,7 +791,7 @@ for the 24-hour schedule and the fail-closed recovery.
 Change these limits through the MWP-105 resource design, not the unit alone.
 They are one set: `LimitNOFILE=1024` is budgeted against
 `MAX_SESSIONS_GLOBAL=200`, so raising the session cap without the descriptor
-limit exhausts descriptors before the cap is reached.
+limit exhausts descriptors before the service reaches the cap.
 
 The unit deliberately permits only `AF_UNIX`, `AF_INET`, and `AF_INET6`.
 `AF_NETLINK` is not a speculative allowance. The Ubuntu acceptance test uses
@@ -797,18 +799,18 @@ the hostname `mwp-mud.test` rather than an IP literal, so its WSS/session
 evidence records whether the restricted hostname-resolution path works. Keep
 the unit unchanged when that evidence succeeds. If it fails by hostname while
 the same target succeeds by IP, record both diagnostics and the required
-`AF_NETLINK` rationale in the Ubuntu acceptance evidence and security
-baseline before proposing a unit change; do not loosen the address-family
-restriction silently.
+`AF_NETLINK` rationale in the Ubuntu acceptance evidence and security baseline
+before you propose a unit change. Don't loosen the address-family restriction
+silently.
 
 The security report must remain in systemd's `OK` assessment band. The first
 Ubuntu measurement records its exact image, systemd package, and measured
 exposure in the acceptance evidence. The committed
 `tests/deployment/systemd-security-baseline.json` maximum is exactly measured
 exposure plus `0.1` (for example, `2.3` measures to a `2.4` maximum). A later
-verification run reads that committed maximum; it must never calculate a new
-threshold from the current host. See [Systemd acceptance](systemd-acceptance.md)
-for the measurement-to-baseline workflow and evidence paths.
+verification run reads that committed maximum, and it must never calculate a
+new threshold from the current host. For the measurement-to-baseline workflow
+and evidence paths, see [Systemd acceptance](systemd-acceptance.md).
 
 ## Verification
 
