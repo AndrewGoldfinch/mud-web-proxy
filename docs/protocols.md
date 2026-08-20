@@ -322,8 +322,19 @@ privileged.
 
 ### Frame format
 
-**Server to client**: bare base64, with no envelope. Decode it and render it.
-Frames can be deflate-compressed when MCCP is negotiated.
+**Server to client**: bare base64, with no envelope, wrapping a raw DEFLATE
+stream. Base64-decode the frame, inflate it, then render the result.
+
+Every frame is compressed. Nothing negotiates it and no setting turns it off,
+so a client that renders the decoded bytes without inflating them shows binary
+garbage rather than MUD output. Two details make the difference between working
+and not:
+
+- The stream is **raw** DEFLATE, carrying no zlib or gzip header. Use
+  `zlib.inflateRawSync` in Node, `zlib.decompressobj(-15)` in Python, or your
+  language's equivalent of a negative window size.
+- Each frame is a **complete, independent** stream. Inflate each one on its own;
+  you don't carry decompressor state between frames.
 
 **Client to server**: raw text, not JSON. The proxy forwards anything that
 isn't a JSON object to the MUD as player input.
@@ -344,26 +355,25 @@ Target-policy denials arrive the same way, carrying the policy's own reason.
 ### What the legacy protocol doesn't have
 
 No sessions, no `sessionId`, no resume, no sequence numbers, no typed GMCP or
-echo envelopes. A dropped socket loses the connection permanently. GMCP and
-MCCP still work at the telnet layer, but the proxy doesn't surface them as
-structured messages.
+echo envelopes. A dropped socket loses the connection permanently. GMCP still
+works at the telnet layer, but the proxy doesn't surface it as structured
+messages.
 
 ## Telnet pass-through
 
 The proxy negotiates the following telnet options on your behalf, so your
 client doesn't implement telnet itself:
 
-| Option         | Effect                                                    |
-| -------------- | --------------------------------------------------------- |
-| MCCP2          | Compression, transparently decompressed before you see it |
-| GMCP and ATCP  | Surfaced as `gmcp` envelopes in the typed protocol        |
-| MSDP           | Structured MUD data                                       |
-| MXP            | In-band markup, passed through in `data`                  |
-| TTYPE          | Terminal type, answered on your behalf                    |
-| CHARSET, UTF-8 | Character set negotiation                                 |
-| NAWS           | Window size, driven by your `naws` messages               |
-| ECHO           | Surfaced as `echo` envelopes; drives password masking     |
-| SGA, NEW-ENV   | Suppress go-ahead and environment negotiation             |
+| Option         | Effect                                                |
+| -------------- | ----------------------------------------------------- |
+| GMCP and ATCP  | Surfaced as `gmcp` envelopes in the typed protocol    |
+| MSDP           | Structured MUD data                                   |
+| MXP            | In-band markup, passed through in `data`              |
+| TTYPE          | Terminal type, answered on your behalf                |
+| CHARSET, UTF-8 | Character set negotiation                             |
+| NAWS           | Window size, driven by your `naws` messages           |
+| ECHO           | Surfaced as `echo` envelopes; drives password masking |
+| SGA, NEW-ENV   | Suppress go-ahead and environment negotiation         |
 
 MUD output reaches you as bytes in `data.payload`. ANSI color, MXP markup, and
 anything else the MUD emits arrive intact. The proxy doesn't sanitize game
