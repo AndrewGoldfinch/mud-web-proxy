@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
+## [4.0.1] - 2026-10-26
+
+### Security
+
+- Update Zod to 4.6.7, including bounds checks before validating oversized
+  collections to prevent memory exhaustion.
+- Update cbor-x to 1.6.8, including nested-array allocation limits and decoder
+  error handling fixes for malformed CBOR data.
+
+### Changed
+
+- Update runtime dependencies: cbor-x 1.6.5 to 1.6.8, ws 8.21.3 to 8.22.0,
+  and Zod 4.4.3 to 4.6.7.
+- Update development tools and pinned CI and release actions.
+
+### Fixed
+
+- Correct the legacy protocol documentation: server-to-client frames are
+  always deflated, independently of upstream MCCP negotiation.
+
 ## [4.0.0] - 2026-08-20
 
 First public release. Version numbers below 4.0.0 exist only in this
@@ -132,5 +152,6 @@ security setting is a protection that disappears without anyone noticing.
   for the life of the process.
 - A frame the client has already acknowledged is no longer replayed on resume.
 
-[unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.0...HEAD
+[unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.1...HEAD
+[4.0.1]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/AndrewGoldfinch/mud-web-proxy/releases/tag/v4.0.0
