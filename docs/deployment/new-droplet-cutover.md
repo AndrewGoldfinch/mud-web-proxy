@@ -3,7 +3,7 @@
 ## Scope
 
 This runbook moves production from the legacy PM2 and git-checkout host to a
-fresh Ubuntu 26.04 LTS x64 Droplet. It consumes the native host layout in
+fresh Debian 13 x64 Droplet (`debian-13-x64`). It consumes the native host layout in
 [Native systemd deployment](systemd.md). MWP-103 supplies the verified release,
 MWP-105 supplies the systemd and Caddy files, and MWP-106 owns execution of the
 production cutover. This runbook doesn't convert the old host in place.
@@ -206,28 +206,31 @@ contains none of their production values.
 
 Before a declared low-traffic window, the production owner must:
 
-1. Create an Ubuntu 26.04 LTS x64 Droplet with automated backups enabled.
+1. Create a Debian 13 x64 Droplet (`debian-13-x64`) with automated backups
+   enabled.
    If an existing Reserved IP is used, create it in the same datacenter.
 2. Apply the production Cloud Firewall: public TCP 80 and 443, TCP 22 only
    from administrative sources, and no public rule for 6200.
 3. Install and verify the monitoring agent and notified CPU, memory, disk,
    and load alerts.
-4. Install the host prerequisites. A clean Ubuntu 26.04 image has neither of
-   them, and steps that this runbook already requires need both:
+4. Install the host prerequisites and turn on unattended security upgrades
+   as described in
+   [Host prerequisites](systemd.md#host-prerequisites) and
+   [Keep the host patched](systemd.md#keep-the-host-patched). Steps that this
+   runbook already requires need both tools:
 
-   ```bash
-   apt-get update && apt-get install -y unzip gh
-   ```
+   - `unzip`, from apt. The Bun installer aborts without it, with `error:
+unzip is required to install bun`, so step 5 fails outright rather than
+     degrading.
+   - `gh`, from a GitHub release `.deb`, **not** apt. Debian 13's `gh` 2.46.0
+     predates `gh attestation`. You need it to verify the release attestation
+     before extraction. If it is unavailable in your environment, treat the
+     checksum as the minimum bar and record that you didn't verify provenance,
+     rather than skipping the step silently.
 
-   - `unzip`. The Bun installer aborts without it, with `error: unzip is
-required to install bun`, so step 5 fails outright rather than degrading.
-   - `gh`. You need it to verify the release attestation before extraction. If
-     it is unavailable in your environment, treat the checksum as the minimum
-     bar and record that you didn't verify provenance, rather than skipping
-     the step silently.
-
-   Verified on a disposable Ubuntu 26.04 host on 2026-08-01: both were
-   missing on a fresh image.
+   Before going further, reboot once if `/var/run/reboot-required` exists, so
+   the Droplet is on the newest installed kernel when production traffic
+   arrives.
 
 5. Install the exact versioned Bun runtime, Bun 1.3.14, and verify that the
    release-local runtime reports that exact version. Don't use an unversioned
@@ -857,7 +860,8 @@ timestamp. Start the old-Droplet retention clock only after acceptance.
 
 ## Production resource observation
 
-The MWP-105 limits were measured on a clean single-vCPU Ubuntu 26.04 host
+The MWP-105 limits were measured on a clean single-vCPU Ubuntu 26.04 host,
+before the move to Debian 13,
 under synthetic load, not under production traffic. Accepting them without
 observing real traffic assumes that the two match, and this gate is what makes
 that an observation rather than an assumption.

@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-Nothing yet.
+### Changed
+
+- The native systemd deployment now targets Debian 13 (DigitalOcean
+  `debian-13-x64`) instead of Ubuntu 26.04. Ubuntu's kernel was still
+  unpatched for CVE-2026-98432 more than two weeks after Debian shipped
+  DSA-6568-1. The acceptance harness, provider-evidence schema, and security
+  baseline name the new host, and a contract test keeps the three in step.
+  The baseline's figures come from an offline analysis with Debian's systemd
+  257 and still need a live measurement run on a clean Droplet.
+- The deployment docs cover unattended security upgrades and kernel reboots
+  on Debian, and no longer suggest installing `gh` from apt in the cutover
+  runbook, which contradicted the systemd guide.
 
 ## [4.0.1] - 2026-10-26
 

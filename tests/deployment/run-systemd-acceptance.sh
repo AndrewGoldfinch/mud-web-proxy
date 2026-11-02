@@ -15,6 +15,14 @@ readonly ACCEPTANCE_PHASE="${MWP_ACCEPTANCE_PHASE:-install}"
 readonly EVIDENCE_DIR="/root/mwp-105-evidence-$(date -u +%Y%m%dT%H%M%SZ)"
 readonly RESUME_FILE=/root/mwp-105-acceptance-resume
 readonly BUN_VERSION=1.3.14
+# The single supported clean host. Every host-identity check below reads these,
+# so a release change touches this block, the image literal in
+# digitalocean-evidence.ts, and the committed security baseline. The contract
+# tests fail if those three disagree.
+readonly HOST_OS_ID=debian
+readonly HOST_OS_VERSION=13
+readonly HOST_IMAGE=debian-13-x64
+readonly DISPOSABLE_VM_ACK='ERASE THIS CLEAN DEBIAN 13 VM'
 readonly NODE_ACCEPTANCE_VERSION=22.21.1
 readonly NODE_ACCEPTANCE_ARCHIVE="node-v${NODE_ACCEPTANCE_VERSION}-linux-x64.tar.gz"
 readonly NODE_ACCEPTANCE_DIST_URL="https://nodejs.org/dist/v${NODE_ACCEPTANCE_VERSION}"
@@ -86,8 +94,7 @@ require_disposable_host() {
   local source_bun
 
   [[ "${EUID}" -eq 0 ]] || fail 'must run as root'
-  [[ "${MWP_DISPOSABLE_VM_ACK:-}" == \
-    'ERASE THIS CLEAN UBUNTU 26.04 VM' ]] ||
+  [[ "${MWP_DISPOSABLE_VM_ACK:-}" == "${DISPOSABLE_VM_ACK}" ]] ||
     fail 'set the exact disposable VM acknowledgement'
   for path in \
     /opt/mud-web-proxy \
@@ -100,8 +107,8 @@ require_disposable_host() {
 
   # shellcheck source=/dev/null
   source /etc/os-release
-  [[ "${ID:-}" == ubuntu && "${VERSION_ID:-}" == 26.04 ]] ||
-    fail 'requires Ubuntu 26.04'
+  [[ "${ID:-}" == "${HOST_OS_ID}" && "${VERSION_ID:-}" == "${HOST_OS_VERSION}" ]] ||
+    fail "requires ${HOST_OS_ID} ${HOST_OS_VERSION}"
   [[ "$(uname -m)" == x86_64 ]] || fail 'requires x86_64'
   host_shape_matches /proc/meminfo "$(nproc)" ||
     fail 'requires one logical CPU and 900000-1200000 KiB of memory'
@@ -684,10 +691,12 @@ measure_security() {
   systemd_package="$(dpkg-query -W -f='${Version}\n' systemd)"
   MEASURED_EXPOSURE="${measured_exposure}" \
     SYSTEMD_PACKAGE="${systemd_package}" \
+    HOST_IMAGE="${HOST_IMAGE}" \
+    HOST_OS_VERSION="${HOST_OS_VERSION}" \
     "${INSTALL_ROOT}/current/runtime/bin/bun" -e '
       console.log(JSON.stringify({
-        image: "ubuntu-26-04-x64",
-        osVersion: "26.04",
+        image: Bun.env.HOST_IMAGE,
+        osVersion: Bun.env.HOST_OS_VERSION,
         architecture: "x86_64",
         systemdPackage: Bun.env.SYSTEMD_PACKAGE,
         measuredExposure: Number(Bun.env.MEASURED_EXPOSURE),
@@ -723,8 +732,8 @@ verify_security() {
           ].join("\t"));
         '
     )
-  [[ "${baseline_image}" == ubuntu-26-04-x64 &&
-    "${baseline_os}" == 26.04 &&
+  [[ "${baseline_image}" == "${HOST_IMAGE}" &&
+    "${baseline_os}" == "${HOST_OS_VERSION}" &&
     "${architecture}" == x86_64 ]] ||
     fail 'systemd security baseline host does not match'
   [[ "${maximum_exposure}" =~ ^[0-9]+\.[0-9]$ ]] ||
@@ -997,8 +1006,7 @@ fi
 
 # This check deliberately precedes the privilege check so ordinary CI can
 # exercise the destructive-host acknowledgement without becoming root.
-[[ "${MWP_DISPOSABLE_VM_ACK:-}" == \
-  'ERASE THIS CLEAN UBUNTU 26.04 VM' ]] ||
+[[ "${MWP_DISPOSABLE_VM_ACK:-}" == "${DISPOSABLE_VM_ACK}" ]] ||
   fail 'set the exact disposable VM acknowledgement'
 require_disposable_host
 

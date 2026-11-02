@@ -54,7 +54,7 @@ HTTPS and WSS, and to obtain certificates automatically.
 The portable path. Caddy and the proxy run as two containers; only 80 and 443
 are published.
 
-A clean Ubuntu image has neither Docker nor the Compose plugin; install them
+A clean Debian or Ubuntu image has neither Docker nor the Compose plugin; install them
 from [Docker's own repository](https://docs.docker.com/engine/install/) first.
 The distribution's `docker.io` package doesn't work, because it omits
 Compose v2.
@@ -91,13 +91,14 @@ For the full walkthrough, see
 
 ## Quickstart: Bun and systemd
 
-The native path for a single Linux VM. The proxy runs under systemd bound to
-loopback, with Caddy on the host in front of it.
+The native path for a single Linux VM; Debian 13 is the supported host. The
+proxy runs under systemd bound to loopback, with Caddy on the host in front of
+it.
 
 Install the two prerequisites:
 
 ```bash
-# unzip first — a clean Ubuntu image has no unzip, and without it the Bun
+# unzip first — a clean cloud image may lack it, and without it the Bun
 # installer aborts with "error: unzip is required to install bun"
 sudo apt update && sudo apt install -y unzip
 

@@ -21,11 +21,43 @@ guide doesn't replace them.
 
 ## Supported host
 
-The only supported host is Ubuntu 26.04 LTS x64, using DigitalOcean image
-`ubuntu-26-04-x64`. The old host release is irrelevant, because this procedure is a new-host
-cutover, not an in-place conversion. See the [Ubuntu 26.04 release
-notes](https://documentation.ubuntu.com/release-notes/26.04/) and
-[DigitalOcean Droplets updates](https://docs.digitalocean.com/products/droplets/#latest-updates).
+The only supported host is Debian 13 ("trixie") x64, using DigitalOcean image
+`debian-13-x64`. The old host release is irrelevant, because this procedure is a new-host
+cutover, not an in-place conversion. See the [Debian 13 release
+notes](https://www.debian.org/releases/trixie/releasenotes) and
+[DigitalOcean's Linux image list](https://docs.digitalocean.com/products/droplets/details/images/).
+
+Debian 13 ships systemd 257. That is the floor for this layout: the sysusers
+`u!` locked-account entry first appeared in 257, and every directive in the
+shipped unit predates it. Ubuntu 26.04 was the previous target and was dropped
+after its kernel went more than two weeks without a fix for CVE-2026-98432
+(remote, CVSS 9.8) that Debian had already shipped in DSA-6568-1.
+
+### Keep the host patched
+
+Kernel fixes only help if they are installed and booted. Enable unattended
+security upgrades on first login and confirm APT picked the settings up:
+
+```bash
+apt-get update && apt-get install -y unattended-upgrades
+cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF_APT'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF_APT
+eval "$(apt-config shell \
+  lists APT::Periodic::Update-Package-Lists \
+  upgrade APT::Periodic::Unattended-Upgrade)"
+test "$lists" = 1 && test "$upgrade" = 1
+apt-config dump | grep -F 'label=Debian-Security'
+```
+
+The last line must print at least one origin pattern: the stock
+`50unattended-upgrades` allows the Debian security archive, which is where
+kernel DSAs land. It doesn't reboot. A new kernel package creates
+`/var/run/reboot-required`; until you reboot, `uname -v` still names the old
+Debian kernel version. Reboot in a quiet window, then run the
+[Verification](#verification) checks. Both units are enabled, so they come back
+on their own, and each reboot drops every open session.
 
 ## Filesystem layout
 
@@ -89,15 +121,15 @@ DynamicUser=no
 uses a transient UID and GID, and conflicts with pre-seeded
 `mud-web-proxy:mud-web-proxy` state.
 
-On Ubuntu 26.04, systemd creates the configured state directory when absent,
+On Debian 13, systemd creates the configured state directory when absent,
 sets the innermost directory's owner and `StateDirectoryMode`, and recursively
 changes ownership only when that directory initially has the wrong owner or
 group. When the directory already has the configured owner and group, systemd
 leaves child ownership unchanged as an optimization. It doesn't infer or
 repair the pre-seeded JSON file's `0600` mode. The installer must therefore
-verify the directory and file independently before first start. See Ubuntu
-26.04's
-[systemd.exec `StateDirectory=` documentation](https://manpages.ubuntu.com/manpages/resolute/man5/systemd.exec.5.html#runtime-directory-state-directory-cache-directory-logs-directory-configuration-directory).
+verify the directory and file independently before first start. See Debian
+13's
+[systemd.exec `StateDirectory=` documentation](https://manpages.debian.org/trixie/systemd/systemd.exec.5.en.html).
 
 ## Versioned Bun runtime
 
@@ -150,13 +182,13 @@ environment without reviewing it.
 
 ## Install the native operator files
 
-Run this installation sequence as root on the new Ubuntu 26.04 host, after
+Run this installation sequence as root on the new Debian 13 host, after
 the MWP-103 release has been verified and before the MWP-104 final activation
 gate. It installs no production App Attest state, and it doesn't start either
 service. Keep the production environment and final App Attest store out of
 this procedure until the cutover runbook permits them.
 
-Install Caddy from its official stable Ubuntu repository. The package starts
+Install Caddy from its official stable apt repository. The package starts
 `caddy.service`. Stop it immediately, so that the packaged default can't serve
 before you validate the rendered configuration.
 
@@ -286,21 +318,22 @@ stat -c '%a %U:%G %n' \
 
 ### Host prerequisites
 
-A clean Ubuntu 26.04 image ships with neither of the tools this section
-requires. Install them before anything else:
+Install the tools this section requires before anything else. On a fresh
+image either may be missing, and installing one that is already present is a
+no-op:
 
 ```bash
-apt-get update && apt-get install -y unzip
+apt-get update && apt-get install -y unzip sudo
 ```
 
 `unzip` is not optional. The Bun installer aborts with `error: unzip is
 required to install bun`, so the runtime install that follows fails outright
 rather than degrading.
 
-**Caution:** Don't install `gh` from apt. Ubuntu 26.04 ships `gh` 2.46, and
+**Caution:** Don't install `gh` from apt. Debian 13 ships `gh` 2.46.0, and
 `gh attestation` arrived in 2.47, so the apt package can't run the provenance
-check that this page requires. That result was verified on a clean 26.04
-Droplet on 2026-08-07, where `gh attestation --help` exits non-zero. Install a current
+check that this page requires. (Ubuntu 26.04 had the same 2.46 package; on a
+clean 26.04 Droplet `gh attestation --help` exited non-zero.) Install a current
 release from GitHub instead:
 
 ```bash
@@ -309,8 +342,6 @@ curl -fsSLO "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH
 apt-get install -y "./gh_${GH_VERSION}_linux_amd64.deb"
 gh attestation --help >/dev/null    # must succeed before continuing
 ```
-
-`unzip` was confirmed missing on a fresh Ubuntu 26.04 Droplet on 2026-08-01.
 
 ### Obtain and verify the bundle
 
@@ -794,17 +825,17 @@ They are one set: `LimitNOFILE=1024` is budgeted against
 limit exhausts descriptors before the service reaches the cap.
 
 The unit deliberately permits only `AF_UNIX`, `AF_INET`, and `AF_INET6`.
-`AF_NETLINK` is not a speculative allowance. The Ubuntu acceptance test uses
+`AF_NETLINK` is not a speculative allowance. The clean-host acceptance test uses
 the hostname `mwp-mud.test` rather than an IP literal, so its WSS/session
 evidence records whether the restricted hostname-resolution path works. Keep
 the unit unchanged when that evidence succeeds. If it fails by hostname while
 the same target succeeds by IP, record both diagnostics and the required
-`AF_NETLINK` rationale in the Ubuntu acceptance evidence and security baseline
+`AF_NETLINK` rationale in the acceptance evidence and security baseline
 before you propose a unit change. Don't loosen the address-family restriction
 silently.
 
 The security report must remain in systemd's `OK` assessment band. The first
-Ubuntu measurement records its exact image, systemd package, and measured
+Debian 13 measurement records its exact image, systemd package, and measured
 exposure in the acceptance evidence. The committed
 `tests/deployment/systemd-security-baseline.json` maximum is exactly measured
 exposure plus `0.1` (for example, `2.3` measures to a `2.4` maximum). A later
