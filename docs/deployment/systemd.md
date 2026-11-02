@@ -17,7 +17,9 @@ ships these MWP-105 artifacts:
 MWP-103 supplies a verified release bundle. The production state-transfer,
 final App Attest, activation, and rollback gates remain in the
 [New-Droplet production cutover](new-droplet-cutover.md) runbook, and this
-guide doesn't replace them.
+guide doesn't replace them. Moving the existing Ubuntu 26.04 production host
+to Debian 13 follows
+[Move production from Ubuntu 26.04 to Debian 13](ubuntu-to-debian-move.md).
 
 ## Supported host
 

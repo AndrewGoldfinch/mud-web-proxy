@@ -16,6 +16,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   baseline name the new host, and a contract test keeps the three in step.
   The baseline's figures come from an offline analysis with Debian's systemd
   257 and still need a live measurement run on a clean Droplet.
+- New runbook, `docs/deployment/ubuntu-to-debian-move.md`, for moving the
+  running native deployment from its Ubuntu 26.04 Droplet to Debian 13. It
+  reuses the cutover gates, stops the old service before its edge so the v4
+  shutdown flush is the last write, keeps the old host's intact store rather
+  than restoring an older safety copy on early failure, reissues TLS on the
+  new host, and isolates the old Droplet during retention.
 - The deployment docs cover unattended security upgrades and kernel reboots
   on Debian, and no longer suggest installing `gh` from apt in the cutover
   runbook, which contradicted the systemd guide.

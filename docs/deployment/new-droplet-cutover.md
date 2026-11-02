@@ -8,6 +8,11 @@ fresh Debian 13 x64 Droplet (`debian-13-x64`). It consumes the native host layou
 MWP-105 supplies the systemd and Caddy files, and MWP-106 owns execution of the
 production cutover. This runbook doesn't convert the old host in place.
 
+Production has since completed this cutover onto Ubuntu 26.04. To move that
+running native deployment to Debian 13, use
+[Move production from Ubuntu 26.04 to Debian 13](ubuntu-to-debian-move.md),
+which reuses this runbook's gates with a native source host.
+
 Complete the private cutover record before the window. Don't put production
 hostnames, addresses, Droplet IDs, secret values, resolved legacy paths, or
 legacy supervisor commands in this repository.
