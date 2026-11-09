@@ -69,7 +69,7 @@
   "dependencies": {
     "cbor-x": "^1.6.8",
     "iconv-lite": "^0.7.3",
-    "ws": "^8.22.0",
+    "ws": "^8.22.1",
     "zod": "^4.6.7"
   },
   "private": true
