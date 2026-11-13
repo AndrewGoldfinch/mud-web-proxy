@@ -1,7 +1,7 @@
 # Systemd acceptance
 
 Run this procedure only on a disposable Basic one-vCPU, 1 GiB DigitalOcean
-Droplet created from `ubuntu-26-04-x64`. It installs a synthetic release, test App
+Droplet created from `debian-13-x64`. It installs a synthetic release, test App
 Attest identifiers, and a test `{}` App Attest store. Production
 configuration, hostnames, secrets, and App Attest keys never enter this test.
 
@@ -24,8 +24,8 @@ source /etc/os-release
 test -z "$(git status --porcelain=v1 --untracked-files=no)"
 test "$(git rev-parse --show-toplevel)" = "$(pwd -P)"
 git rev-parse --verify 'HEAD^{commit}'
-test "${ID}" = ubuntu
-test "${VERSION_ID}" = 26.04
+test "${ID}" = debian
+test "${VERSION_ID}" = 13
 test "$(uname -m)" = x86_64
 test "$(awk '/MemTotal/ {print ($2 >= 900000 && $2 <= 1200000)}' /proc/meminfo)" = 1
 test "$(nproc)" = 1
@@ -59,7 +59,7 @@ DigitalOcean's fixed on-host Droplet-ID metadata endpoint with the system curl
 binary and bounded timeouts, requires one positive decimal ID, and requires
 that ID to equal the control-plane `dropletId`. The endpoint value is neither an
 operator input nor retained evidence. The runner rejects anything except the
-exact `ubuntu-26-04-x64`, `s-1vcpu-1gb`, 1,024 MiB, one-vCPU, 25 GiB active
+exact `debian-13-x64`, `s-1vcpu-1gb`, 1,024 MiB, one-vCPU, 25 GiB active
 acceptance shape, and independently checks the host's visible CPU and memory.
 It retains the on-host ID, exact clean Git `HEAD`, and a SHA-256 manifest for
 the entire tracked checkout before installing or building anything.
@@ -83,7 +83,7 @@ exists. The acknowledgment can't override this check:
 Its acknowledgment value is exact:
 
 ```text
-ERASE THIS CLEAN UBUNTU 26.04 VM
+ERASE THIS CLEAN DEBIAN 13 VM
 ```
 
 The runner creates `/root/mwp-105-evidence-<UTC timestamp>` and a root-only
@@ -100,7 +100,7 @@ doesn't claim that a baseline gate passed.
 sudo env \
   PATH="$PATH" \
   MWP_DIGITALOCEAN_EVIDENCE_PATH=/root/mwp-105-digitalocean-control-plane.json \
-  MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' \
+  MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN DEBIAN 13 VM' \
   MWP_SECURITY_MODE=measure \
   MWP_ACCEPTANCE_PHASE=install \
   bash tests/deployment/run-systemd-acceptance.sh
@@ -124,7 +124,7 @@ sudo systemctl reboot
 ```
 
 ```bash
-sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' MWP_SECURITY_MODE=measure MWP_ACCEPTANCE_PHASE=post-reboot bash tests/deployment/run-systemd-acceptance.sh
+sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN DEBIAN 13 VM' MWP_SECURITY_MODE=measure MWP_ACCEPTANCE_PHASE=post-reboot bash tests/deployment/run-systemd-acceptance.sh
 ```
 
 The runner doesn't reboot its own SSH session. `post-reboot` requires the
@@ -152,7 +152,7 @@ security_report="$EVIDENCE_DIR/systemd-security.txt"
 [[ -f "$security_report" && ! -L "$security_report" && -s "$security_report" ]]
 measurement_fields="$(MEASUREMENT_JSON="$measurement_json" bun -e '
   const value = await Bun.file(Bun.env.MEASUREMENT_JSON).json();
-  if (value.image !== "ubuntu-26-04-x64" || value.osVersion !== "26.04" ||
+  if (value.image !== "debian-13-x64" || value.osVersion !== "13" ||
       value.architecture !== "x86_64" ||
       typeof value.systemdPackage !== "string" ||
       !/^[0-9]/.test(value.systemdPackage) ||
@@ -170,20 +170,43 @@ maximum_exposure="$(awk -v score="${measured_exposure}" 'BEGIN { printf "%.1f", 
 [[ "$maximum_exposure" =~ ^[0-9]+\.[0-9]$ ]]
 ```
 
-The JSON records literal `image: "ubuntu-26-04-x64"`, `osVersion: "26.04"`,
+The JSON records literal `image: "debian-13-x64"`, `osVersion: "13"`,
 and `architecture: "x86_64"`, the captured `systemdPackage`, numeric
 `measuredExposure`, numeric `maximumExposure`, and one specific residual
 explanation for every failed systemd assessment. The maximum is exactly the
 measured exposure plus `0.1`. It is a regression threshold, never a value
-recalculated from a later host. Each residual names the actual assessment and
+recalculated from a later host. Drop the `provenance` field if it is present;
+it marks a baseline that did not come from this procedure. Each residual names the actual assessment and
 explains whether it is required application networking, inapplicable to the
 locked non-root service, or a measured compatibility deferral. An unexplained
 residual blocks acceptance.
 
-### Recorded Ubuntu 26.04 measurement
+### Debian 13 baseline status
+
+The committed Debian 13 baseline has **not** come from a live run yet. Its
+numbers come from `systemd-analyze security --offline=true` using Debian's own
+systemd `257.13-1~deb13u1` binaries against the shipped unit, run on
+2026-11-02. That produced exposure `2.8` in the `OK` band and exactly the 19
+residuals recorded under Ubuntu, so the file keeps the `2.9` maximum and the
+existing residual explanations, and carries a `provenance` field saying so.
+The same 257 binaries passed `systemd-analyze verify` on all three shipped
+units and created the locked `mud-web-proxy` account from the sysusers entry.
+
+Offline analysis reads the unit file rather than the loaded unit, and it
+doesn't exercise the workload, Caddy, the reboot, or hostname resolution.
+Run the measure procedure above on a clean `debian-13-x64` Droplet and replace
+the baseline from its evidence before production cutover. Verify mode also
+compares the host's exact `systemd` package version, so a Debian point release
+that moves systemd past `257.13-1~deb13u1` needs a fresh measurement too.
+
+### Previous Ubuntu 26.04 measurement
+
+This section is the record from the earlier Ubuntu 26.04 target. The resource
+figures are the most recent live workload numbers until a Debian 13 run
+replaces them.
 
 The completed clean-host measurement used systemd `259.5-0ubuntu3`. Its
-exposure was `2.8` in the `OK` band, so the checked-in regression maximum is
+exposure was `2.8` in the `OK` band, so the checked-in regression maximum was
 `2.9`. The hostname-based `mwp-mud.test` session succeeded with
 `RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6`, so `AF_NETLINK` is not
 required.
@@ -213,7 +236,7 @@ doesn't require a resource-limit revision.
 
 ## Final run: verify the recorded threshold
 
-Measurement changes the first VM. Create a new clean `ubuntu-26-04-x64`
+Measurement changes the first VM. Create a new clean `debian-13-x64`
 Droplet, or rebuild the first Droplet from that image after copying evidence
 and committing the baseline. Then run:
 
@@ -221,7 +244,7 @@ and committing the baseline. Then run:
 sudo env \
   PATH="$PATH" \
   MWP_DIGITALOCEAN_EVIDENCE_PATH=/root/mwp-105-digitalocean-control-plane.json \
-  MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' \
+  MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN DEBIAN 13 VM' \
   MWP_SECURITY_MODE=verify \
   MWP_ACCEPTANCE_PHASE=install \
   bash tests/deployment/run-systemd-acceptance.sh
@@ -232,7 +255,7 @@ non-`OK` assessment, or a score above the recorded maximum. It runs
 `systemd-analyze security
 --threshold=<maximumExposure-times-10-as-an-integer>`. The JSON remains on
 systemd's human-readable 0-10 scale, and only the CLI boundary converts the
-strict one-decimal value to systemd 259's integer percentage, so that `2.9`
+strict one-decimal value to systemd's integer percentage, so that `2.9`
 becomes `29`. It doesn't derive a new maximum. It also parses every live failed-assessment
 identifier and requires exact sorted equality with the baseline: Duplicates,
 missing identifiers, extras, and unparseable failure lines all block
@@ -249,7 +272,7 @@ After the Droplet reconnects, return to the same checkout and run the
 post-reboot phase. Don't paste this command into the pre-reboot shell block:
 
 ```bash
-sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN UBUNTU 26.04 VM' MWP_SECURITY_MODE=verify MWP_ACCEPTANCE_PHASE=post-reboot bash tests/deployment/run-systemd-acceptance.sh
+sudo env PATH="$PATH" MWP_DISPOSABLE_VM_ACK='ERASE THIS CLEAN DEBIAN 13 VM' MWP_SECURITY_MODE=verify MWP_ACCEPTANCE_PHASE=post-reboot bash tests/deployment/run-systemd-acceptance.sh
 ```
 
 Acceptance completes only when post-reboot exits zero and the original

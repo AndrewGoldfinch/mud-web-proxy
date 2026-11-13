@@ -6,7 +6,7 @@ export interface DigitalOceanEvidence {
   dropletId: number;
   name: string;
   regionSlug: string;
-  imageSlug: 'ubuntu-26-04-x64';
+  imageSlug: 'debian-13-x64';
   sizeSlug: 's-1vcpu-1gb';
   memoryMiB: 1024;
   vcpus: 1;
@@ -27,7 +27,7 @@ const evidenceSchema = z.object({
   dropletId: z.number().int().positive(),
   name: z.string().regex(/^mwp-105-acceptance-(measure|verify)-[a-z0-9-]+$/),
   regionSlug: z.string().regex(/^[a-z]+[0-9]+$/),
-  imageSlug: z.literal('ubuntu-26-04-x64'),
+  imageSlug: z.literal('debian-13-x64'),
   sizeSlug: z.literal('s-1vcpu-1gb'),
   memoryMiB: z.literal(1024),
   vcpus: z.literal(1),
