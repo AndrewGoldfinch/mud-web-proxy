@@ -44,11 +44,12 @@ describe('recognize', () => {
 });
 
 describe('KNOWN_TYPES', () => {
-  test('contains exactly the seven handled types', () => {
+  test('contains all handled client message types', () => {
     expect([...KNOWN_TYPES].sort()).toEqual([
       'activityToken',
       'connect',
       'disconnect',
+      'erionSoundpack',
       'input',
       'naws',
       'resume',
@@ -132,6 +133,10 @@ describe('validateTyped: connect', () => {
 });
 
 describe('validateTyped: other types', () => {
+  test('erionSoundpack requires a boolean enabled value', () => {
+    expect(validateTyped('erionSoundpack', { type: 'erionSoundpack', enabled: true })).toEqual({ ok: true });
+    expect(validateTyped('erionSoundpack', { type: 'erionSoundpack', enabled: 'true' })).toMatchObject({ ok: false });
+  });
   test('resume requires sessionId, token, lastSeq', () => {
     expect(
       validateTyped('resume', {

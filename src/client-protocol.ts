@@ -22,6 +22,7 @@ import type {
   ActivityTokenRequest,
   ConnectRequest,
   DisconnectRequest,
+  ErionSoundpackRequest,
   InputRequest,
   NAWSRequest,
   ResumeRequest,
@@ -75,6 +76,7 @@ export const KNOWN_TYPES = [
   'resume',
   'activityToken',
   'syncAck',
+  'erionSoundpack',
   'input',
   'naws',
   'disconnect',
@@ -307,6 +309,10 @@ const TYPED_FIELD_CHECKS = new Map<string, readonly FieldCheck[]>([
     ],
   ],
   [
+    'erionSoundpack',
+    [(o) => checkField(o, 'enabled', z.boolean(), 'enabled must be a boolean')],
+  ],
+  [
     // An empty line is legitimate: the player pressed enter.
     'input',
     [(o) => checkField(o, 'text', stringSchema, 'text must be a string')],
@@ -362,6 +368,7 @@ export type TypedRequest =
   | ActivityTokenRequest
   | ConnectRequest
   | DisconnectRequest
+  | ErionSoundpackRequest
   | InputRequest
   | NAWSRequest
   | ResumeRequest
@@ -414,6 +421,10 @@ const TYPED_SCHEMAS = new Map<string, z.ZodType<TypedRequest>>([
       sessionId: z.string(),
       lastSeq: z.number(),
     }),
+  ],
+  [
+    'erionSoundpack',
+    z.looseObject({ type: z.literal('erionSoundpack'), enabled: z.boolean() }),
   ],
   ['input', z.looseObject({ type: z.literal('input'), text: z.string() })],
   [

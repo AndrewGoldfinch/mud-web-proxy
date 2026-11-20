@@ -313,6 +313,44 @@ describe('Echo-state forwarding over the wire (SessionIntegration)', () => {
     }
   });
 
+  test('Erion MSDP reports reach only live subscribers and never enter replay', () => {
+    const si = makeIntegration();
+    const session = si.sessionManager.create('mud.test', 4000);
+    const listener = makeClientSocket();
+    const observer = makeClientSocket();
+    const writes: Buffer[] = [];
+    session.sendToMud = (data) => { writes.push(Buffer.from(data)); return true; };
+    si.sessionManager.attachWebSocket(session.id, listener);
+    si.sessionManager.attachWebSocket(session.id, observer);
+    const subscribe = (enabled: boolean) => si.parseNewMessage(listener,
+      Buffer.from(JSON.stringify({type: 'erionSoundpack', enabled})));
+    const process = (bytes: Buffer) => siInternals(si).processMudData(session, listener, bytes);
+    const frame = (payload: string) => Buffer.concat([
+      Buffer.from([255, 250, 69]), Buffer.from(payload), Buffer.from([255, 240]),
+    ]);
+    const payload = '\x01GET\x021\x01TELLSOUND\x024';
+    try {
+      expect(subscribe(true)).toEqual({kind: 'handled'});
+      process(Buffer.from([255, 251, 69]));
+      process(frame(payload));
+      expect(listener.messages.map((m) => JSON.parse(m).type)).toEqual(['erionMSDP']);
+      expect(JSON.parse(listener.messages[0]).payload).toEqual(Buffer.from(payload).toString('base64'));
+      listener.messages.length = 0;
+      expect(writes.at(-1)).toEqual(frame('\x01REPORT\x02GET\x02TELLSOUND'));
+      process(Buffer.concat([Buffer.from('a'), frame(payload), Buffer.from('b')]));
+      expect(listener.messages.map((m) => JSON.parse(m).type)).toEqual(['data', 'erionMSDP', 'data']);
+      expect(JSON.parse(listener.messages[1]).payload).toEqual(Buffer.from(payload).toString('base64'));
+      expect(observer.messages.map((m) => JSON.parse(m).type)).toEqual(['data', 'data']);
+      expect(session.replayAfterSequence(0).map((c) => c.data.toString())).toEqual(['a', 'b']);
+      subscribe(false);
+      expect(writes.at(-1)).toEqual(frame('\x01UNREPORT\x02GET\x02TELLSOUND'));
+      process(frame(payload));
+      expect(listener.messages).toHaveLength(3);
+    } finally {
+      si.shutdown();
+    }
+  });
+
   test('a password prompt from the MUD forwards an ordered echo message', () => {
     const si = makeIntegration();
     const session = si.sessionManager.create('mud.test', 4000);

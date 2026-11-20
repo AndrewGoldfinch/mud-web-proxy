@@ -67,6 +67,10 @@ export interface GmcpMessage {
   data: string;
 }
 
+export interface MsdpMessage {
+  payload: Buffer;
+}
+
 /**
  * Ordered output unit: either a run of clean text, or an ECHO-suppression state
  * transition. Split at the exact transition point (not just an end-of-chunk flag) so
@@ -75,7 +79,9 @@ export interface GmcpMessage {
  * next line — can be forwarded with the suppression boundary in the right place.
  */
 export type TelnetSegment =
-  { kind: 'text'; data: Buffer } | { kind: 'echo'; suppressed: boolean };
+  | { kind: 'text'; data: Buffer }
+  | { kind: 'echo'; suppressed: boolean }
+  | { kind: 'msdp'; payload: Buffer };
 
 export interface TelnetParseResult {
   /** All text bytes this call, concatenated — unchanged from before segments existed. */
@@ -83,6 +89,7 @@ export interface TelnetParseResult {
   /** Ordered text/echo segments, split at each ECHO transition. */
   segments: TelnetSegment[];
   gmcpMessages: GmcpMessage[];
+  msdpMessages: MsdpMessage[];
 }
 
 /** Per-call accumulator threaded through `process()` and the negotiation handlers. */
@@ -91,6 +98,7 @@ interface ParseOutput {
   allText: number[];
   segments: TelnetSegment[];
   gmcpMessages: GmcpMessage[];
+  msdpMessages: MsdpMessage[];
 }
 
 export class TelnetParser {
@@ -105,6 +113,7 @@ export class TelnetParser {
   private gmcpNegotiated = false;
   private ttypeNegotiated = false;
   private msdpNegotiated = false;
+  private erionSoundpackEnabled = false;
   private mxpNegotiated = false;
   private newEnvNegotiated = false;
   private echoNegotiated = false;
@@ -142,6 +151,7 @@ export class TelnetParser {
       allText: [],
       segments: [],
       gmcpMessages: [],
+      msdpMessages: [],
     };
 
     for (let i = 0; i < data.length; i++) {
@@ -221,11 +231,7 @@ export class TelnetParser {
         case State.SUBNEG_IAC:
           if (byte === SE) {
             // End of subnegotiation
-            this.handleSubnegotiation(
-              this.subnegOption,
-              this.subnegBuffer,
-              output.gmcpMessages,
-            );
+            this.handleSubnegotiation(this.subnegOption, this.subnegBuffer, output);
             this.state = State.TEXT;
           } else if (byte === IAC) {
             // Escaped IAC inside subneg. Goes through the same choke point as
@@ -260,6 +266,7 @@ export class TelnetParser {
       text: Buffer.from(output.allText),
       segments: output.segments,
       gmcpMessages: output.gmcpMessages,
+      msdpMessages: output.msdpMessages,
     };
   }
 
@@ -375,6 +382,7 @@ export class TelnetParser {
           this.sendMSDPPair('CLIENT_VERSION', '1.0');
           this.sendMSDPPair('XTERM_256_COLORS', '1');
           this.sendMSDPPair('UTF_8', '1');
+          if (this.erionSoundpackEnabled) this.sendErionReports(true);
         }
         break;
 
@@ -457,7 +465,7 @@ export class TelnetParser {
   private handleSubnegotiation(
     option: number,
     data: number[],
-    gmcpMessages: GmcpMessage[],
+    output: ParseOutput,
   ): void {
     switch (option) {
       case TTYPE:
@@ -468,7 +476,16 @@ export class TelnetParser {
         break;
 
       case GMCP:
-        this.handleGMCPSubneg(data, gmcpMessages);
+        this.handleGMCPSubneg(data, output.gmcpMessages);
+        break;
+
+      case MSDP:
+        if (this.msdpNegotiated && data.length > 0) {
+          const payload = Buffer.from(data);
+          this.flushText(output);
+          output.msdpMessages.push({ payload });
+          output.segments.push({ kind: 'msdp', payload });
+        }
         break;
 
       case CHARSET:
@@ -564,6 +581,21 @@ export class TelnetParser {
     const valBuf = Buffer.from(val, 'ascii');
     const footer = Buffer.from([IAC, SE]);
     this.writeToMud(Buffer.concat([header, keyBuf, sep, valBuf, footer]));
+  }
+
+  setErionSoundpackSubscription(enabled: boolean): void {
+    this.erionSoundpackEnabled = enabled;
+    if (this.msdpNegotiated) this.sendErionReports(enabled);
+  }
+
+  private sendErionReports(enabled: boolean): void {
+    const action = Buffer.from(enabled ? 'REPORT' : 'UNREPORT', 'ascii');
+    this.writeToMud(Buffer.concat([
+      Buffer.from([IAC, SB, MSDP, MSDP_VAR]), action,
+      Buffer.from([MSDP_VAL]), Buffer.from('GET', 'ascii'),
+      Buffer.from([MSDP_VAL]), Buffer.from('TELLSOUND', 'ascii'),
+      Buffer.from([IAC, SE]),
+    ]));
   }
 
   /**
