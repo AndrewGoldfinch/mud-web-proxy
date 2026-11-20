@@ -134,8 +134,18 @@ describe('validateTyped: connect', () => {
 
 describe('validateTyped: other types', () => {
   test('erionSoundpack requires a boolean enabled value', () => {
-    expect(validateTyped('erionSoundpack', { type: 'erionSoundpack', enabled: true })).toEqual({ ok: true });
-    expect(validateTyped('erionSoundpack', { type: 'erionSoundpack', enabled: 'true' })).toMatchObject({ ok: false });
+    expect(
+      validateTyped('erionSoundpack', {
+        type: 'erionSoundpack',
+        enabled: true,
+      }),
+    ).toEqual({ ok: true });
+    expect(
+      validateTyped('erionSoundpack', {
+        type: 'erionSoundpack',
+        enabled: 'true',
+      }),
+    ).toMatchObject({ ok: false });
   });
   test('resume requires sessionId, token, lastSeq', () => {
     expect(

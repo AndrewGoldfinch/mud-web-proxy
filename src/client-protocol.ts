@@ -310,7 +310,10 @@ const TYPED_FIELD_CHECKS = new Map<string, readonly FieldCheck[]>([
   ],
   [
     'erionSoundpack',
-    [(o) => checkField(o, 'enabled', z.boolean(), 'enabled must be a boolean')],
+    [
+      (o) =>
+        checkField(o, 'enabled', z.boolean(), 'enabled must be a boolean'),
+    ],
   ],
   [
     // An empty line is legitimate: the player pressed enter.

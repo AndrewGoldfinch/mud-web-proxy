@@ -231,7 +231,11 @@ export class TelnetParser {
         case State.SUBNEG_IAC:
           if (byte === SE) {
             // End of subnegotiation
-            this.handleSubnegotiation(this.subnegOption, this.subnegBuffer, output);
+            this.handleSubnegotiation(
+              this.subnegOption,
+              this.subnegBuffer,
+              output,
+            );
             this.state = State.TEXT;
           } else if (byte === IAC) {
             // Escaped IAC inside subneg. Goes through the same choke point as
@@ -590,12 +594,17 @@ export class TelnetParser {
 
   private sendErionReports(enabled: boolean): void {
     const action = Buffer.from(enabled ? 'REPORT' : 'UNREPORT', 'ascii');
-    this.writeToMud(Buffer.concat([
-      Buffer.from([IAC, SB, MSDP, MSDP_VAR]), action,
-      Buffer.from([MSDP_VAL]), Buffer.from('GET', 'ascii'),
-      Buffer.from([MSDP_VAL]), Buffer.from('TELLSOUND', 'ascii'),
-      Buffer.from([IAC, SE]),
-    ]));
+    this.writeToMud(
+      Buffer.concat([
+        Buffer.from([IAC, SB, MSDP, MSDP_VAR]),
+        action,
+        Buffer.from([MSDP_VAL]),
+        Buffer.from('GET', 'ascii'),
+        Buffer.from([MSDP_VAL]),
+        Buffer.from('TELLSOUND', 'ascii'),
+        Buffer.from([IAC, SE]),
+      ]),
+    );
   }
 
   /**

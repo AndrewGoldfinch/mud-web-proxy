@@ -600,7 +600,12 @@ export class SessionIntegration {
       type: 'session',
       sessionId: session.id,
       token: session.authToken,
-      capabilities: ['activityToken', 'syncAck', 'echoState', 'erionSoundpack'],
+      capabilities: [
+        'activityToken',
+        'syncAck',
+        'echoState',
+        'erionSoundpack',
+      ],
     };
     socket.sendUTF(JSON.stringify(response));
 
@@ -713,7 +718,12 @@ export class SessionIntegration {
     const resumedResponse = {
       type: 'resumed',
       sessionId: session.id,
-      capabilities: ['activityToken', 'syncAck', 'echoState', 'erionSoundpack'],
+      capabilities: [
+        'activityToken',
+        'syncAck',
+        'echoState',
+        'erionSoundpack',
+      ],
     };
     socket.sendUTF(JSON.stringify(resumedResponse));
 
@@ -771,7 +781,10 @@ export class SessionIntegration {
     this.backgroundPushScheduler.recordSyncAck(msg.sessionId, msg.lastSeq);
   }
 
-  private handleErionSoundpack(socket: SocketExtended, request: ErionSoundpackRequest): void {
+  private handleErionSoundpack(
+    socket: SocketExtended,
+    request: ErionSoundpackRequest,
+  ): void {
     const session = this.sessionManager.findByWebSocket(socket);
     if (!session) return;
     if (request.enabled) this.erionSoundpackClients.add(socket);
@@ -780,7 +793,9 @@ export class SessionIntegration {
   }
 
   private updateErionSubscription(session: Session): void {
-    const enabled = [...session.clients].some((client) => this.erionSoundpackClients.has(client));
+    const enabled = [...session.clients].some((client) =>
+      this.erionSoundpackClients.has(client),
+    );
     session.telnetParser.setErionSoundpackSubscription(enabled);
   }
 
@@ -933,7 +948,11 @@ export class SessionIntegration {
         });
         for (const client of session.clients) {
           if (!this.erionSoundpackClients.has(client)) continue;
-          try { client.sendUTF(serialized); } catch { /* Socket may be closing. */ }
+          try {
+            client.sendUTF(serialized);
+          } catch {
+            /* Socket may be closing. */
+          }
         }
       } else {
         const processed: ProcessedData = {
