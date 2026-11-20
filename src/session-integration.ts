@@ -703,8 +703,15 @@ export class SessionIntegration {
       return;
     }
 
-    // Attach WebSocket
+    // Track the old session before attachWebSocket detaches this socket from it.
+    const previousSession = this.sessionManager.findByWebSocket(socket);
+    const optedIn = this.erionSoundpackClients.has(socket);
+    const sessionChanged = previousSession?.id !== session.id;
     this.sessionManager.attachWebSocket(msg.sessionId, socket);
+    if (optedIn && sessionChanged) {
+      if (previousSession) this.updateErionSubscription(previousSession);
+      this.updateErionSubscription(session);
+    }
     session.markClientForegrounded();
     this.backgroundPushScheduler.untrackSession(msg.sessionId);
 

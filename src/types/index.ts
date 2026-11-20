@@ -238,6 +238,7 @@ export type ClientMessage =
   | ResumeRequest
   | ActivityTokenRequest
   | SyncAckRequest
+  | ErionSoundpackRequest
   | InputRequest
   | NAWSRequest
   | DisconnectRequest
