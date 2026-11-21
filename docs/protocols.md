@@ -271,9 +271,9 @@ An MSDP subnegotiation from the MUD. Only sockets that sent
 `payload` is base64 of the bytes between `IAC SB MSDP` and `IAC SE`, with
 `IAC IAC` already unescaped to one `0xFF`. The proxy forwards every MSDP
 subnegotiation the MUD sends, not only sound events, so parse the variable
-name before you act on it. The exception is a subnegotiation larger than
-`MAX_SUBNEGOTIATION_BYTES` (default 65536): the proxy discards it and sends no
-frame.
+name before you act on it. The proxy sends no frame for a subnegotiation that
+arrives before MSDP is negotiated, for one with an empty payload, or for one
+larger than `MAX_SUBNEGOTIATION_BYTES` (default 65536).
 
 These frames are live events:
 
