@@ -691,12 +691,12 @@ measure_security() {
   systemd_package="$(dpkg-query -W -f='${Version}\n' systemd)"
   MEASURED_EXPOSURE="${measured_exposure}" \
     SYSTEMD_PACKAGE="${systemd_package}" \
-    HOST_IMAGE="${HOST_IMAGE}" \
-    HOST_OS_VERSION="${HOST_OS_VERSION}" \
+    MEASURED_IMAGE="${HOST_IMAGE}" \
+    MEASURED_OS_VERSION="${HOST_OS_VERSION}" \
     "${INSTALL_ROOT}/current/runtime/bin/bun" -e '
       console.log(JSON.stringify({
-        image: Bun.env.HOST_IMAGE,
-        osVersion: Bun.env.HOST_OS_VERSION,
+        image: Bun.env.MEASURED_IMAGE,
+        osVersion: Bun.env.MEASURED_OS_VERSION,
         architecture: "x86_64",
         systemdPackage: Bun.env.SYSTEMD_PACKAGE,
         measuredExposure: Number(Bun.env.MEASURED_EXPOSURE),

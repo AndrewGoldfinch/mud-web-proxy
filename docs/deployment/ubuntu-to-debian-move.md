@@ -61,11 +61,28 @@ ssh "$OLD_HOST" 'sudo bash -s' <<'EOF'
 set -euo pipefail
 . /etc/os-release
 echo "os=$ID $VERSION_ID kernel=$(uname -r)"
-echo "current=$(readlink -f /opt/mud-web-proxy/current)"
-echo "version=$(cat /opt/mud-web-proxy/current/VERSION)"
-echo "previous=$(cat /var/lib/mud-web-proxy-deploy/previous-release)"
+current="$(readlink -e /opt/mud-web-proxy/current)"
+echo "current=$current"
+echo "version=$(cat "$current/VERSION")"
+previous_record="$(cat /var/lib/mud-web-proxy-deploy/previous-release)"
+if [[ -z "$previous_record" ]]; then
+  echo "previous="
+elif [[ "$previous_record" =~ ^releases/([A-Za-z0-9][A-Za-z0-9._-]*)$ ]]; then
+  echo "previous=${BASH_REMATCH[1]}"
+else
+  echo "previous-release record is malformed: $previous_record" >&2
+  exit 1
+fi
 pid="$(systemctl show -p MainPID --value mud-web-proxy)"
-echo "exe=$(readlink -f "/proc/$pid/exe")"
+[[ "$pid" =~ ^[1-9][0-9]*$ ]]
+cwd="$(readlink -e "/proc/$pid/cwd")"
+exe="$(readlink -e "/proc/$pid/exe")"
+echo "cwd=$cwd"
+echo "exe=$exe"
+if [[ "$cwd" != "$current" || "$exe" != "$(readlink -e "$current/runtime/bin/bun")" ]]; then
+  echo "the running process is not the release current names" >&2
+  exit 1
+fi
 echo "proxy=$(systemctl is-active mud-web-proxy) caddy=$(systemctl is-active caddy)"
 stat -c 'store=%u %g %a %s bytes' /var/lib/mud-web-proxy/attested-keys.json
 systemctl list-unit-files 'mud-web-proxy*' --no-legend
@@ -77,9 +94,21 @@ ssh "$OLD_HOST" 'sudo cat /var/lib/mud-web-proxy/attested-keys.json' |
 The key count runs on the workstation, because `jq` may not be installed on
 the old host.
 
-`exe` must resolve under `/opt/mud-web-proxy/runtimes/bun/`. If it doesn't,
-production isn't running the layout this page assumes. Stop and find out what
-is running. That check exists because `ps` once reported the wrong runtime.
+The block exits nonzero unless the running process is the release `current`
+names: its working directory must be that release, and its executable must be
+that release's Bun. The unit's `WorkingDirectory` is the `current` symlink,
+which systemd resolves at start, so the process keeps the old directory if
+`current` was swapped without a restart.
+[Atomic current-link activation](systemd.md#atomic-current-link-activation)
+allows exactly that state. Reading `current` alone would then report a release
+that isn't running, and this move would quietly upgrade the application too.
+If the check fails, stop and find out what is running. The `exe` check also
+exists because `ps` once reported the wrong runtime.
+
+The `previous-release` record stores `releases/<version>`, but activation
+accepts only the bare version, so the block prints `previous` without the
+prefix. An empty `previous` means the old host has no retained rollback
+release.
 
 The store line should read `<uid> <gid> 600`. The UID and GID are whatever
 `systemd-sysusers` picked on that host. The new host will almost certainly pick
@@ -97,8 +126,8 @@ with these differences:
   units, so this page states them. Ingress block: `systemctl stop caddy`.
   Supervisor stop: `systemctl stop mud-web-proxy`. Restart and restore:
   `systemctl start mud-web-proxy`, then `systemctl start caddy`.
-- **Add:** the old host's release version, `previous-release` value, and Bun
-  runtime path, as read above.
+- **Add:** the old host's release version, `previous` value (without the
+  `releases/` prefix), and Bun runtime path, as read above.
 - **Add:** the exact command that moves the old Droplet onto an
   administrative-only Cloud Firewall, and the command that reverses it. See
   [Retention](#retention-and-deletion).
@@ -204,9 +233,13 @@ Before the window:
    [Release canary](systemd.md#release-canary).
 8. Activate the releases **without starting anything**: run only
    [Atomic current-link activation](systemd.md#atomic-current-link-activation),
-   first for `previous` (an initial activation), then for `version`. The new
-   host's `previous-release` then matches the old host's, and
-   [Offline rollback](systemd.md#offline-rollback) works on day one. Then
+   with `RELEASE_VERSION` set to the bare identifiers read above. When
+   `previous` is non-empty, activate it first (an initial activation), then
+   `version`. The new host's `previous-release` then matches the old host's,
+   and [Offline rollback](systemd.md#offline-rollback) works on day one. When
+   `previous` is empty, activate only `version`. The record stays empty, as it
+   is on the old host, and production acceptance still requires a tested
+   retained rollback release. Then
    confirm that both services are still `inactive`, using the check in
    step 6 of
    [Pre-stage the new host](new-droplet-cutover.md#pre-stage-the-new-host).
@@ -276,6 +309,19 @@ harmless, since no public traffic reaches the new host yet.
 If either block exits nonzero, go to
 [Failure before routing](#failure-before-routing).
 
+That install block starts both services but doesn't enable them, and neither
+did the pre-stage. Once it exits zero, enable them, so a reboot doesn't leave
+production down:
+
+```bash
+set -euo pipefail
+: "${NEW_HOST:?}"
+ssh "$NEW_HOST" \
+  'sudo systemctl enable mud-web-proxy caddy &&
+   [[ "$(systemctl is-enabled mud-web-proxy)" == enabled ]] &&
+   [[ "$(systemctl is-enabled caddy)" == enabled ]]'
+```
+
 ### 3. Route, then let Caddy issue
 
 Run the recorded routing-forward command. Then restart Caddy, so that it
@@ -340,16 +386,32 @@ set -euo pipefail
 : "${STAGING_DIR:?}"
 FLOOR="$(<"$STAGING_DIR/attested-keys.pre-stop.count")"
 [[ "$FLOOR" =~ ^[0-9]+$ ]]
-LIVE_COUNT="$(
-  ssh "$OLD_HOST" 'sudo cat /var/lib/mud-web-proxy/attested-keys.json' |
-    jq -er 'if type == "object" then length else error("not object") end'
-)"
-[[ "$LIVE_COUNT" =~ ^[0-9]+$ ]]
-((LIVE_COUNT >= FLOOR)) && echo "old live store intact: $LIVE_COUNT keys"
+LIVE_STORE="$STAGING_DIR/attested-keys.live-check.json"
+if ! ssh "$OLD_HOST" 'sudo cat /var/lib/mud-web-proxy/attested-keys.json' \
+  >"$LIVE_STORE"; then
+  echo "INCONCLUSIVE: could not read the old live store" >&2
+  exit 2
+fi
+if LIVE_COUNT="$(
+  jq -er 'if type == "object" then length else error("not object") end' \
+    "$LIVE_STORE"
+)" && [[ "$LIVE_COUNT" =~ ^[0-9]+$ ]] && ((LIVE_COUNT >= FLOOR)); then
+  echo "INTACT: old live store has $LIVE_COUNT keys"
+  exit 0
+fi
+echo "INVALID: old live store is not a JSON object with at least $FLOOR keys" >&2
+exit 1
 ```
 
-- **It exits zero:** leave the file alone.
-- **It fails:** run the restore block from
+Run it as its own script, because it ends with `exit`.
+
+- **Exit 0 (`INTACT`):** leave the file alone.
+- **Exit 2 (`INCONCLUSIVE`):** the read failed, which says nothing about the
+  file. Fix SSH access and run the check again. Never restore on this result:
+  if the live file is intact, the restore overwrites every registration and
+  counter saved after the safety copy.
+- **Exit 1 (`INVALID`):** a successful read proved the live file bad. Run the
+  restore block from
   [Failure before routing changes](new-droplet-cutover.md#failure-before-routing-changes)
   with `OLD_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json`.
 
@@ -364,8 +426,41 @@ Rollback puts production back on the unpatched Ubuntu kernel. Use it for an
 application-level failure on the new host, and plan the next attempt within
 days, not weeks.
 
-1. Run the new-host stop gate in
-   [Infrastructure rollback](new-droplet-cutover.md#infrastructure-rollback).
+1. Stop the new host's proxy, then its edge, and check that the shutdown
+   flushed the store. This replaces the stop gate in
+   [Infrastructure rollback](new-droplet-cutover.md#infrastructure-rollback),
+   which checks only that the units are inactive:
+
+   ```bash
+   set -euo pipefail
+   : "${NEW_HOST:?}"
+   STOP_EPOCH="$(date -u +%s)"
+   ssh "$NEW_HOST" \
+     'sudo systemctl stop mud-web-proxy &&
+      ! systemctl is-active --quiet mud-web-proxy'
+   SHUTDOWN_LOG="$(
+     ssh "$NEW_HOST" \
+       "sudo journalctl -u mud-web-proxy --since '@$STOP_EPOCH' --no-pager -o cat"
+   )"
+   ssh "$NEW_HOST" \
+     'sudo systemctl stop caddy &&
+      ! systemctl is-active --quiet caddy'
+   if [[ "$SHUTDOWN_LOG" == *"shutdown: completed"* &&
+     "$SHUTDOWN_LOG" != *"flush attested keys failed"* ]]; then
+     echo "new-host store flushed"
+   else
+     echo "FLUSH NOT CONFIRMED: record this before the reverse transfer" >&2
+   fi
+   ```
+
+   Both units are stopped either way. If the flush isn't confirmed (for
+   example, `ENOSPC`), the new host's file is its last successful save, and
+   whatever the process held after that is gone with the process. Restarting
+   the proxy can't bring it back. Record the gap in the private record and
+   still run step 2. That file started as the old host's final store and has
+   only grown since, so it is still newer than the old host's copy, and
+   skipping the transfer would also lose everything it does hold.
+
 2. If the new host served public traffic, run the reverse-transfer block from
    the same section, with `OLD_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json`.
    It restores ownership from the old host's recorded numeric UID and GID, which
