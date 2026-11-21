@@ -26,6 +26,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on Debian, and no longer suggest installing `gh` from apt in the cutover
   runbook, which contradicted the systemd guide.
 
+## [4.1.1] - 2026-11-21
+
+The `v4.1.0` tag points at the wrong commit and was never released; the
+release workflow refused it because its `package.json` still said 4.0.1.
+Release tags are immutable, so this release is 4.1.1.
+
+### Added
+
+- Opt-in live MSDP forwarding for the Erion soundpack. A client sends
+  `{"type":"erionSoundpack","enabled":true}`; the proxy then asks the MUD to
+  `REPORT` `TELLSOUND` and forwards each MSDP subnegotiation to opted-in
+  clients as `{"type":"erionMSDP","payload":"<base64>"}`. Opt-in belongs to
+  the WebSocket, not the session: a client that reconnects and resumes must
+  send `erionSoundpack` again. The proxy withdraws the subscription
+  (`UNREPORT`) when no opted-in client remains. These frames are live-only:
+  they carry no sequence number and are not replayed on resume.
+- `session` and `resumed` responses advertise the `erionSoundpack`
+  capability.
+
+### Changed
+
+- Update runtime dependencies: cbor-x 1.6.8 to 1.6.9 and ws 8.22.0 to 8.22.1.
+- Update development tools and pinned CI and release actions.
+
 ## [4.0.1] - 2026-10-26
 
 ### Security
@@ -169,6 +193,7 @@ security setting is a protection that disappears without anyone noticing.
   for the life of the process.
 - A frame the client has already acknowledged is no longer replayed on resume.
 
-[unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.1...HEAD
+[unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.1...v4.1.1
 [4.0.1]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/AndrewGoldfinch/mud-web-proxy/releases/tag/v4.0.0
