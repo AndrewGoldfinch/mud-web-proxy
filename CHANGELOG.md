@@ -16,10 +16,11 @@ Nothing yet.
 - Opt-in live MSDP forwarding for the Erion soundpack. A client sends
   `{"type":"erionSoundpack","enabled":true}`; the proxy then asks the MUD to
   `REPORT` `TELLSOUND` and forwards each MSDP subnegotiation to opted-in
-  clients as `{"type":"erionMSDP","payload":"<base64>"}`. The subscription
-  follows the session across resume and is withdrawn (`UNREPORT`) when no
-  opted-in client remains. These frames are live-only: they carry no sequence
-  number and are not replayed on resume.
+  clients as `{"type":"erionMSDP","payload":"<base64>"}`. Opt-in belongs to
+  the WebSocket, not the session: a client that reconnects and resumes must
+  send `erionSoundpack` again. The proxy withdraws the subscription
+  (`UNREPORT`) when no opted-in client remains. These frames are live-only:
+  they carry no sequence number and are not replayed on resume.
 - `session` and `resumed` responses advertise the `erionSoundpack`
   capability.
 
