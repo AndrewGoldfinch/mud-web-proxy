@@ -378,29 +378,48 @@ ssh "$NEW_HOST" \
 Unlike v3.1.0, v4 writes the store atomically and flushes it on a clean stop,
 so after step 1 the old host's live file is normally intact and newer than the
 safety copy. Restoring the safety copy over it would discard every registration
-made since that copy. Check the live file first:
+made since that copy. Check the live file first.
+
+A key count can't decide this. The service evicts keys idle for 90 days on
+every registration and at load, so a valid live store can hold fewer keys than
+the safety copy. The check below instead lists the safety-copy keys that are
+missing from the live file and that eviction can't explain: keys active within
+the last 90 days. An unparseable timestamp counts as recent, as it does in the
+service.
 
 ```bash
 set -euo pipefail
 : "${OLD_HOST:?}"
 : "${STAGING_DIR:?}"
-FLOOR="$(<"$STAGING_DIR/attested-keys.pre-stop.count")"
-[[ "$FLOOR" =~ ^[0-9]+$ ]]
+SAFETY_STORE="$STAGING_DIR/attested-keys.pre-stop.json"
 LIVE_STORE="$STAGING_DIR/attested-keys.live-check.json"
+MISSING_FILTER='
+  def activity: (.lastUsedAt // .registeredAt) as $t
+    | try ($t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch now;
+  $cur[0] as $c
+  | [ $base[0] | to_entries[] | .key as $k
+      | select(($c | has($k)) | not)
+      | select(now - (.value | activity) <= 7776000)
+      | $k ]'
+jq -e 'type == "object"' "$SAFETY_STORE" >/dev/null
 if ! ssh "$OLD_HOST" 'sudo cat /var/lib/mud-web-proxy/attested-keys.json' \
   >"$LIVE_STORE"; then
   echo "INCONCLUSIVE: could not read the old live store" >&2
   exit 2
 fi
-if LIVE_COUNT="$(
-  jq -er 'if type == "object" then length else error("not object") end' \
-    "$LIVE_STORE"
-)" && [[ "$LIVE_COUNT" =~ ^[0-9]+$ ]] && ((LIVE_COUNT >= FLOOR)); then
-  echo "INTACT: old live store has $LIVE_COUNT keys"
-  exit 0
+if ! jq -e 'type == "object"' "$LIVE_STORE" >/dev/null 2>&1; then
+  echo "INVALID: old live store is not a JSON object" >&2
+  exit 1
 fi
-echo "INVALID: old live store is not a JSON object with at least $FLOOR keys" >&2
-exit 1
+MISSING="$(
+  jq -nc --slurpfile base "$SAFETY_STORE" --slurpfile cur "$LIVE_STORE" \
+    "$MISSING_FILTER"
+)"
+if [[ "$MISSING" != "[]" ]]; then
+  echo "MISSING: live store lacks recently active keys: $MISSING" >&2
+  exit 3
+fi
+echo "INTACT: old live store has $(jq length "$LIVE_STORE") keys"
 ```
 
 Run it as its own script, because it ends with `exit`.
@@ -410,10 +429,17 @@ Run it as its own script, because it ends with `exit`.
   file. Fix SSH access and run the check again. Never restore on this result:
   if the live file is intact, the restore overwrites every registration and
   counter saved after the safety copy.
-- **Exit 1 (`INVALID`):** a successful read proved the live file bad. Run the
-  restore block from
+- **Exit 1 (`INVALID`):** a successful read proved the live file isn't a
+  store. Run the restore block from
   [Failure before routing changes](new-droplet-cutover.md#failure-before-routing-changes)
   with `OLD_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json`.
+- **Exit 3 (`MISSING`):** the live file is a valid store but lacks keys that
+  eviction doesn't explain. Don't restore: the safety copy would bring those
+  keys back but overwrite every registration and counter saved after it.
+  Leave the old service stopped and investigate. If the keys must come back,
+  merge them in by hand with the newer entries winning
+  (`jq -s '.[0] + .[1]' safety live`), and install the result with the same
+  care as the restore block.
 
 Then on the old host run `systemctl start mud-web-proxy`, wait for
 `curl --fail http://127.0.0.1:6200/health`, run `systemctl start caddy`, and
@@ -457,14 +483,66 @@ days, not weeks.
    example, `ENOSPC`), the new host's file is its last successful save, and
    whatever the process held after that is gone with the process. Restarting
    the proxy can't bring it back. Record the gap in the private record and
-   still run step 2. That file started as the old host's final store and has
-   only grown since, so it is still newer than the old host's copy, and
-   skipping the transfer would also lose everything it does hold.
+   continue. Skipping the transfer would also lose every registration and
+   counter the file does hold.
 
-2. If the new host served public traffic, run the reverse-transfer block from
-   the same section, with `OLD_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json`.
-   It restores ownership from the old host's recorded numeric UID and GID, which
-   is what the old host needs.
+2. If the new host served public traffic, make sure its store still holds
+   every key from the final snapshot it was installed from. The store does
+   not only grow: eviction removes keys idle for 90 days, and a failed read at
+   startup makes the service start empty and later save a store without the
+   old keys. This block merges back any final-snapshot key that the new
+   store lacks and that eviction doesn't explain. Entries in the new store win,
+   because their counters are newer. Restoring a key that should have aged out
+   is harmless, because the service applies the TTL and the key ceiling again
+   at load:
+
+   ```bash
+   set -euo pipefail
+   umask 077
+   : "${NEW_HOST:?}"
+   : "${STAGING_DIR:?}"
+   FINAL_STORE="$STAGING_DIR/attested-keys.post-stop.json"
+   NEW_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
+   CHECK_STORE="$STAGING_DIR/attested-keys.rollback-check.json"
+   MERGED_STORE="$STAGING_DIR/attested-keys.rollback-merged.json"
+   MISSING_FILTER='
+     def activity: (.lastUsedAt // .registeredAt) as $t
+       | try ($t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch now;
+     $cur[0] as $c
+     | [ $base[0] | to_entries[] | .key as $k
+         | select(($c | has($k)) | not)
+         | select(now - (.value | activity) <= 7776000)
+         | $k ]'
+   ssh "$NEW_HOST" '! systemctl is-active --quiet mud-web-proxy'
+   jq -e 'type == "object"' "$FINAL_STORE" >/dev/null
+   ssh "$NEW_HOST" "sudo cat '$NEW_KEYS_PATH'" >"$CHECK_STORE"
+   jq -e 'type == "object"' "$CHECK_STORE" >/dev/null
+   MISSING="$(
+     jq -nc --slurpfile base "$FINAL_STORE" --slurpfile cur "$CHECK_STORE" \
+       "$MISSING_FILTER"
+   )"
+   if [[ "$MISSING" == "[]" ]]; then
+     echo "new-host store holds every recently active final-snapshot key"
+   else
+     echo "merging back $(jq length <<<"$MISSING") keys: $MISSING"
+     jq -s '.[0] + .[1]' "$FINAL_STORE" "$CHECK_STORE" >"$MERGED_STORE"
+     REMOTE_TEMP="$(ssh "$NEW_HOST" "sudo mktemp '$NEW_KEYS_PATH.XXXXXX'")"
+     ssh "$NEW_HOST" "sudo tee '$REMOTE_TEMP' >/dev/null" <"$MERGED_STORE"
+     ssh "$NEW_HOST" \
+       "sudo chown mud-web-proxy:mud-web-proxy '$REMOTE_TEMP' &&
+        sudo chmod 0600 '$REMOTE_TEMP' &&
+        sudo mv -Tf -- '$REMOTE_TEMP' '$NEW_KEYS_PATH'"
+     [[ "$(ssh "$NEW_HOST" "sudo sha256sum '$NEW_KEYS_PATH'" | awk '{print $1}')" \
+       == "$(sha256sum "$MERGED_STORE" | awk '{print $1}')" ]]
+   fi
+   ```
+
+   Record any merged keys in the private record. Then run the
+   reverse-transfer block from the same section, with
+   `OLD_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json`. It restores
+   ownership from the old host's recorded numeric UID and GID, which is what
+   the old host needs.
+
 3. If the old Droplet was already moved to the administrative-only firewall,
    reverse that first.
 4. Run the routing-reverse command. On the old host run
