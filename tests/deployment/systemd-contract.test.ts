@@ -244,7 +244,7 @@ const runDeploymentBunScript = (
     stderr: 'pipe',
   });
 
-describe('Ubuntu acceptance preflight behavior', () => {
+describe('Clean-host acceptance preflight behavior', () => {
   test('rejects an unsupported phase before mutating the host', () => {
     const protectedPaths = [
       '/opt/mud-web-proxy',
@@ -255,7 +255,7 @@ describe('Ubuntu acceptance preflight behavior', () => {
     const before = protectedPaths.map((candidate) => existsSync(candidate));
     const result = runAcceptance({
       MWP_ACCEPTANCE_PHASE: 'unsupported',
-      MWP_DISPOSABLE_VM_ACK: 'ERASE THIS CLEAN UBUNTU 26.04 VM',
+      MWP_DISPOSABLE_VM_ACK: 'ERASE THIS CLEAN DEBIAN 13 VM',
     });
     expect(result.exitCode).not.toBe(0);
     expect(result.stderr.toString()).toContain(
@@ -1204,7 +1204,7 @@ describe('DigitalOcean acceptance evidence', () => {
       dropletId: 123,
       name: 'mwp-105-acceptance-verify-fixture',
       regionSlug: 'nyc3',
-      imageSlug: 'ubuntu-26-04-x64',
+      imageSlug: 'debian-13-x64',
       sizeSlug: 's-1vcpu-1gb',
       memoryMiB: 1024,
       vcpus: 1,
@@ -1226,7 +1226,7 @@ describe('DigitalOcean acceptance evidence', () => {
         dropletId: 123,
         name: 'mwp-105-acceptance-verify-fixture',
         regionSlug: 'nyc3',
-        imageSlug: 'ubuntu-26-04-x64',
+        imageSlug: 'debian-13-x64',
         sizeSlug: 's-1vcpu-1gb',
         memoryMiB: 1024,
         vcpus: 1,
@@ -1236,7 +1236,8 @@ describe('DigitalOcean acceptance evidence', () => {
       });
 
       for (const invalid of [
-        { ...valid, imageSlug: 'ubuntu-other' },
+        { ...valid, imageSlug: 'ubuntu-26-04-x64' },
+        { ...valid, imageSlug: 'debian-12-x64' },
         { ...valid, sizeSlug: 's-2vcpu-2gb' },
         { ...valid, regionSlug: '' },
         { ...valid, memoryMiB: 2048 },
@@ -1519,7 +1520,7 @@ test('converts one-decimal exposure scores to strict CLI percentages', async () 
   }
 });
 
-test('pins a measured Ubuntu security regression baseline', async () => {
+test('pins the Debian 13 security regression baseline', async () => {
   const baselinePath = path.join(
     repoRoot,
     'tests/deployment/systemd-security-baseline.json',
@@ -1531,8 +1532,8 @@ test('pins a measured Ubuntu security regression baseline', async () => {
   const baseline = asDouble<SecurityBaseline>()(
     await Bun.file(baselinePath).json(),
   );
-  expect(baseline.image).toBe('ubuntu-26-04-x64');
-  expect(baseline.osVersion).toBe('26.04');
+  expect(baseline.image).toBe('debian-13-x64');
+  expect(baseline.osVersion).toBe('13');
   expect(baseline.architecture).toBe('x86_64');
   expect(baseline.systemdPackage).toMatch(/^[0-9]/);
   expect(Number.isInteger(baseline.measuredExposure * 10)).toBe(true);
@@ -1548,4 +1549,32 @@ test('pins a measured Ubuntu security regression baseline', async () => {
     expect(residual.assessment.trim()).not.toBe('');
     expect(residual.reason.trim()).not.toBe('');
   }
+});
+
+// The supported host is named in three places that are read by different
+// programs: the harness (bash), the provider-evidence schema (zod), and the
+// baseline (JSON). A release move that updates one and misses another only
+// fails on a billed Droplet, so pin them to each other here.
+test('names one supported host across harness, evidence schema, and baseline', async () => {
+  const harness = readArtifact('tests/deployment/run-systemd-acceptance.sh');
+  const readonlyValue = (name: string): string | undefined =>
+    new RegExp(`^readonly ${name}=(\\S+)$`, 'm').exec(harness)?.[1];
+  const hostImage = readonlyValue('HOST_IMAGE');
+  const hostOsVersion = readonlyValue('HOST_OS_VERSION');
+  expect(hostImage).toBeDefined();
+  expect(hostOsVersion).toBeDefined();
+
+  const baseline = asDouble<SecurityBaseline>()(
+    await Bun.file(
+      path.join(repoRoot, 'tests/deployment/systemd-security-baseline.json'),
+    ).json(),
+  );
+  expect(baseline.image).toBe(hostImage);
+  expect(baseline.osVersion).toBe(hostOsVersion);
+
+  const evidenceSchema = readArtifact(
+    'tests/deployment/digitalocean-evidence.ts',
+  );
+  expect(evidenceSchema).toContain(`imageSlug: z.literal('${hostImage}')`);
+  expect(evidenceSchema).toContain(`imageSlug: '${hostImage}';`);
 });

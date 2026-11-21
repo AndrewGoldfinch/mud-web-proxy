@@ -43,7 +43,7 @@ anyway if browsers are your clients. See [Configuration](#configuration).
 Port 80 is not optional. Caddy uses the HTTP-01 challenge, so closing 80
 after issuance breaks _renewal_, not only the initial certificate.
 
-A clean Ubuntu image has neither Docker nor the Compose plugin, and the
+A clean Debian or Ubuntu image has neither Docker nor the Compose plugin, and the
 distribution's `docker.io` package doesn't include Compose v2. Install from
 Docker's own repository, following the
 [Docker Engine installation instructions](https://docs.docker.com/engine/install/),

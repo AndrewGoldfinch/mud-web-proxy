@@ -69,7 +69,7 @@ proxy.example.com {
 # The nginx edge enforced `limit_req` zones (attest 10r/m burst 5, httpapi
 # 60r/m burst 20). Caddy has no native rate limiter; it requires an xcaddy
 # build with a third-party module, which conflicts with installing Caddy
-# from its official stable Ubuntu repository. The application rate-limits
+# from its official stable apt repository. The application rate-limits
 # /attest/challenge itself, but /health and /attest/register are unbounded
 # at the edge on this topology. Decide explicitly between a custom Caddy
 # build, application-side limits, or accepting it — do not let it pass
