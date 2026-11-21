@@ -85,7 +85,7 @@ JSON objects in both directions, one per WebSocket message.
 
 ### Client to server
 
-The typed protocol has seven client message types. The proxy rejects anything
+The typed protocol has eight client message types. The proxy rejects anything
 with an unrecognized `type` with `invalid_request` rather than forwarding it to
 the MUD.
 
@@ -166,6 +166,33 @@ Supply an iOS Live Activity token for background updates.
 { "type": "activityToken", "token": "…" }
 ```
 
+#### `erionSoundpack`
+
+Opt this socket in to, or out of, live MSDP events. See
+[`erionMSDP`](#erionmsdp).
+
+| Field     | Type    | Required | Notes                         |
+| --------- | ------- | -------- | ----------------------------- |
+| `type`    | string  | yes      | `"erionSoundpack"`            |
+| `enabled` | boolean | yes      | `true` opts in, `false` stops |
+
+```json
+{ "type": "erionSoundpack", "enabled": true }
+```
+
+Send it after you receive `session` or `resumed`. A socket with no session
+ignores the message and records nothing, and the proxy sends no reply in either
+case.
+
+Opt-in belongs to the WebSocket, not to the session. After you reconnect and
+`resume`, send `erionSoundpack` again: the new socket starts opted out.
+
+While at least one opted-in socket is attached to the session, the proxy asks
+the MUD to report sound events by sending the MSDP command `REPORT` with the
+values `GET` and `TELLSOUND`. When the last opted-in socket opts out or
+detaches, it sends `UNREPORT` with the same values. If MSDP is not yet
+negotiated, the proxy sends the request when negotiation completes.
+
 #### `disconnect`
 
 Close the session and its upstream connection.
@@ -186,7 +213,7 @@ The proxy sends this envelope once, after a successful `connect`. Store
   "type": "session",
   "sessionId": "…",
   "token": "…",
-  "capabilities": ["activityToken", "syncAck", "echoState"]
+  "capabilities": ["activityToken", "syncAck", "echoState", "erionSoundpack"]
 }
 ```
 
@@ -200,7 +227,7 @@ timing.
 {
   "type": "resumed",
   "sessionId": "…",
-  "capabilities": ["activityToken", "syncAck", "echoState"]
+  "capabilities": ["activityToken", "syncAck", "echoState", "erionSoundpack"]
 }
 ```
 
@@ -231,6 +258,29 @@ until the state reverts.
 ```json
 { "type": "echo", "seq": 415, "suppressed": true }
 ```
+
+#### `erionMSDP`
+
+An MSDP subnegotiation from the MUD. Only sockets that sent
+`{"type": "erionSoundpack", "enabled": true}` receive it.
+
+```json
+{ "type": "erionMSDP", "payload": "AVRFTExTT1VORAI…" }
+```
+
+`payload` is base64 of the bytes between `IAC SB MSDP` and `IAC SE`, with
+`IAC IAC` already unescaped to one `0xFF`. The proxy forwards every MSDP
+subnegotiation the MUD sends, not only sound events, so parse the variable
+name before you act on it. The proxy sends no frame for a subnegotiation that
+arrives before MSDP is negotiated, for one with an empty payload, or for one
+larger than `MAX_SUBNEGOTIATION_BYTES` (default 65536).
+
+These frames are live events:
+
+- **They have no `seq`.** They don't count toward `syncAck`, and you can't
+  resume from one.
+- **The proxy doesn't buffer them.** An event that arrives while no opted-in
+  socket is attached is lost, and `resume` doesn't replay it.
 
 #### `error`
 
@@ -355,9 +405,9 @@ Target-policy denials arrive the same way, carrying the policy's own reason.
 ### What the legacy protocol doesn't have
 
 No sessions, no `sessionId`, no resume, no sequence numbers, no typed GMCP or
-echo envelopes. A dropped socket loses the connection permanently. GMCP still
-works at the telnet layer, but the proxy doesn't surface it as structured
-messages.
+echo envelopes, and no `erionMSDP` events. A dropped socket loses the
+connection permanently. GMCP still works at the telnet layer, but the proxy
+doesn't surface it as structured messages.
 
 ## Telnet pass-through
 
@@ -367,7 +417,7 @@ client doesn't implement telnet itself:
 | Option         | Effect                                                |
 | -------------- | ----------------------------------------------------- |
 | GMCP and ATCP  | Surfaced as `gmcp` envelopes in the typed protocol    |
-| MSDP           | Structured MUD data                                   |
+| MSDP           | Surfaced as `erionMSDP` envelopes to opted-in sockets |
 | MXP            | In-band markup, passed through in `data`              |
 | TTYPE          | Terminal type, answered on your behalf                |
 | CHARSET, UTF-8 | Character set negotiation                             |
