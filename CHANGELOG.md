@@ -9,7 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Nothing yet.
 
-## [4.1.0] - 2026-11-21
+## [4.1.1] - 2026-11-21
+
+The `v4.1.0` tag points at the wrong commit and was never released; the
+release workflow refused it because its `package.json` still said 4.0.1.
+Release tags are immutable, so this release is 4.1.1.
 
 ### Added
 
@@ -172,7 +176,7 @@ security setting is a protection that disappears without anyone noticing.
   for the life of the process.
 - A frame the client has already acknowledged is no longer replayed on resume.
 
-[unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.1.0...HEAD
-[4.1.0]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.1...v4.1.0
+[unreleased]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.1.1...HEAD
+[4.1.1]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.1...v4.1.1
 [4.0.1]: https://github.com/AndrewGoldfinch/mud-web-proxy/compare/v4.0.0...v4.0.1
 [4.0.0]: https://github.com/AndrewGoldfinch/mud-web-proxy/releases/tag/v4.0.0
