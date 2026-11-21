@@ -353,7 +353,12 @@ Let's Encrypt seeing the new record.
 
 Apply every gate in [Acceptance](new-droplet-cutover.md#acceptance) unchanged,
 including `missing == 0` from
-[Prove that the store actually moved](new-droplet-cutover.md#prove-that-the-store-actually-moved).
+[Prove that the store actually moved](new-droplet-cutover.md#prove-that-the-store-actually-moved),
+with one reading of the key-count bullet. The unchanged-count check is the
+post-start count in the step 2 install block, which ran before routing moved.
+After routing, a new device can register, so the store may grow. Don't fail
+acceptance on a higher count. Preservation is proven by `missing == 0`, not
+by the total.
 That proof matters as much here as it did before: registration stays open, so a
 host with an empty store looks healthy.
 
@@ -567,11 +572,48 @@ days, not weeks.
 
 3. If the old Droplet was already moved to the administrative-only firewall,
    reverse that first.
-4. Run the routing-reverse command. On the old host run
+4. If you rotated `PROXY_SHARED_SECRET`, give the old host the new value
+   before it starts. The proxy accepts exactly one secret, and clients updated
+   during the move now send only the new one, so the old host's original
+   value would lock them out. Change only that line. The old host keeps its
+   own APNS key, which stays valid until deletion. Run this from the
+   administrative workstation, with the staging files from pre-stage step 5:
+
+   ```bash
+   set -euo pipefail
+   umask 077
+   : "${OLD_HOST:?}"
+   : "${STAGING_DIR:?}"
+   OLD_ENV="$STAGING_DIR/mud-web-proxy.env.old"
+   NEW_ENV="$STAGING_DIR/mud-web-proxy.env.new"
+   ROLLBACK_ENV="$STAGING_DIR/mud-web-proxy.env.rollback"
+   NEW_SECRET_LINE="$(grep -E '^PROXY_SHARED_SECRET=' "$NEW_ENV")"
+   [[ "$(grep -cE '^PROXY_SHARED_SECRET=' "$OLD_ENV")" == 1 ]]
+   [[ "$(wc -l <<<"$NEW_SECRET_LINE")" == 1 ]]
+   LINE="$NEW_SECRET_LINE" awk \
+     '/^PROXY_SHARED_SECRET=/ { print ENVIRON["LINE"]; next } { print }' \
+     "$OLD_ENV" >"$ROLLBACK_ENV"
+   [[ "$(diff "$OLD_ENV" "$ROLLBACK_ENV" | grep -c '^[<>]')" == 2 ]]
+
+   REMOTE_TEMP="$(ssh "$OLD_HOST" 'sudo mktemp /root/.mud-web-proxy.env.XXXXXX')"
+   ssh "$OLD_HOST" "sudo tee '$REMOTE_TEMP' >/dev/null" <"$ROLLBACK_ENV"
+   ssh "$OLD_HOST" \
+     "sudo install -o root -g mud-web-proxy -m 0640 '$REMOTE_TEMP' /etc/mud-web-proxy.env &&
+      sudo rm -f -- '$REMOTE_TEMP'"
+   [[ "$(ssh "$OLD_HOST" "sudo sha256sum /etc/mud-web-proxy.env" | awk '{print $1}')" \
+     == "$(sha256sum "$ROLLBACK_ENV" | awk '{print $1}')" ]]
+   ```
+
+   The `diff` check proves that exactly one line changed. Record the change in
+   the private record. If you rotated `ADMIN_TOKEN` or `APNS_TEST_SECRET`,
+   operator tools that now hold the new values fail against the old host
+   until you carry those lines over the same way.
+
+5. Run the routing-reverse command. On the old host run
    `systemctl enable --now mud-web-proxy`, wait for loopback health, then run
    `systemctl enable --now caddy`. The old host still holds its own valid
    certificate, so there is no TLS gap on the way back.
-5. Verify public health, WSS, and a complete MUD session.
+6. Verify public health, WSS, and a complete MUD session.
 
 ## Retention and deletion
 
@@ -583,7 +625,7 @@ still apply. Two things change, because the old host is the vulnerable one:
   Firewall that allows only administrative SSH, with no public 80 or 443. Then
   run `systemctl disable mud-web-proxy caddy` on it, so that a reboot during
   retention doesn't bring the old edge back on its own public address. Leave the
-  Droplet powered on with its state untouched. Rollback step 4 re-enables both
+  Droplet powered on with its state untouched. Rollback step 5 re-enables both
   units.
 - **Let Ubuntu patch it if it can.** If Ubuntu publishes the kernel fix during
   retention, unattended upgrades may install it. That is fine. Don't reboot the
