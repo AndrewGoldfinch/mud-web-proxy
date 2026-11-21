@@ -385,7 +385,9 @@ every registration and at load, so a valid live store can hold fewer keys than
 the safety copy. The check below instead lists the safety-copy keys that are
 missing from the live file and that eviction can't explain: keys active within
 the last 90 days. An unparseable timestamp counts as recent, as it does in the
-service.
+service. It also rejects a store with any entry that fails the service's entry
+schema, because `loadAttestedKeys` silently drops such an entry, so its key ID
+would vanish at the next start.
 
 ```bash
 set -euo pipefail
@@ -393,6 +395,12 @@ set -euo pipefail
 : "${STAGING_DIR:?}"
 SAFETY_STORE="$STAGING_DIR/attested-keys.pre-stop.json"
 LIVE_STORE="$STAGING_DIR/attested-keys.live-check.json"
+VALID_ENTRY='def valid: . as $e | type == "object"
+  and (.publicKey | type) == "string"
+  and (.signCount | type) == "number"
+  and (.registeredAt | type) == "string"
+  and (["alternatePublicKey", "lastUsedAt", "lastAssertedAt"]
+    | all(. as $f | ($e | has($f) | not) or ($e[$f] | type) == "string"));'
 MISSING_FILTER='
   def activity: (.lastUsedAt // .registeredAt) as $t
     | try ($t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch now;
@@ -410,6 +418,14 @@ fi
 if ! jq -e 'type == "object"' "$LIVE_STORE" >/dev/null 2>&1; then
   echo "INVALID: old live store is not a JSON object" >&2
   exit 1
+fi
+MALFORMED="$(
+  jq -c "$VALID_ENTRY [to_entries[] | select(.value | valid | not) | .key]" \
+    "$LIVE_STORE"
+)"
+if [[ "$MALFORMED" != "[]" ]]; then
+  echo "MALFORMED: live store has entries the service would drop: $MALFORMED" >&2
+  exit 4
 fi
 MISSING="$(
   jq -nc --slurpfile base "$SAFETY_STORE" --slurpfile cur "$LIVE_STORE" \
@@ -440,6 +456,10 @@ Run it as its own script, because it ends with `exit`.
   merge them in by hand with the newer entries winning
   (`jq -s '.[0] + .[1]' safety live`), and install the result with the same
   care as the restore block.
+- **Exit 4 (`MALFORMED`):** the live file is an object, but some entries fail
+  the service's schema, which suggests a hand edit or outside corruption.
+  Don't restore or start the old service. Stop and investigate, as for
+  `MISSING`.
 
 Then on the old host run `systemctl start mud-web-proxy`, wait for
 `curl --fail http://127.0.0.1:6200/health`, run `systemctl start caddy`, and
@@ -490,11 +510,13 @@ days, not weeks.
    every key from the final snapshot it was installed from. The store does
    not only grow: eviction removes keys idle for 90 days, and a failed read at
    startup makes the service start empty and later save a store without the
-   old keys. This block merges back any final-snapshot key that the new
-   store lacks and that eviction doesn't explain. Entries in the new store win,
-   because their counters are newer. Restoring a key that should have aged out
-   is harmless, because the service applies the TTL and the key ceiling again
-   at load:
+   old keys. This block merges every final-snapshot key back in. A valid
+   entry in the new store wins, because its counters are newer. A malformed
+   one is replaced by its final-snapshot entry, since the service would drop it
+   at load anyway. There is deliberately no age filter: the new host may have
+   used a key after the snapshot, so the snapshot's timestamp can't prove the
+   key aged out. Restoring a key that did age out is harmless, because the
+   service applies the TTL and the key ceiling again at load:
 
    ```bash
    set -euo pipefail
@@ -505,27 +527,27 @@ days, not weeks.
    NEW_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json
    CHECK_STORE="$STAGING_DIR/attested-keys.rollback-check.json"
    MERGED_STORE="$STAGING_DIR/attested-keys.rollback-merged.json"
-   MISSING_FILTER='
-     def activity: (.lastUsedAt // .registeredAt) as $t
-       | try ($t | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) catch now;
-     $cur[0] as $c
-     | [ $base[0] | to_entries[] | .key as $k
-         | select(($c | has($k)) | not)
-         | select(now - (.value | activity) <= 7776000)
-         | $k ]'
+   VALID_ENTRY='def valid: . as $e | type == "object"
+     and (.publicKey | type) == "string"
+     and (.signCount | type) == "number"
+     and (.registeredAt | type) == "string"
+     and (["alternatePublicKey", "lastUsedAt", "lastAssertedAt"]
+       | all(. as $f | ($e | has($f) | not) or ($e[$f] | type) == "string"));'
    ssh "$NEW_HOST" '! systemctl is-active --quiet mud-web-proxy'
    jq -e 'type == "object"' "$FINAL_STORE" >/dev/null
    ssh "$NEW_HOST" "sudo cat '$NEW_KEYS_PATH'" >"$CHECK_STORE"
    jq -e 'type == "object"' "$CHECK_STORE" >/dev/null
-   MISSING="$(
-     jq -nc --slurpfile base "$FINAL_STORE" --slurpfile cur "$CHECK_STORE" \
-       "$MISSING_FILTER"
+   jq -S -s "$VALID_ENTRY"' .[0] + (.[1] | with_entries(select(.value | valid)))' \
+     "$FINAL_STORE" "$CHECK_STORE" >"$MERGED_STORE"
+   CHANGED="$(
+     jq -c -s '(.[0] | keys) as $m
+       | [$m[] as $k | select(.[1][$k] != .[0][$k]) | $k]' \
+       "$MERGED_STORE" "$CHECK_STORE"
    )"
-   if [[ "$MISSING" == "[]" ]]; then
-     echo "new-host store holds every recently active final-snapshot key"
+   if [[ "$CHANGED" == "[]" ]]; then
+     echo "new-host store already holds every final-snapshot key"
    else
-     echo "merging back $(jq length <<<"$MISSING") keys: $MISSING"
-     jq -s '.[0] + .[1]' "$FINAL_STORE" "$CHECK_STORE" >"$MERGED_STORE"
+     echo "restoring $(jq length <<<"$CHANGED") entries: $CHANGED"
      REMOTE_TEMP="$(ssh "$NEW_HOST" "sudo mktemp '$NEW_KEYS_PATH.XXXXXX'")"
      ssh "$NEW_HOST" "sudo tee '$REMOTE_TEMP' >/dev/null" <"$MERGED_STORE"
      ssh "$NEW_HOST" \
@@ -537,7 +559,7 @@ days, not weeks.
    fi
    ```
 
-   Record any merged keys in the private record. Then run the
+   Record any restored entries in the private record. Then run the
    reverse-transfer block from the same section, with
    `OLD_KEYS_PATH=/var/lib/mud-web-proxy/attested-keys.json`. It restores
    ownership from the old host's recorded numeric UID and GID, which is what
