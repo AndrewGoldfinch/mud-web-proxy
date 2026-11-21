@@ -56,20 +56,20 @@
   },
   "homepage": "https://github.com/AndrewGoldfinch/mud-web-proxy#readme",
   "devDependencies": {
-    "@oxlint/plugins": "1.90.0",
+    "@oxlint/plugins": "1.93.0",
     "@types/node": "^26.6.6",
     "@types/uglify-js": "^3.17.5",
     "@types/ws": "^8.18.2",
     "esbuild": "^0.28.2",
-    "oxlint": "1.90.0",
-    "prettier": "^3.9.10",
+    "oxlint": "1.93.0",
+    "prettier": "^3.10.1",
     "typescript": "^7.0.2",
     "uglify-js": "^3.19.3"
   },
   "dependencies": {
-    "cbor-x": "^1.6.8",
+    "cbor-x": "^1.6.9",
     "iconv-lite": "^0.7.3",
-    "ws": "^8.22.0",
+    "ws": "^8.22.1",
     "zod": "^4.6.7"
   },
   "private": true
