@@ -47,6 +47,7 @@ import type {
   ResumeRequest,
   ActivityTokenRequest,
   SyncAckRequest,
+  ErionSoundpackRequest,
   InputRequest,
   NAWSRequest,
   ProcessedData,
@@ -117,6 +118,7 @@ export interface SessionIntegrationConfig {
 }
 
 export class SessionIntegration {
+  private readonly erionSoundpackClients = new WeakSet<SocketExtended>();
   sessionManager: SessionManager;
   triggerMatcher: TriggerMatcher;
   notificationManager: NotificationManager;
@@ -335,6 +337,9 @@ export class SessionIntegration {
         return { kind: 'handled' };
       case 'syncAck':
         this.handleSyncAck(socket, request);
+        return { kind: 'handled' };
+      case 'erionSoundpack':
+        this.handleErionSoundpack(socket, request);
         return { kind: 'handled' };
       case 'input':
         this.handleInput(socket, request);
@@ -595,7 +600,12 @@ export class SessionIntegration {
       type: 'session',
       sessionId: session.id,
       token: session.authToken,
-      capabilities: ['activityToken', 'syncAck', 'echoState'],
+      capabilities: [
+        'activityToken',
+        'syncAck',
+        'echoState',
+        'erionSoundpack',
+      ],
     };
     socket.sendUTF(JSON.stringify(response));
 
@@ -693,8 +703,15 @@ export class SessionIntegration {
       return;
     }
 
-    // Attach WebSocket
+    // Track the old session before attachWebSocket detaches this socket from it.
+    const previousSession = this.sessionManager.findByWebSocket(socket);
+    const optedIn = this.erionSoundpackClients.has(socket);
+    const sessionChanged = previousSession?.id !== session.id;
     this.sessionManager.attachWebSocket(msg.sessionId, socket);
+    if (optedIn && sessionChanged) {
+      if (previousSession) this.updateErionSubscription(previousSession);
+      this.updateErionSubscription(session);
+    }
     session.markClientForegrounded();
     this.backgroundPushScheduler.untrackSession(msg.sessionId);
 
@@ -708,7 +725,12 @@ export class SessionIntegration {
     const resumedResponse = {
       type: 'resumed',
       sessionId: session.id,
-      capabilities: ['activityToken', 'syncAck', 'echoState'],
+      capabilities: [
+        'activityToken',
+        'syncAck',
+        'echoState',
+        'erionSoundpack',
+      ],
     };
     socket.sendUTF(JSON.stringify(resumedResponse));
 
@@ -764,6 +786,24 @@ export class SessionIntegration {
 
   private handleSyncAck(_socket: SocketExtended, msg: SyncAckRequest): void {
     this.backgroundPushScheduler.recordSyncAck(msg.sessionId, msg.lastSeq);
+  }
+
+  private handleErionSoundpack(
+    socket: SocketExtended,
+    request: ErionSoundpackRequest,
+  ): void {
+    const session = this.sessionManager.findByWebSocket(socket);
+    if (!session) return;
+    if (request.enabled) this.erionSoundpackClients.add(socket);
+    else this.erionSoundpackClients.delete(socket);
+    this.updateErionSubscription(session);
+  }
+
+  private updateErionSubscription(session: Session): void {
+    const enabled = [...session.clients].some((client) =>
+      this.erionSoundpackClients.has(client),
+    );
+    session.telnetParser.setErionSoundpackSubscription(enabled);
   }
 
   /**
@@ -906,6 +946,21 @@ export class SessionIntegration {
             segment.data.toString('utf8'),
           );
         }
+      } else if (segment.kind === 'msdp') {
+        // MSDP cues are transient events: deliver live to opted-in clients,
+        // without sequence numbers or replay-buffer entries.
+        const serialized = JSON.stringify({
+          type: 'erionMSDP',
+          payload: segment.payload.toString('base64'),
+        });
+        for (const client of session.clients) {
+          if (!this.erionSoundpackClients.has(client)) continue;
+          try {
+            client.sendUTF(serialized);
+          } catch {
+            /* Socket may be closing. */
+          }
+        }
       } else {
         const processed: ProcessedData = {
           data: Buffer.alloc(0),
@@ -949,6 +1004,7 @@ export class SessionIntegration {
    */
   handleSocketClose(socket: SocketExtended): void {
     const session = this.sessionManager.findByWebSocket(socket);
+    this.erionSoundpackClients.delete(socket);
     if (session) {
       this.log(
         'client detached from session',
@@ -960,6 +1016,7 @@ export class SessionIntegration {
       // IP count is NOT decremented here; it tracks sessions, not sockets,
       // and is decremented only when the session itself is destroyed.
       this.sessionManager.detachWebSocket(socket);
+      this.updateErionSubscription(session);
       if (!session.hasClients() && session.telnetConnected) {
         session.markClientBackgrounded();
         this.backgroundPushScheduler.trackSession(session);

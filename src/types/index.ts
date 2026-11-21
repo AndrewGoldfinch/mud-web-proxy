@@ -149,6 +149,11 @@ export interface SyncAckRequest {
   lastSeq: number;
 }
 
+export interface ErionSoundpackRequest {
+  type: 'erionSoundpack';
+  enabled: boolean;
+}
+
 export interface InputRequest {
   type: 'input';
   text: string;
@@ -233,6 +238,7 @@ export type ClientMessage =
   | ResumeRequest
   | ActivityTokenRequest
   | SyncAckRequest
+  | ErionSoundpackRequest
   | InputRequest
   | NAWSRequest
   | DisconnectRequest

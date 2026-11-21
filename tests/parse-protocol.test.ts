@@ -49,6 +49,44 @@ describe('parseNewMessage outcomes', () => {
     if (outcome.kind === 'invalid') expect(outcome.field).toBe('height');
   });
 
+  test('resuming an opted-in socket recalculates both session subscriptions', () => {
+    const previousSession = integration.sessionManager.create(
+      'old.example.org',
+      4000,
+    );
+    const destinationSession = integration.sessionManager.create(
+      'new.example.org',
+      4000,
+    );
+    integration.sessionManager.attachWebSocket(previousSession.id, socket);
+    integration.parseNewMessage(
+      socket,
+      buf({ type: 'erionSoundpack', enabled: true }),
+    );
+
+    const previousUpdates: boolean[] = [];
+    const destinationUpdates: boolean[] = [];
+    previousSession.telnetParser.setErionSoundpackSubscription = (enabled) =>
+      previousUpdates.push(enabled);
+    destinationSession.telnetParser.setErionSoundpackSubscription = (
+      enabled,
+    ) => destinationUpdates.push(enabled);
+
+    const outcome = integration.parseNewMessage(
+      socket,
+      buf({
+        type: 'resume',
+        sessionId: destinationSession.id,
+        token: destinationSession.authToken,
+        lastSeq: 0,
+      }),
+    );
+
+    expect(outcome.kind).toBe('handled');
+    expect(previousUpdates).toEqual([false]);
+    expect(destinationUpdates).toEqual([true]);
+  });
+
   test('a JSON object with neither type nor connect is not-ours', () => {
     const outcome = integration.parseNewMessage(socket, buf({ foo: 'bar' }));
     expect(outcome.kind).toBe('not-ours');
